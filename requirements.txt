@@ -1,0 +1,11 @@
+ipython==8.26.0
+matplotlib==3.9.1
+mdai==0.14.3
+numpy==2.0.0
+opencv-python==4.10.0.84
+opencv-python-headless==4.10.0.84
+pandas==2.2.2
+pillow==10.4.0
+python-dotenv==1.0.1
+scikit-image==0.24.0
+scipy==1.14.0
