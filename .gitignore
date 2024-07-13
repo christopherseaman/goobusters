@@ -1,3 +1,5 @@
 .venv/
 data/
 dot.env
+tracked_*/
+.DS_Store
