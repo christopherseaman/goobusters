@@ -1,5 +1,14 @@
 Because we're tracking (busting) free fluid (goo) and I grew up on 80's movies.
 
+# TODO
+- [ ] Direct Pixel Mask Tracking:
+ > Instead of reconstructing the mask from tracked points using polygons, track the movement of the entire pixel mask directly. Optical flow can be applied to the entire mask, propagating pixel-level changes across frames.
+- [ ] Refine the Mask Using Morphology:
+ > After the optical flow step, apply morphological operations to clean up the mask, ensuring it accurately reflects the fluid regions.
+- [ ] Adaptive Thresholding:
+ > Implement adaptive thresholding to refine the mask after optical flow, ensuring that any noise or small artifacts are removed.
+
+
 # Summary
 - **Quick Implementation**: Optical flow provides a fast and straightforward method for propagating annotations.
 - **Suitable for Proof of Concept**: Ideal for validating the feasibility of your approach before investing more resources.
