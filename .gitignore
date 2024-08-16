@@ -4,3 +4,5 @@ dot.env
 tracked_*/
 .DS_Store
 optical_flow/
+output/
+__pycache__/
