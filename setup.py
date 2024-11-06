@@ -1,6 +1,7 @@
 from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 import os
+import torch
 
 # Check for CUDA availability and set compiler arguments accordingly
 if not torch.cuda.is_available():
