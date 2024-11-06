@@ -9,12 +9,13 @@ from tqdm import tqdm
 import torch
 from opticalflowprocessor import OpticalFlowProcessor
 
+# Enables debug mode, which triggers additional logging and sampling behaviors during the script execution.
 DEBUG = True
+
 # Set the optical flow method to use
-# farneback, deepflow, dis
 FLOW_METHOD = ['farneback', 'deepflow', 'dis', 'raft'  ]
 
-load_dotenv('dot.env')
+load_dotenv('.env')
 
 ACCESS_TOKEN = os.getenv('MDAI_TOKEN')
 DATA_DIR = os.getenv('DATA_DIR')
@@ -28,6 +29,7 @@ LABEL_ID = os.getenv('LABEL_ID')
 MASK_MIN_SIZE = 100
 INTENSITY_THRESHOLD = 30
 
+# validates that the access token is right 
 if ACCESS_TOKEN is None:
     print("ACCESS_TOKEN is not set, please set ACCESS_TOKEN in dot.env")
     exit()
@@ -47,26 +49,26 @@ mdai_client = mdai.Client(domain=DOMAIN, access_token=ACCESS_TOKEN)
 # Download the dataset from MD.ai (or use cached version)
 project = mdai_client.project(project_id=PROJECT_ID, path=DATA_DIR)
 
-# Load the annotations
+# Load the annotations, convert from json --> pandas df 
 annotations_data = mdai.common_utils.json_to_dataframe(ANNOTATIONS)
 annotations_df = pd.DataFrame(annotations_data['annotations'])
 labels = annotations_df['labelId'].unique()
 
 # Create the label map, LABEL_ID => 1, others in labels => 0
 labels_dict = {LABEL_ID: 1}
-project.set_labels_dict(labels_dict)
+project.set_labels_dict(labels_dict) #applied the label dictory to this project 
 
 # Get the dataset
 dataset = project.get_dataset_by_id(DATASET_ID)
 dataset.classes_dict = project.classes_dict 
 
-# Ensure BASE is set after preparing the dataset
+# Ensure BASE is set after preparing the dataset, this is where or the videos or images are stored 
 BASE = dataset.images_dir
 
 # Filter annotations for the free fluid label
 free_fluid_annotations = annotations_df[annotations_df['labelId'] == LABEL_ID].copy()
 
-# Function to construct the video path
+# Function to construct the video path - how does this work exactly? 
 def construct_video_path(base_dir, study_uid, series_uid):
     return os.path.join(base_dir, study_uid, f"{series_uid}.mp4")
 
@@ -84,13 +86,16 @@ num_without_files = len(free_fluid_annotations) - num_with_files
 print(f"Annotations with corresponding video files: {num_with_files}")
 print(f"Annotations without corresponding video files: {num_without_files}")
 
-# # Select five random annotations with corresponding video files
-# if DEBUG:
-#     matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=5, random_state=42)
-# else:
-matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
+# If in debug mode, select five random annotations with corresponding video files (to speed up testing),
+# otherwise all samples with existing video files are selected. 
+if DEBUG:
+       matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=5, random_state=42)
+else:
+    matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
 
-# Display function
+# Display function --> converts polygons annotations into a binary mask. 
+# Pixels inside the polygon are set to 1. This is what will be used to track the fluid in the video frames.  
+
 def polygons_to_mask(polygons, height, width):
     mask = np.zeros((height, width), dtype=np.uint8)
     for polygon in polygons:
@@ -98,14 +103,14 @@ def polygons_to_mask(polygons, height, width):
         cv2.fillPoly(mask, [points], 1)
     return mask
 
-# Parameters for Lucas-Kanade optical flow
+# Parameters for Lucas-Kanade optical flow - what are these based on? 
 lk_params = dict(winSize=(15, 15), maxLevel=2, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
-# Parameters for ShiTomasi corner detection
+# Parameters for ShiTomasi corner detection - what are these based on? 
 feature_params = dict(maxCorners=100, qualityLevel=0.3, minDistance=7, blockSize=7)
 
 def trim_and_threshold_mask(frame, mask, intensity_threshold, min_size):
-    # Invert the frame so that dark areas (potential fluid) have high values
+    # Invert the frame so that dark areas (potential fluid) have high values - where did this 255 come from? 
     inverted_frame = 255 - frame
     # Create a binary mask based on the intensity threshold
     intensity_mask = inverted_frame > intensity_threshold
