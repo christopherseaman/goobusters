@@ -7,3 +7,4 @@ optical_flow/
 output/
 __pycache__/
 pyc.
+.env/
