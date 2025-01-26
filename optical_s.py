@@ -9,6 +9,11 @@ from tqdm import tqdm
 from opticalflowprocessor import OpticalFlowProcessor
 import json
 from pandas import json_normalize
+import traceback
+
+import sys
+sys.path.append('/Users/Shreya1/tools/SEA-RAFT')
+
 
 # Enable debug mode
 DEBUG = True
@@ -28,7 +33,8 @@ LABEL_IDS = {
     "multiple_distinct": os.getenv("LABEL_ID_MULTIPLE_DISTINCT"),
 }
 
-FLOW_METHOD = ['farneback', 'deepflow', 'dis']
+#FLOW_METHOD = ['farneback', 'deepflow', 'dis', 'raft', 'pwc-net', 'sea-raft']
+FLOW_METHOD = ['sea-raft']
 MASK_MIN_SIZE = 100
 INTENSITY_THRESHOLD = 30
 
@@ -181,37 +187,94 @@ def track_frames(cap, start_frame, end_frame, initial_mask, debug_dir, forward=T
     return frames
    
 def save_combined_video(video_path, output_video_path, initial_mask, frame_number, debug_dir, flow_processor):
-    mask_dir = os.path.join(os.path.dirname(output_video_path), "masks")
-    os.makedirs(mask_dir, exist_ok=True)
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    try:
+        mask_dir = os.path.join(os.path.dirname(output_video_path), "masks")
+        os.makedirs(mask_dir, exist_ok=True)
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"Error: Could not open video file {video_path}")
+            return
+            
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
 
-    with tqdm(total=total_frames, desc="Processing video", unit="frame") as pbar:
-        backward_frames = track_frames(cap, frame_number, 0, initial_mask, debug_dir, forward=False, pbar=pbar, flow_processor=flow_processor)
-        forward_frames = track_frames(cap, frame_number, total_frames - 1, initial_mask, debug_dir, forward=True, pbar=pbar, flow_processor=flow_processor)
+        # Create video writer for debug visualization (note the 3x width and 2x height for the grid)
+        debug_out = cv2.VideoWriter(
+            os.path.join(debug_dir, 'debug_visualization.mp4'),
+            cv2.VideoWriter_fourcc(*'mp4v'),
+            fps,
+            (frame_width * 3, frame_height * 2)  # 2x3 grid dimensions
+        )
 
-    combined_frames = backward_frames[::-1] + forward_frames[1:]
+        with tqdm(total=total_frames, desc="Processing video", unit="frame") as pbar:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, prev_frame = cap.read()
+            if not ret:
+                print(f"Failed to read frame {frame_number}")
+                return
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
+            prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+            mask = initial_mask.astype(float)
 
-    print("Writing video...")
-    for frame_idx, frame, mask in tqdm(combined_frames, desc="Saving frames", unit="frame"):
-        out.write(frame)
+            frame_count = 0
+            while ret:
+                frame_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
 
-        mask_filename = os.path.join(mask_dir, f"mask_{frame_idx:04d}.png")
-        cv2.imwrite(mask_filename, (mask * 255).astype(np.uint8))
+                # Debug: Print frame shapes before applying optical flow
+                print(f"[DEBUG] Processing frame {frame_count}: prev_gray.shape={prev_gray.shape}, frame_gray.shape={frame_gray.shape}")
 
-        # Create and save debug frame
-        debug_frame = debug_visualize(frame, initial_mask, mask, mask, mask, frame_idx)
-        cv2.imwrite(os.path.join(debug_dir, f'debug_frame_{frame_idx:04d}.png'), debug_frame)
+                
+                # Calculate optical flow
+                flow_mask = flow_processor.apply_optical_flow(prev_gray, frame_gray, mask)
 
-    cap.release()
-    out.release()
-    print(f"Video saved at {output_video_path}")
+                if flow_mask is None:
+                    print(f"[ERROR] Optical flow returned None at frame {frame_count}. Skipping frame.")
+                    break  # Stop processing since flow_mask is invalid
+
+                print(f"[DEBUG] Optical flow mask shape: {flow_mask.shape}")
+                
+                # Create the blended mask
+                adjusted_mask = flow_mask
+                blended_mask = (0.7 * mask + 0.3 * adjusted_mask).astype(float)
+                new_mask = np.clip(blended_mask, 0, 1)
+
+                # Create debug visualization using all components
+                debug_frame = debug_visualize(
+                    prev_frame,
+                    initial_mask,
+                    flow_mask,
+                    adjusted_mask,
+                    new_mask,
+                    frame_count
+                )
+
+                # Save debug frame as image and write to video
+                cv2.imwrite(os.path.join(debug_dir, f'debug_frame_{frame_count:04d}.png'), debug_frame)
+                debug_out.write(debug_frame)
+
+                # Save individual mask
+                cv2.imwrite(os.path.join(mask_dir, f'mask_{frame_count:04d}.png'), 
+                          (new_mask * 255).astype(np.uint8))
+
+                # Update for next iteration
+                prev_gray = frame_gray
+                mask = new_mask
+                ret, prev_frame = cap.read()
+                frame_count += 1
+                pbar.update(1)
+
+        cap.release()
+        debug_out.release()
+        print(f"Debug visualization saved at {os.path.join(debug_dir, 'debug_visualization.mp4')}")
+        
+    except Exception as e:
+        print(f"Error in save_combined_video: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 # Function to create detailed debug visualization
 def debug_visualize(frame, initial_mask, flow_mask, adjusted_mask, final_mask, frame_number):
