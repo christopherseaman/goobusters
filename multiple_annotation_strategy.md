@@ -54,12 +54,12 @@ Known error states:
                        a
 ```
 
-Prediction starts from annotation `a` and walks forward and backward with predicted frames `(a → $)` and `(a → ^)`
+Prediction starts from annotation `a` and walks forward and backward with predicted frames
 
-
+#### `(a → $)` and `(a → ^)`
 ```
 ^PPPPPPPPPPPPPPPPPPPPPPAPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP$
-      (a → ^)          ↑.            (a → $)
+      (a → ^)          ↑             (a → $)
                        a
 ```
 
@@ -76,28 +76,32 @@ Prediction starts from annotation `a` and walks forward and backward with predic
 
 In this case, the frames are predicted as:
 
-`(^,a)` = `(a → ^)`:
+#### `(^,a)` = `(a → ^)`
+Predict from a single annotation to the initial frame
 ```
 ^PPPPPPPPPPPA----------A---------------A-------------------$
             ↑          ↑               ↑
             a          b               c
 ```
 
-`(a,b)` = `(a → b) U (b → a)`:
+#### `(a,b)` = `(a → b) U (b → a)`
+Combine predictions from two annotated frames, walking towards each other
 ```
 ^-----------FPPPPPPPPPPF---------------F-------------------$
             ↑          ↑               ↑
             a          b               c
 ```
 
-`(b,c)` = `(b → c) U (c → b)`:
+#### `(b,c)` = `(b → c) U (c → b)`
+Combine predictions from two annotated frames, walking towards each other
 ```
 ^-----------A----------APPPPPPPPPPPPPPPA-------------------$
             ↑          ↑               ↑
             a          b               c
 ```
 
-`(c,$)` = `(c → $)`:
+#### `(c,$)` = `(c → $)`
+Predict from a single annotation to the final frame
 ```
 ^-----------F----------F---------------APPPPPPPPPPPPPPPPPPP$
             ↑          ↑               ↑
@@ -114,28 +118,33 @@ In this case, the frames are predicted as:
 
 
 In this case, the frames are predicted as:
-`(^,a)` = `C` # Clear of fluid (no fluid annotations between `^` and `a`):
+
+#### `(^,a)` = `C`
+Clear of fluid (no fluid annotations between `^` and `a`)
 ```
 ^CCCCCCCCCCCC----------A---------------A-------------------$
             ↑          ↑               ↑
             a          b               c
 ```
 
-`(a,b)` = `(b → a)` # No fluid to track from `a` going forward:
+#### `(a,b)` = `(b → a)`
+Track only from `b` walking towards `a` because `a` has no fluid to track going forward
 ```
 ^-----------CPPPPPPPPPPA---------------A-------------------$
             ↑          ↑               ↑
             a          b               c
 ```
 
-`(b,c)` = `(b → c) U (c → b)`:
+#### `(b,c)` = `(b → c) U (c → b)`
+Track as usual between annotations
 ```
 ^-----------C----------APPPPPPPPPPPPPPPA-------------------$
             ↑          ↑               ↑
             a          b               c
 ```
 
-`(c,$)` = `(c → $)`:
+#### `(c,$)` = `(c → $)`
+Track as usual from a single annotation
 ```
 ^-----------C----------A---------------APPPPPPPPPPPPPPPPPPP$
             ↑          ↑               ↑
