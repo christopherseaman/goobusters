@@ -1,5 +1,11 @@
 # Multiple Annotation Strategy
 
+Note:
+- Only need clear `C` and (complete) fluid `F` annotations
+- If no annotations between `C` and end of scan, then nothing to track
+- Need to combine two sets of predictions between `F` annotations
+- Only one set of predictions between `F` and `C` annotations based on the fluid in `F`
+
 ## North Star
 
 We create a model capable of filling in predicted frames from a sparsely annotated scan.
@@ -43,6 +49,7 @@ Prediction starts from annotation `a` and walks forward and backward with predic
 ```
 
 ## Multiple Annotation - MVP
+
 
 ### All Fluid Annotations
 
