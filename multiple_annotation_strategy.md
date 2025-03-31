@@ -54,12 +54,12 @@ Known error states:
                        a
 ```
 
-Prediction starts from annotation `a` and walks forward and backward with predicted frames `p(a, $)` and `p(a, ^)`
+Prediction starts from annotation `a` and walks forward and backward with predicted frames `(a → $)` and `(a → ^)`
 
 
 ```
 ^PPPPPPPPPPPPPPPPPPPPPPAPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP$
-                       ↑
+      (a → ^)          ↑.            (a → $)
                        a
 ```
 
