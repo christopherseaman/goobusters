@@ -1,7 +1,16 @@
 # Multiple Annotation Strategy
 
-Note:
-- Only need clear `C` and (complete) fluid `F` annotations
+**In-practice, while creating densely-annotated dataset:**
+
+1. Model predicts from current annotations set
+2. Predictions pushed to MD.ai
+  A. Replacing previous predictions or at least able to retrieve only latest predictions
+  B. Predicted frames clearly differentiable from human-validated ones
+4. Correction annotations added by subject matter expert
+5. Go to 1.
+
+**Note:**
+- Only need clear-of-fluid `C` and fluid `F` annotations, fluid annotations must be complete (all fluid masked)
 - If no annotations between `C` and end of scan, then nothing to track
 - Need to combine two sets of predictions between `F` annotations
 - Only one set of predictions between `F` and `C` annotations based on the fluid in `F`
@@ -13,8 +22,14 @@ We create a model capable of filling in predicted frames from a sparsely annotat
 Goal state:
 - There is at least one annotation for each temporally/spatially contiguous pocket of free fluid
 - There may be additional annotations for a given pocket or for frames clear of free fluid
-- The model is able to identify situations where free fluid moves out of view and clear that portion of the mask
-- Frames between two annotations are informed by predictions from both 
+- The model is able to identify situations where free fluid moves out of view and clears that portion of the mask
+- The model is able to track across apparent "splits" and "joins" of free fluid pockets
+- Frames between two fluid annotations are informed by predictions from both
+  - There _may_ be annotations for frames clear of fluid
+  - Frames between fluid and clear annotations are only informed by the fluid annotation (no fluid to track from clear frame)
+  - If no fluid annotated between clear and first/final frame, then those frames are also clear (no fluid to track from clear frame)
+- Combining two predictions from two fluid annotations for the same predicted frame should be cheap and simple: e.g., union, weighted sum or average
+  - Note: This relies of the predictions to be of high quality
 
 Known error states:
 - Incomplete input annotations are assumed correct and will not be altered if incomplete
