@@ -16,5 +16,6 @@ Script Configuration
 
 Add command-line options to specify the label ID: 
 
-'python script.py --upload --label-id L_abc123'
-
+```bash
+   python script.py --upload --label-id L_abc123
+```
