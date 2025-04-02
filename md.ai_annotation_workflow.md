@@ -8,13 +8,13 @@ Need a clean way to handle this limitation
 
 ## Proposed Workflow
 
-Before Running the Script
+-->Before Running the Script
 
 Create a new label in the MD.ai interface (e.g., "Fluid-OF-20250402")
 Note the generated label ID (e.g., "L_abc123")
 Optionally create a new label group if organizing by batch
 
-Script Configuration
+-->Script Configuration
 
 Add command-line options to specify the label ID: 
 
@@ -22,22 +22,21 @@ Add command-line options to specify the label ID:
    python script.py --upload --label-id L_abc123
 ```
 
-Running the Script
+-->Running the Script
 
 When --upload flag is present, annotations will be uploaded to MD.ai
 Each mask will be uploaded with the specified label ID
 All masks for the current run will use the same label ID
 
-Managing Annotations
+-->Managing Annotations
 
 Each script run uses a different label ID (manually created beforehand)
 Old annotations can be removed by deleting the entire label in MD.ai
 This approach keeps annotations organized by processing batch
 
-Future Improvements
+-->Future Improvements
 
 The script will include documentation explaining this workflow
 The script will warn users when uploading and remind them of this process
 Each output run will include metadata about which label ID was used
 
-Does this workflow align with your recommendation for handling annotations since the MD.ai API doesn't support deletion?
