@@ -417,7 +417,7 @@ class MultiFrameTracker:
         
         try:
             # Call your existing track_frames function
-            from optical_multi_frame import track_frames
+            from multi_frame_tracking.utils import track_frames
             frames = track_frames(
                 cap=cap,
                 start_frame=start_frame,
@@ -459,7 +459,7 @@ class MultiFrameTracker:
         Returns:
             Combined mask
         """
-        # Calculate weights based on distance
+        # Calculate weights based on the distance
         total_distance = frame2_idx - frame1_idx
         if total_distance == 0:
             weight1 = 0.5
@@ -471,10 +471,10 @@ class MultiFrameTracker:
         binary1 = (mask1 > 0.5).astype(np.float32)
         binary2 = (mask2 > 0.5).astype(np.float32)
         
-        # Step 1: Apply union operation (logical OR)
+        # Step 1: Applying union operation (logical OR)
         union_mask = np.logical_or(binary1, binary2).astype(np.float32)
         
-        # Step 2: Apply weighted average to areas where both masks have fluid
+        # Step 2: Applying weighted average to areas where both masks have fluid
         intersection = np.logical_and(binary1, binary2).astype(np.float32)
         weighted_avg = (weight1 * mask1) + (weight2 * mask2)
         
@@ -705,7 +705,7 @@ def process_video_with_multi_frame_tracking(video_path, annotations_df, study_ui
             
             try:
                 # Delete existing machine annotations first
-                from optical_multi_frame import delete_existing_annotations
+                from src.optical_multi_frame import delete_existing_annotations
                 deleted_count = delete_existing_annotations(
                     client=mdai_client,
                     study_uid=study_uid,
