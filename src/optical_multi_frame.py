@@ -1,32 +1,54 @@
 # Import libraries and set constants
-from dotenv import load_dotenv
-import os
-import mdai
-
-import cv2
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
-from multi_frame_tracking.opticalflowprocessor import OpticalFlowProcessor
-import json
-from pandas import json_normalize
-from datetime import datetime
-import traceback
-import shutil
-from pathlib import Path
-import urllib.parse
-import logging
+# === Imports ===
 import sys
+import os
+import logging
+import json
+import shutil
+import traceback
+from pathlib import Path
+from datetime import datetime
+from dotenv import load_dotenv
+import mdai
+import cv2
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from pandas import json_normalize
+from multi_frame_tracking.opticalflowprocessor import OpticalFlowProcessor
 from optical_mdai_import import save_combined_video
 
 
+sys.setrecursionlimit(10000)
+
+
 try:
+    # Print Python path for debugging
+    print("Python path:", sys.path)
+    
+    # First import just the module to debug any issues
+    import multi_frame_tracking
+    print("Successfully imported multi_frame_tracking module")
+    
+    # Then try to import the specific classes
     from multi_frame_tracking.multi_frame_tracker import MultiFrameTracker, process_video_with_multi_frame_tracking
+    print("Successfully imported MultiFrameTracker and process_video_with_multi_frame_tracking")
+    
     MULTI_FRAME_AVAILABLE = True
     print("Multi-frame tracking module loaded successfully.")
-except ImportError:
+except ImportError as e:
+    print(f"Import error: {e}")
+    import traceback
+    traceback.print_exc()
     MULTI_FRAME_AVAILABLE = False
     print("WARNING: Multi-frame tracking module not found. Only single-frame tracking will be available.")
+except RecursionError as e:
+    print(f"Recursion error: {e}")
+    import traceback
+    traceback.print_exc()
+    MULTI_FRAME_AVAILABLE = False
+    print("WARNING: RecursionError in multi-frame tracking module. Only single-frame tracking will be available.")
+
 
 # Enable debug mode
 DEBUG_MODE = True
@@ -34,7 +56,7 @@ DEBUG_SAMPLE_SIZE = 2
 DEBUG_ISSUE_TYPES = ["multiple_distinct"]
 
 # Set tracking mode: 'single', 'multi', or 'both'
-TRACKING_MODE = 'both'  # this can be changed to switch between tracking modes
+TRACKING_MODE = 'multi'  # this can be changed to switch between tracking modesa
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(PROJECT_DIR, "output")
@@ -73,7 +95,6 @@ def setup_logging(output_dir):
     console_handler.setFormatter(console_formatter)
     root_logger.addHandler(console_handler)
     
-    
     class PrintToLogger:
         def write(self, message):
             if message.strip():  # Only log non-empty messages
@@ -82,8 +103,8 @@ def setup_logging(output_dir):
             pass
     
     # Redirect stdout and stderr
-    sys.stdout = PrintToLogger()
-    sys.stderr = PrintToLogger()
+    #sys.stdout = PrintToLogger()
+    #sys.stderr = PrintToLogger()
     
     logging.info(f"Logging started, output to: {log_file}")
     return log_file
@@ -512,8 +533,8 @@ def track_frames(cap, start_frame, end_frame, initial_mask, debug_dir, forward=T
         List of tuples (frame_idx, frame, mask, flow, flow_mask, adjusted_mask)
     """
     # Define target frames for detailed analysis
-    TARGET_FRAMES = [137, 138, 139]  # Add specific frame numbers you want to analyse
-    VERBOSE_DEBUGGING = True  # Set to True for verbose output on all frames
+    TARGET_FRAMES = [102, 103, 104, 105, 106, 107]  # Add specific frame numbers you want to analyse
+    VERBOSE_DEBUGGING = True 
     
     frames = []
     step = 1 if forward else -1
@@ -1207,14 +1228,28 @@ def process_videos_with_tracking():
             video_path = row['video_path']
             study_uid = row['StudyInstanceUID']
             series_uid = row['SeriesInstanceUID']
-            frame_number = int(row['frameNumber'])
             
-            print(f"\nProcessing video {videos_processed + 1}/{len(type_annotations)}")
-            print(f"Video: {video_path}")
-            print(f"Frame number: {frame_number}")
+            # Find the annotation for frame 102
+            frame_102_annotation = free_fluid_annotations[
+                (free_fluid_annotations['StudyInstanceUID'] == study_uid) &
+                (free_fluid_annotations['SeriesInstanceUID'] == series_uid) &
+                (free_fluid_annotations['frameNumber'] == 102)
+            ]
             
-            # Get free fluid polygons
-            free_fluid_polygons = row['free_fluid_foreground']
+            if len(frame_102_annotation) > 0:
+                # Use this annotation
+                row = frame_102_annotation.iloc[0]
+                frame_number = 102
+                
+                # Get free fluid polygons from this specific annotation
+                free_fluid_polygons = row['free_fluid_foreground']
+                
+                print(f"\nProcessing video {videos_processed + 1}/{len(type_annotations)}")
+                print(f"Video: {video_path}")
+                print(f"Frame number: {frame_number}")
+            else:
+                print("No annotation found for frame 102, skipping this video")
+                continue
             
             # Continue only if we have valid polygons
             if not isinstance(free_fluid_polygons, list) or len(free_fluid_polygons) == 0:
@@ -1335,7 +1370,9 @@ def process_videos_with_tracking():
                 
                 if TRACKING_MODE in ['multi', 'both'] and MULTI_FRAME_AVAILABLE:
                     # Multi-frame tracking
-                    print("\nPerforming multi-frame tracking...")
+                    print("\n===== ATTEMPTING TO USE MULTI-FRAME TRACKING =====")
+                    print(f"TRACKING_MODE: {TRACKING_MODE}")
+                    print(f"MULTI_FRAME_AVAILABLE: {MULTI_FRAME_AVAILABLE}")
                     multi_frame_output_dir = os.path.join(MULTI_FRAME_DIR, f"{study_uid}_{series_uid}")
                     os.makedirs(multi_frame_output_dir, exist_ok=True)
                     if not os.path.exists(multi_frame_output_dir):
@@ -1366,7 +1403,8 @@ def process_videos_with_tracking():
                             label_id_machine=LABEL_ID_MACHINE_GROUP,
                             project_id=PROJECT_ID,
                             dataset_id=DATASET_ID,
-                            upload_to_mdai=False  
+                            upload_to_mdai=False,
+                            debug_mode=True  
                         )
                         
                         # Store multi-frame results

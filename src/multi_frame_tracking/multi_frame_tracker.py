@@ -7,6 +7,9 @@ from datetime import datetime
 import logging
 import json
 import traceback
+from multi_frame_tracking.utils import track_frames
+from optical_mdai_import import delete_existing_annotations
+
 
 class MultiFrameTracker:
     """
@@ -18,7 +21,7 @@ class MultiFrameTracker:
     - Beginning and end of video handling
     """
     
-    def __init__(self, flow_processor, output_dir, debug_mode=False):
+    def __init__(self, flow_processor, output_dir, debug_mode=True):
         """
         Initialise the multi-frame tracker.
         
@@ -29,18 +32,25 @@ class MultiFrameTracker:
         """
         self.flow_processor = flow_processor
         self.output_dir = output_dir
-        self.debug_mode = debug_mode
+        self.debug_mode = True  # Always enable debug mode
         
-        #output directories
+        # Output directories
         os.makedirs(output_dir, exist_ok=True)
         self.debug_dir = os.path.join(output_dir, 'debug')
         os.makedirs(self.debug_dir, exist_ok=True)
         
+        # Test debug file creation
+        try:
+            test_file = os.path.join(self.debug_dir, "debug_test.txt")
+            with open(test_file, "w") as f:
+                f.write(f"Debug test at {datetime.now()}")
+            print(f"Successfully created test file at {test_file}")
+        except Exception as e:
+            print(f"ERROR creating debug test file: {str(e)}")
       
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         
-    
         log_file = os.path.join(output_dir, f'multi_frame_tracker_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.DEBUG)
@@ -51,6 +61,8 @@ class MultiFrameTracker:
         self.logger.addHandler(file_handler)
         
         self.logger.info("Initialized MultiFrameTracker")
+        print(f"Debug mode is {'enabled' if self.debug_mode else 'disabled'}")
+        print(f"Debug directory: {self.debug_dir}")
     
     def process_annotations(self, annotations_df, video_path, study_uid, series_uid):
         """
@@ -261,6 +273,18 @@ class MultiFrameTracker:
         # Case 1: Fluid to Fluid - track in both directions and combine
         if current['type'] == 'fluid' and next_annotation['type'] == 'fluid':
             self.logger.info(f"Tracking between fluid frames {start_frame} and {end_frame}")
+
+            # Log the original masks
+            self.logger.info(f"Current mask (frame {start_frame}): sum={np.sum(current['mask'])}")
+            self.logger.info(f"Next mask (frame {end_frame}): sum={np.sum(next_annotation['mask'])}")
+    
+    # Save the original masks for visual inspection
+            debug_dir = os.path.join(self.debug_dir, "fluid_to_fluid_debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(debug_dir, f"original_mask_{start_frame}.png"), 
+               (current['mask'] * 255).astype(np.uint8))
+            cv2.imwrite(os.path.join(debug_dir, f"original_mask_{end_frame}.png"), 
+               (next_annotation['mask'] * 255).astype(np.uint8))
             
             # Track forward from current
             forward_masks = self._track_between_frames(
@@ -280,6 +304,18 @@ class MultiFrameTracker:
                 forward=False
             )
             
+            self.logger.info(f"Forward tracking results: {len(forward_masks)} frames")
+            self.logger.info(f"Backward tracking results: {len(backward_masks)} frames")
+        
+        # Save some sample tracked masks
+            for frame_idx in range(start_frame + 1, end_frame, max(1, (end_frame - start_frame) // 5)):
+                if frame_idx in forward_masks:
+                   cv2.imwrite(os.path.join(debug_dir, f"forward_{frame_idx}.png"), 
+                           (forward_masks[frame_idx] * 255).astype(np.uint8))
+                if frame_idx in backward_masks:
+                   cv2.imwrite(os.path.join(debug_dir, f"backward_{frame_idx}.png"), 
+                           (backward_masks[frame_idx] * 255).astype(np.uint8))
+        
             # Combine masks
             for frame_idx in range(start_frame + 1, end_frame):
                 if frame_idx in forward_masks and frame_idx in backward_masks and frame_idx not in clear_frames:
@@ -348,6 +384,9 @@ class MultiFrameTracker:
                     'type': 'predicted_clear',
                     'source': f"between_clear_{start_frame}_and_{end_frame}"
                 }
+
+                
+
     
     def _process_end_segment(self, last_annotation, clear_frames, all_masks, video_path, total_frames):
         """
@@ -410,14 +449,34 @@ class MultiFrameTracker:
         # Open video capture
         cap = cv2.VideoCapture(video_path)
         
-        # Create debug directory
+        # Create debug directory with more explicit debug info
         debug_dir = os.path.join(self.debug_dir, f"track_{start_frame}_to_{end_frame}")
+        print(f"\nStarting tracking between frames {start_frame} and {end_frame}, direction: {'forward' if forward else 'backward'}")
+        print(f"Debug directory: {debug_dir}")
+        
+        # Make sure debug directory exists
         if self.debug_mode:
             os.makedirs(debug_dir, exist_ok=True)
+            print(f"Created debug directory at: {debug_dir}")
+            
+            # Write test image to debug dir
+            try:
+                test_image_path = os.path.join(debug_dir, "test_mask.png")
+                cv2.imwrite(test_image_path, (start_mask * 255).astype(np.uint8))
+                print(f"Successfully saved test mask to: {test_image_path}")
+            except Exception as e:
+                print(f"Error saving test mask: {str(e)}")
         
         try:
-            # Call your existing track_frames function
-            from multi_frame_tracking.utils import track_frames
+            # Print debug info before calling track_frames
+            print(f"\nCalling track_frames:")
+            print(f"  start_frame: {start_frame}")
+            print(f"  end_frame: {end_frame}") 
+            print(f"  debug_dir: {debug_dir if self.debug_mode else None}")
+            print(f"  forward: {forward}")
+            
+            
+            
             frames = track_frames(
                 cap=cap,
                 start_frame=start_frame,
@@ -429,13 +488,17 @@ class MultiFrameTracker:
                 flow_processor=self.flow_processor
             )
             
+            # Add more debug after track_frames call
+            print(f"Track_frames returned {len(frames)} frames")
+            
             # Convert list of tuples to dictionary
             result = {}
             for frame_data in frames:
-                if len(frame_data) >= 3:
+                if len(frame_data) >= 3:  # Frame data should have at least 3 elements
                     frame_idx, _, mask = frame_data[0], frame_data[1], frame_data[2]
                     result[frame_idx] = mask
             
+            print(f"Processed {len(result)} frames from {start_frame} to {end_frame}")
             return result
             
         except Exception as e:
@@ -447,7 +510,7 @@ class MultiFrameTracker:
     
     def _combine_masks(self, mask1, mask2, frame_idx, frame1_idx, frame2_idx):
         """
-        Combine two masks using weighted average and union strategies.
+        Combine two masks using weighted average and union strategies with improved validation.
         
         Args:
             mask1: First mask
@@ -459,17 +522,64 @@ class MultiFrameTracker:
         Returns:
             Combined mask
         """
-        # Calculate weights based on the distance
-        total_distance = frame2_idx - frame1_idx
-        if total_distance == 0:
-            weight1 = 0.5
+
+        self.logger.info(f"Combining masks for frame {frame_idx}, between frames {frame1_idx} and {frame2_idx}")
+        self.logger.info(f"Mask1 sum: {np.sum(mask1)}, Mask2 sum: {np.sum(mask2)}")
+        # Validate inputs
+        if mask1 is None or mask2 is None:
+            self.logger.warning(f"Null mask received in _combine_masks for frame {frame_idx}")
+            return mask1 if mask1 is not None else (mask2 if mask2 is not None else np.zeros_like(mask1))
+        
+        if mask1.shape != mask2.shape:
+            self.logger.error(f"Mask shape mismatch in _combine_masks: {mask1.shape} vs {mask2.shape}")
+            # Resize mask2 to match mask1 or return the valid mask
+            return mask1
+        
+        # Validate frame indices
+        if frame2_idx <= frame1_idx:
+            self.logger.warning(f"Invalid frame indices: {frame1_idx} to {frame2_idx}")
+            total_distance = 1  # Prevent division by zero
         else:
+            total_distance = frame2_idx - frame1_idx
+        
+        # Validate current frame is between the others
+        if frame_idx < frame1_idx or frame_idx > frame2_idx:
+            self.logger.warning(f"Current frame {frame_idx} outside range [{frame1_idx}, {frame2_idx}]")
+            # Set appropriate weight based on which boundary it's closest to
+            weight1 = 1.0 if frame_idx <= frame1_idx else 0.0
+        else:
+            # Calculate weights based on the distance (with boundary check)
             weight1 = 1.0 - ((frame_idx - frame1_idx) / total_distance)
+        
+        weight1 = max(0.0, min(1.0, weight1))  # Clamp weight between 0 and 1
         weight2 = 1.0 - weight1
         
-        # Convert to binary first for union operation
+        # Log weight information for debugging
+        self.logger.info(f"Frame {frame_idx}: Combining masks with weights {weight1:.2f} and {weight2:.2f}")
+        
+        # Check for empty masks
+        mask1_empty = np.sum(mask1) < 1.0
+        mask2_empty = np.sum(mask2) < 1.0
+        
+        if mask1_empty and mask2_empty:
+            self.logger.warning(f"Both masks are empty for frame {frame_idx}")
+            return np.zeros_like(mask1)
+        elif mask1_empty:
+            self.logger.info(f"First mask is empty, using second mask with weight {weight2:.2f}")
+            return mask2 * weight2
+        elif mask2_empty:
+            self.logger.info(f"Second mask is empty, using first mask with weight {weight1:.2f}")
+            return mask1 * weight1
+        
+        # Convert to binary for union operation
         binary1 = (mask1 > 0.5).astype(np.float32)
         binary2 = (mask2 > 0.5).astype(np.float32)
+        
+        # Calculate metrics for debugging
+        intersection_count = np.sum(np.logical_and(binary1, binary2))
+        union_count = np.sum(np.logical_or(binary1, binary2))
+        iou = intersection_count / union_count if union_count > 0 else 0
+        self.logger.info(f"Frame {frame_idx}: Masks IoU = {iou:.4f}")
         
         # Step 1: Applying union operation (logical OR)
         union_mask = np.logical_or(binary1, binary2).astype(np.float32)
@@ -481,7 +591,18 @@ class MultiFrameTracker:
         # Combine: use weighted average in intersection areas, use union elsewhere
         final_mask = intersection * weighted_avg + (union_mask - intersection)
         
-     
+        # Ensure mask values are valid (no NaN or infinity)
+        if np.isnan(final_mask).any() or np.isinf(final_mask).any():
+            self.logger.error(f"Invalid values in combined mask for frame {frame_idx}")
+            # Replace invalid values with zeros
+            final_mask = np.nan_to_num(final_mask, nan=0.0, posinf=1.0, neginf=0.0)
+        
+        # Ensure mask stays within valid range
+        final_mask = np.clip(final_mask, 0.0, 1.0)
+
+        self.logger.info(f"Combined mask sum: {np.sum(final_mask)}")
+        
+        # Save visualization if in debug mode
         if self.debug_mode:
             debug_img = np.zeros((mask1.shape[0], mask1.shape[1] * 3), dtype=np.uint8)
             debug_img[:, :mask1.shape[1]] = (binary1 * 255).astype(np.uint8)
@@ -523,6 +644,7 @@ class MultiFrameTracker:
             annotations: List of original annotations
         """
         output_path = os.path.join(self.output_dir, "multi_frame_tracking.mp4")
+        print(f"Creating visualization video: {output_path}")
         
         # Open video
         cap = cv2.VideoCapture(video_path)
@@ -535,20 +657,24 @@ class MultiFrameTracker:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         
-        # Create a colour map for different annotation types
+        # Create a color map for different annotation types (BGR format in OpenCV)
         colour_map = {
-            'fluid': (0, 255, 0),  # Green for human fluid annotations
+            'fluid': (0, 255, 0),  # Green for human annotations
             'clear': None,         # No color for clear frames
-            'predicted_fluid': (255, 0, 0),  # Blue for predicted fluid
-            'predicted_fluid_combined': (255, 165, 0),  # Orange for combined predictions
+            'predicted_fluid': (0, 0, 255),  # Red for predicted fluid (BGR!)
+            'predicted_fluid_combined': (0, 165, 255),  # Orange for combined predictions
             'predicted_clear': None  # No color for predicted clear
         }
+        
+        print(f"Processing {frame_count} frames with {len(all_masks)} masks")
+        frames_with_masks = 0
         
         # Process each frame
         for frame_idx in range(frame_count):
             # Read frame
             ret, frame = cap.read()
             if not ret:
+                print(f"Failed to read frame {frame_idx}")
                 break
             
             # Check if we have a mask for this frame
@@ -556,8 +682,9 @@ class MultiFrameTracker:
                 mask_info = all_masks[frame_idx]
                 mask = mask_info['mask']
                 mask_type = mask_info['type']
+                frames_with_masks += 1
                 
-                # Apply overlay
+                # Apply overlay with improved visibility
                 overlay_color = colour_map.get(mask_type)
                 if overlay_color and np.sum(mask) > 0:
                     # Create binary mask
@@ -565,28 +692,40 @@ class MultiFrameTracker:
                     
                     # Create overlay
                     overlay = frame.copy()
-                    overlay[binary_mask > 0] = overlay_color
+                    overlay[binary_mask > 0] = overlay_color  # Full color on mask areas
                     
-                    # Blend with original
-                    alpha = 0.3
+                    # Blend with original - adjust alpha for better visibility
+                    alpha = 0.5  # Higher value = more visible overlay
                     frame = cv2.addWeighted(overlay, alpha, frame, 1-alpha, 0)
+                    
+                    # Add mask contour for better definition
+                    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(frame, contours, -1, overlay_color, 2)  # Line thickness = 2
                 
-                # Add text
+                # Add text info
                 cv2.putText(frame, f"Frame: {frame_idx}", (10, 30), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 
                 cv2.putText(frame, f"Type: {mask_type}", (10, 60), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                
+                coverage = np.mean(mask) * 100
+                cv2.putText(frame, f"Coverage: {coverage:.1f}%", (10, 90),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
             
-            # Write frame
+            # Write frame to video
             out.write(frame)
+            
+            # Periodically report progress
+            if frame_idx % 50 == 0 or frame_idx == frame_count - 1:
+                print(f"Processed frame {frame_idx}/{frame_count}")
         
         # Release resources
         cap.release()
         out.release()
         
+        print(f"Visualization completed: {frames_with_masks} frames with masks out of {frame_count} total frames")
         self.logger.info(f"Visualization saved to {output_path}")
-
 
 # Function to prepare annotations for MD.ai upload
 def prepare_mdai_annotations(all_masks, study_uid, series_uid, label_id_fluid, label_id_machine):
@@ -663,11 +802,12 @@ def prepare_mdai_annotations(all_masks, study_uid, series_uid, label_id_fluid, l
 
 
 #main processing function 
+
 def process_video_with_multi_frame_tracking(video_path, annotations_df, study_uid, series_uid, 
                                          flow_processor, output_dir, mdai_client=None,
                                          label_id_fluid=None, label_id_machine=None,
                                          project_id=None, dataset_id=None,  
-                                         upload_to_mdai=False):
+                                         upload_to_mdai=False,debug_mode=False):
     """
     Process a video using multi-frame tracking and optionally upload to MD.ai.
     
@@ -689,7 +829,7 @@ def process_video_with_multi_frame_tracking(video_path, annotations_df, study_ui
         Dictionary with results
     """
     # Initialise multi-frame tracker
-    tracker = MultiFrameTracker(flow_processor, output_dir)
+    tracker = MultiFrameTracker(flow_processor, output_dir, debug_mode=debug_mode)
     
     # Process annotations
     all_masks = tracker.process_annotations(annotations_df, video_path, study_uid, series_uid)
@@ -705,7 +845,7 @@ def process_video_with_multi_frame_tracking(video_path, annotations_df, study_ui
             
             try:
                 # Delete existing machine annotations first
-                from src.optical_multi_frame import delete_existing_annotations
+                
                 deleted_count = delete_existing_annotations(
                     client=mdai_client,
                     study_uid=study_uid,
@@ -743,3 +883,9 @@ def process_video_with_multi_frame_tracking(video_path, annotations_df, study_ui
         'annotation_types': annotation_types,
         'output_video': os.path.join(output_dir, "multi_frame_tracking.mp4")
     }
+
+#testing 
+def test_function():
+    """Simple test function to verify imports work correctly"""
+    print("Test function executed successfully")
+    return "Success"

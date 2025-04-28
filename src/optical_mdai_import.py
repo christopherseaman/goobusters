@@ -7,7 +7,7 @@ import cv2
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-from opticalflowprocessor import OpticalFlowProcessor
+from multi_frame_tracking.opticalflowprocessor import OpticalFlowProcessor
 import json
 from pandas import json_normalize
 from datetime import datetime
@@ -35,6 +35,10 @@ def setup_logging(output_dir):
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
+
+    # Clear existing handlers to prevent duplicate logs
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
     
     # File handler
     file_handler = logging.FileHandler(log_file, mode='w')
@@ -78,7 +82,7 @@ DATA_DIR = os.getenv('DATA_DIR')
 DOMAIN = os.getenv('DOMAIN')
 PROJECT_ID = os.getenv('PROJECT_ID')
 DATASET_ID = os.getenv('DATASET_ID')
-ANNOTATIONS = os.path.join(DATA_DIR, os.getenv('ANNOTATIONS'))
+ANNOTATIONS = "/Users/Shreya1/Documents/GitHub/goobusters/data/mdai_ucsf_project_x9N2LJBZ_annotations_2025-04-01-035131.json"
 LABEL_ID_FREE_FLUID = os.getenv("LABEL_ID_FREE_FLUID")
 LABEL_IDS = {
     "disappear_reappear": os.getenv("LABEL_ID_DISAPPEAR_REAPPEAR"),
@@ -138,6 +142,15 @@ free_fluid_annotations['file_exists'] = free_fluid_annotations['video_path'].app
 free_fluid_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
 # Rename 'data_foreground' in free_fluid_annotations to avoid conflicts
 free_fluid_annotations.rename(columns={'data_foreground': 'free_fluid_foreground'}, inplace=True)
+
+working_videos = free_fluid_annotations[free_fluid_annotations['file_exists']]
+if not working_videos.empty:
+    sample_video = working_videos.iloc[0]
+    print(f"\nWORKING VIDEO PATH FOUND:")
+    print(f"Path: {sample_video['video_path']}")
+    print(f"Study UID: {sample_video['StudyInstanceUID']}")
+    print(f"Series UID: {sample_video['SeriesInstanceUID']}")
+    print(f"Frame Number: {sample_video['frameNumber']}")
 
 
 print(f"Total Free Fluid Annotations: {len(free_fluid_annotations)}")
@@ -211,7 +224,7 @@ def track_frames(cap, start_frame, end_frame, initial_mask, debug_dir, forward=T
         List of tuples (frame_idx, frame, mask, flow, flow_mask, adjusted_mask)  # Modified return tuple
     """
     # Define target frames for detailed analysis
-    TARGET_FRAMES = [137, 138, 139]  # Add specific frame numbers you want to analyze
+    TARGET_FRAMES = [102,103,104,105,106]  # Add specific frame numbers you want to analyze
     VERBOSE_DEBUGGING = True  # Set to True for verbose output on all frames
     
     frames = []
@@ -903,7 +916,61 @@ def verify_uploads(client, responses):
         return False
     
 
+def visualize_flow(frame, flow, skip=8):
+    """
+    Visualize optical flow for debugging
     
+    Args:
+        frame: Input frame
+        flow: Flow field (x and y displacements)
+        skip: Spacing between displayed vectors
+        
+    Returns:
+        Visualization image
+    """
+    h, w = frame.shape[:2]
+    
+    # Create empty visualization image
+    vis = np.zeros((h * 2, w, 3), dtype=np.uint8)
+    
+    # Copy original frame to top half
+    if len(frame.shape) == 2:  # Convert grayscale to color if needed
+        vis[:h, :] = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    else:
+        vis[:h, :] = frame.copy()
+    
+    # Create flow visualization
+    # Calculate flow magnitude and angle
+    flow_x = flow[..., 0]
+    flow_y = flow[..., 1]
+    magnitude, angle = cv2.cartToPolar(flow_x, flow_y)
+    
+    # Create HSV image for flow visualization
+    hsv = np.zeros((h, w, 3), dtype=np.uint8)
+    hsv[..., 0] = angle * 180 / np.pi / 2  # Hue: direction
+    hsv[..., 1] = 255                       # Saturation: max
+    hsv[..., 2] = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)  # Value: magnitude
+    
+    # Convert HSV to BGR
+    flow_vis = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    
+    # Copy flow visualization to bottom half
+    vis[h:, :] = flow_vis
+    
+    # Draw flow vectors on top half
+    for y in range(0, h, skip):
+        for x in range(0, w, skip):
+            fx, fy = flow[y, x]
+            
+            # Only draw significant flow
+            if np.sqrt(fx*fx + fy*fy) > 1:
+                cv2.arrowedLine(vis[:h], (x, y), (int(x+fx), int(y+fy)), (0, 255, 0), 1, tipLength=0.3)
+    
+    # Add labels
+    cv2.putText(vis, "Original frame", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+    cv2.putText(vis, "Flow visualization", (10, h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+    
+    return vis
 
 
 def save_combined_video(video_path, output_video_path, initial_mask, frame_number, debug_dir, flow_processor, 
@@ -911,7 +978,7 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
                        overlay_color=(0, 255, 0),
                        overlay_alpha=0.3,
                        add_info=True,
-                       upload_to_mdai=True,  # Default to True, can be overridden
+                       upload_to_mdai=False,
                        batch_size=50):
     """
     Process video frames, save with mask overlay, and upload masks to MD.ai
@@ -957,11 +1024,25 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
         print(f"Total frames to process: {total_frames}")
         print(f"Frame number to start from: {frame_number}")
         print(f"FPS setting: {fps}")
+
+        print(f"\nCalling track_frames:")
+        print(f"  start_frame: {frame_number}")  # Use frame_number instead of start_frame
+        print(f"  end_frame: {0}")  # For backward tracking, end frame is 0
+        print(f"  debug_dir: {debug_dir}")
+        print(f"  forward: False")  # For backward tracking, forward is False
         
         # Process frames
         with tqdm(total=total_frames, desc="Processing video", unit="frame") as pbar:
             backward_frames = track_frames(cap, frame_number, 0, initial_mask, debug_dir, 
                                         forward=False, pbar=pbar, flow_processor=flow_processor)
+            
+            # Add debug prints before forward tracking
+            print(f"\nCalling track_frames:")
+            print(f"  start_frame: {frame_number}")  
+            print(f"  end_frame: {total_frames - 1}")  
+            print(f"  debug_dir: {debug_dir}")
+            print(f"  forward: True")  
+
             forward_frames = track_frames(cap, frame_number, total_frames - 1, initial_mask, debug_dir, 
                                        forward=True, pbar=pbar, flow_processor=flow_processor)
 
@@ -985,19 +1066,27 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
         
         # Write frames and prepare for MD.ai upload
         for frame_data in tqdm(combined_frames, desc="Saving frames", unit="frame"):
-            # Unpack the frame data - now with flow_mask and adjusted_mask
-            if len(frame_data) == 6:  # New format with intermediate masks
-                frame_idx, frame, mask, flow, flow_mask, adjusted_mask = frame_data
-            else:  # Handle older format if needed
-                frame_idx, frame, mask, flow = frame_data
-                flow_mask = mask.copy()  # Fallback if old format
-                adjusted_mask = mask.copy()  # Fallback if old format
-            
             try:
+                # Unpack the frame data properly - respecting its structure
+                if len(frame_data) == 6:  # New format with intermediate masks
+                    frame_idx, frame, mask, flow, flow_mask, adjusted_mask = frame_data
+                else:  # Handle older format if needed
+                    frame_idx, frame, mask = frame_data[:3]
+                    flow = None if len(frame_data) < 4 else frame_data[3]
+                    flow_mask = mask.copy() if mask is not None else np.zeros_like(initial_mask)
+                    adjusted_mask = mask.copy() if mask is not None else np.zeros_like(initial_mask)
+                
+                # Verify we have valid data
+                if frame is None or mask is None:
+                    print(f"Warning: Invalid frame data for frame {frame_idx}, skipping")
+                    continue
+                
                 # Create overlay frame
                 overlay_frame = frame.copy()
-                overlay_frame[mask > 0] = overlay_frame[mask > 0] * (1 - overlay_alpha) + \
-                                        np.array(overlay_color, dtype=np.uint8) * overlay_alpha
+                mask_bool = mask > 0
+                if np.any(mask_bool):
+                    overlay_frame[mask_bool] = overlay_frame[mask_bool] * (1 - overlay_alpha) + \
+                                          np.array(overlay_color, dtype=np.uint8) * overlay_alpha
                 
                 # Add frame information if requested
                 if add_info:
@@ -1014,6 +1103,18 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
                     cv2.putText(overlay_frame, f"Coverage: {coverage:.1f}%", 
                               (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 
                               1, (255, 255, 255), 2)
+                
+                # Set mask type based on position relative to annotation frame
+                if frame_idx < frame_number:
+                    mask_type = "backward_predicted"
+                elif frame_idx > frame_number:
+                    mask_type = "forward_predicted"
+                else:
+                    mask_type = "annotation"
+                    
+                cv2.putText(overlay_frame, f"Type: {mask_type}", 
+                          (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 
+                          1, (255, 255, 255), 2)
 
                 # Write frame to video
                 out.write(overlay_frame)
@@ -1045,12 +1146,11 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
 
             except Exception as e:
                 print(f"Error processing frame {frame_idx}: {str(e)}")
+                traceback.print_exc()  # Print full stack trace
                 continue
 
-        # Cleanup
-        cap.release()
+        # Make sure to close the video writer properly
         out.release()
-        
         print(f"\nFrames written to video: {frames_written}")
         
         # NEW TRACKING VALIDATION CODE - MOVED HERE BEFORE MD.AI UPLOAD
@@ -1074,23 +1174,32 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
         os.makedirs(tracking_folder, exist_ok=True)
 
         for i, frame_data in enumerate(combined_frames):
-            # Unpack the frame data
-            if len(frame_data) == 6:  # New format
-                frame_idx, frame, mask, _, _, _ = frame_data
-            else:  # Old format
-                frame_idx, frame, mask, _ = frame_data
-                
-            # Create simple overlay for tracking verification
-            overlay_frame = frame.copy()
-            overlay_frame[mask > 0] = overlay_frame[mask > 0] * (1 - overlay_alpha) + \
-                                      np.array(overlay_color, dtype=np.uint8) * overlay_alpha
-            
-            # Add frame info
-            cv2.putText(overlay_frame, f"Frame: {frame_idx}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            cv2.putText(overlay_frame, f"Coverage: {np.mean(mask)*100:.2f}%", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            
-            # Save frame
-            cv2.imwrite(os.path.join(tracking_folder, f"tracking_{i:04d}.png"), overlay_frame)
+            try:
+                # Unpack the frame data safely
+                if len(frame_data) >= 3:
+                    frame_idx = frame_data[0]
+                    frame = frame_data[1]
+                    mask = frame_data[2]
+                    
+                    # Create simple overlay for tracking verification
+                    if frame is not None and mask is not None:
+                        overlay_frame = frame.copy()
+                        mask_bool = mask > 0
+                        if np.any(mask_bool):
+                            overlay_frame[mask_bool] = overlay_frame[mask_bool] * (1 - overlay_alpha) + \
+                                                      np.array(overlay_color, dtype=np.uint8) * overlay_alpha
+                        
+                        # Add frame info
+                        cv2.putText(overlay_frame, f"Frame: {frame_idx}", (10, 30), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        cv2.putText(overlay_frame, f"Coverage: {np.mean(mask)*100:.2f}%", (10, 60), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                        
+                        # Save frame
+                        cv2.imwrite(os.path.join(tracking_folder, f"tracking_{i:04d}.png"), overlay_frame)
+            except Exception as e:
+                print(f"Error creating tracking visualization for frame {i}: {str(e)}")
+                continue
 
         # Create visualization video from flow visualizations
         flow_vis_video_path = os.path.join(os.path.dirname(output_video_path), "flow_visualization.mp4")
@@ -1133,33 +1242,37 @@ def save_combined_video(video_path, output_video_path, initial_mask, frame_numbe
                 # Prepare mask data for MD.ai upload
                 masks_to_upload = []
                 for frame_data in combined_frames:
-                    # Unpack the frame data
-                    if len(frame_data) == 6:  # New format
-                        frame_idx, _, mask, _, _, _ = frame_data
-                    else:  # Old format
-                        frame_idx, _, mask, _ = frame_data
-                    
-                    # Only process mask if it has content
-                    if np.sum(mask) > 0:
-                        # Create binary mask
-                        binary_mask = (mask > 0.5).astype(np.uint8)
+                    # Unpack the frame data safely
+                    if len(frame_data) >= 3:
+                        frame_idx = frame_data[0]
+                        mask = frame_data[2]
                         
-                        # Convert to MD.ai format
-                        mask_data = mdai.common_utils.convert_mask_data(binary_mask)
-                        
-                        # Format annotation
-                        annotation = {
-                            'labelId': LABEL_ID_FLUID_OF,
-                            'StudyInstanceUID': study_uid,
-                            'SeriesInstanceUID': series_uid,
-                            'frameNumber': int(frame_idx),  # Ensure integer
-                            'data': mask_data,
-                            'groupId': LABEL_ID_MACHINE_GROUP
-                        }
-                        
-                        masks_to_upload.append(annotation)
-                    else:
-                        print(f"Skipping empty mask for frame {frame_idx}")
+                        # Only process mask if it has content
+                        if mask is not None and np.sum(mask) > 0:
+                            try:
+                                # Create binary mask
+                                binary_mask = (mask > 0.5).astype(np.uint8)
+                                
+                                # Convert to MD.ai format
+                                mask_data = mdai.common_utils.convert_mask_data(binary_mask)
+                                
+                                if mask_data:  # Ensure we have valid mask data
+                                    # Format annotation
+                                    annotation = {
+                                        'labelId': LABEL_ID_FLUID_OF,
+                                        'StudyInstanceUID': study_uid,
+                                        'SeriesInstanceUID': series_uid,
+                                        'frameNumber': int(frame_idx),  # Ensure integer
+                                        'data': mask_data,
+                                        'groupId': LABEL_ID_MACHINE_GROUP
+                                    }
+                                    
+                                    masks_to_upload.append(annotation)
+                            except Exception as e:
+                                print(f"Error preparing mask for frame {frame_idx}: {str(e)}")
+                                continue
+                        else:
+                            print(f"Skipping empty mask for frame {frame_idx}")
                 
                 # Upload all frames to MD.ai
                 if masks_to_upload:
@@ -1244,7 +1357,7 @@ def debug_visualize(frame, initial_mask, flow_mask, adjusted_mask, final_mask, f
     binary_final = (final_mask > 0.5).astype(np.uint8) if final_mask is not None else None
     
     # Original frame (Top Left)
-    grid[:h, :w] = frameß
+    grid[:h, :w] = frame
     cv2.putText(grid, "Original Frame", (10, 30), 
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     
@@ -1260,7 +1373,6 @@ def debug_visualize(frame, initial_mask, flow_mask, adjusted_mask, final_mask, f
         if binary_initial is not None:
             contours, _ = cv2.findContours(binary_initial, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(initial_viz, contours, -1, (0, 255, 255), 1)  # Yellow contour
-            
             # Add area metrics
             initial_area = np.sum(binary_initial)
             cv2.putText(initial_viz, f"Area: {initial_area}", (10, h-20), 
