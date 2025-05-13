@@ -15,6 +15,7 @@ import pandas as pd
 from tqdm import tqdm
 from pandas import json_normalize
 import argparse
+import signal
 
 from multi_frame_tracking.opticalflowprocessor import OpticalFlowProcessor
 from multi_frame_tracking.multi_frame_tracker import MultiFrameTracker
@@ -22,6 +23,79 @@ from multi_frame_tracking.utils import track_frames, polygons_to_mask, visualize
 from evaluation_utils import evaluate_with_iou, calculate_iou, calculate_dice
 from visualisation_utils import visualize_comparison
 from ground_truth_utils import get_annotations_for_study_series, create_ground_truth_dataset,create_feedback_loop_report
+
+import gc
+import psutil
+import warnings
+import logging
+
+# Suppress all the noisy output
+os.environ['PYTHONWARNINGS'] = 'ignore'
+warnings.filterwarnings('ignore')
+logging.getLogger().setLevel(logging.ERROR)
+
+
+# Add after imports
+def cleanup_memory():
+    """Force garbage collection and print memory usage"""
+    gc.collect()
+    if 'psutil' in sys.modules:
+        process = psutil.Process()
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        print(f"[MEMORY] After cleanup: {memory_mb:.1f} MB")
+
+def cleanup_debug_files(debug_dir):
+    """Remove debug files after processing each video"""
+    if os.path.exists(debug_dir):
+        # Keep only essential files, remove debug visualizations
+        for file in os.listdir(debug_dir):
+            if file.endswith('.png') or file.endswith('.mp4'):
+                try:
+                    os.remove(os.path.join(debug_dir, file))
+                except:
+                    pass
+
+# Global checkpoint tracker
+checkpoint_times = {}
+last_checkpoint = None
+start_time = time.time()
+
+def checkpoint(name, details=""):
+    """Add checkpoint with timestamp"""
+    global last_checkpoint, start_time
+    current_time = time.time()
+    
+    if last_checkpoint:
+        duration = current_time - checkpoint_times[last_checkpoint]
+        print(f"[CHECKPOINT] ✓ {last_checkpoint} completed in {duration:.2f}s")
+    
+    checkpoint_times[name] = current_time
+    last_checkpoint = name
+    
+    elapsed = current_time - start_time
+    timestamp = time.strftime("%H:%M:%S", time.localtime(current_time))
+    print(f"[CHECKPOINT] {timestamp} (T+{elapsed:.1f}s) - Starting: {name}")
+    if details:
+        print(f"  Details: {details}")
+    
+    # Force flush output
+    sys.stdout.flush()
+
+def setup_timeout_monitor(timeout_minutes=30):
+    """Set up a timeout monitor to prevent infinite loops"""
+    def timeout_handler(signum, frame):
+        print(f"\n!!! TIMEOUT: Script has been running for {timeout_minutes} minutes")
+        print("!!! Current checkpoint:", last_checkpoint)
+        print("!!! Process times:")
+        for cp_name, cp_time in checkpoint_times.items():
+            print(f"     {cp_name}: {cp_time - start_time:.1f}s")
+        print("!!! Forcing script termination...")
+        os._exit(1)
+    
+    # Set up timeout
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(timeout_minutes * 60)
+    print(f"[MONITOR] Timeout monitor set for {timeout_minutes} minutes")
 
 # Initialize module-level variables
 MULTI_FRAME_AVAILABLE = True  
@@ -45,8 +119,8 @@ debug_print(f"=== DEBUG LOG STARTED AT {time.ctime()} ===")
 
 
 # Enable debug mode
-DEBUG_MODE = True
-DEBUG_SAMPLE_SIZE = 2
+
+DEBUG_SAMPLE_SIZE = 5
 DEBUG_ISSUE_TYPES = ["multiple_distinct"]
 
 # Set debugging options for tracking
@@ -1628,25 +1702,33 @@ def process_video_with_multi_frame_tracking_enhanced(video_path, annotations_df,
 def process_videos_with_tracking():
     """
     Main processing loop for tracking free fluid in ultrasound videos.
-    Modified to run ONLY multi-frame tracking for debugging.
+    Modified with checkpoints to debug hanging issues.
     """
-    # Create timestamp file in the root directory to ensure we can find it
+    checkpoint("FUNCTION_START", "process_videos_with_tracking started")
+    
+    # Create timestamp file in the root directory
     with open("multi_frame_test.txt", "w") as f:
         f.write(f"Test started at {datetime.now()}\n")
         f.write(f"TRACKING_MODE = {TRACKING_MODE}\n")
         f.write(f"MULTI_FRAME_AVAILABLE = {MULTI_FRAME_AVAILABLE}\n")
     
+    checkpoint("TIMESTAMP_FILE", "Created timestamp file")
+    
     print("\n==== MULTI-FRAME TRACKING TEST ====")
     print(f"TRACKING_MODE: {TRACKING_MODE}")
     print(f"MULTI_FRAME_AVAILABLE: {MULTI_FRAME_AVAILABLE}")
     
-    # Determine which issue types to process based on debug mode
+    # Determine which issue types to process
     issue_types_to_process = DEBUG_ISSUE_TYPES if DEBUG_MODE else list(LABEL_IDS.keys())
     print(f"Processing issue types: {issue_types_to_process}")
     
-    # Create output directories if they don't exist
+    checkpoint("ISSUE_TYPES", f"Processing {len(issue_types_to_process)} issue types")
+    
+    # Create output directories
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(MULTI_FRAME_DIR, exist_ok=True)
+    
+    checkpoint("DIRECTORIES", "Created output directories")
     
     # Initialize video counter
     videos_processed = 0
@@ -1655,8 +1737,12 @@ def process_videos_with_tracking():
     print("Initializing optical flow processor...")
     flow_processor = OpticalFlowProcessor(method=FLOW_METHOD[0])
     
+    checkpoint("FLOW_PROCESSOR", f"Initialized flow processor with method: {FLOW_METHOD[0]}")
+    
     # Process each issue type
     for issue_type in issue_types_to_process:
+        checkpoint("ISSUE_TYPE_START", f"Starting issue type: {issue_type}")
+        
         print(f"\nProcessing {issue_type} annotations...")
         
         # Filter annotations for this issue type
@@ -1666,19 +1752,27 @@ def process_videos_with_tracking():
         if DEBUG_MODE:
             type_annotations = type_annotations.head(DEBUG_SAMPLE_SIZE)
         
+        checkpoint("FILTERED_ANNOTATIONS", f"Found {len(type_annotations)} annotations for {issue_type}")
+        
         print(f"Found {len(type_annotations)} annotations for {issue_type}")
         
         # Process each annotation
         for idx, row in tqdm(type_annotations.iterrows(), total=len(type_annotations)):
+            checkpoint("VIDEO_START", f"Starting video {idx+1}/{len(type_annotations)} (Total: {videos_processed+1})")
+            
             video_path = row['video_path']
             study_uid = row['StudyInstanceUID']
             series_uid = row['SeriesInstanceUID']
+            
+            checkpoint("VIDEO_DETAILS", f"Video: {os.path.basename(video_path)}")
             
             # Find any frame annotation for this video
             video_annotations = free_fluid_annotations[
                 (free_fluid_annotations['StudyInstanceUID'] == study_uid) &
                 (free_fluid_annotations['SeriesInstanceUID'] == series_uid)
             ]
+            
+            checkpoint("VIDEO_ANNOTATIONS", f"Found {len(video_annotations)} annotations for video")
 
             if len(video_annotations) > 0:
                 # Use the first available annotation
@@ -1688,22 +1782,25 @@ def process_videos_with_tracking():
                 # Get free fluid polygons from this specific annotation
                 free_fluid_polygons = row['free_fluid_foreground']
                 
+                checkpoint("ANNOTATION_DETAILS", f"Frame number: {frame_number}")
+                
                 print(f"\nProcessing video {videos_processed + 1}/{len(type_annotations)}")
                 print(f"Video: {video_path}")
                 print(f"Frame number: {frame_number}")
             else:
-                print("No annotations found for this video, skipping")
+                checkpoint("NO_ANNOTATIONS", "No annotations found, skipping video")
                 continue
             
             # Continue only if we have valid polygons
             if not isinstance(free_fluid_polygons, list) or len(free_fluid_polygons) == 0:
-                print("No valid polygons found, skipping")
+                checkpoint("NO_POLYGONS", "No valid polygons found, skipping video")
                 continue
             
             try:
+                checkpoint("VIDEO_OPEN", "Opening video file")
                 cap = cv2.VideoCapture(video_path)
                 if not cap.isOpened():
-                    print(f"Could not open video: {video_path}")
+                    checkpoint("VIDEO_ERROR", f"Could not open video")
                     continue
                 
                 # Get video properties
@@ -1711,15 +1808,21 @@ def process_videos_with_tracking():
                 frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 
+                checkpoint("VIDEO_PROPS", f"Resolution: {frame_width}x{frame_height}, Total frames: {total_frames}")
+                
                 print(f"Video dimensions: {frame_width}x{frame_height}")
                 print(f"Total frames: {total_frames}")
                 
                 # Create initial mask from polygons
                 initial_mask = polygons_to_mask(free_fluid_polygons, frame_height, frame_width)
                 
+                checkpoint("INITIAL_MASK", f"Created initial mask, sum: {np.sum(initial_mask)}")
+                
                 # Create output directory for this video
                 multi_frame_output_dir = os.path.join(MULTI_FRAME_DIR, f"{study_uid}_{series_uid}")
                 os.makedirs(multi_frame_output_dir, exist_ok=True)
+                debug_dir = os.path.join(multi_frame_output_dir, 'debug')
+                checkpoint("OUTPUT_DIR", f"Created output directory")
                 
                 # Get all annotations for this video
                 video_annotations = free_fluid_annotations[
@@ -1729,13 +1832,9 @@ def process_videos_with_tracking():
                 
                 print(f"Found {len(video_annotations)} annotations for this video")
                 
-                print("\n##############################################")
-                print("# ABOUT TO CALL MULTI-FRAME TRACKING FUNCTION #")
-                print("##############################################")
-                print(f"Flow processor method: {flow_processor.method}")
-                print(f"Study/Series: {study_uid}/{series_uid}")
+                checkpoint("ALL_ANNOTATIONS", f"Collected {len(video_annotations)} annotations")
                 
-                # Create detailed debug log
+                # Log function call details
                 with open(os.path.join(multi_frame_output_dir, "function_call_log.txt"), "w") as f:
                     f.write(f"About to call function at {datetime.now()}\n")
                     f.write(f"Video path: {video_path}\n")
@@ -1743,9 +1842,20 @@ def process_videos_with_tracking():
                     f.write(f"Frame dimensions: {frame_width}x{frame_height}\n")
                     f.write(f"Initial mask sum: {np.sum(initial_mask)}\n")
                 
+                checkpoint("PRE_FUNCTION_CALL", "About to call process_video_with_multi_frame_tracking_enhanced")
+                
+                print("\n##############################################")
+                print("# ABOUT TO CALL MULTI-FRAME TRACKING FUNCTION #")
+                print("##############################################")
+                print(f"Flow processor method: {flow_processor.method}")
+                print(f"Study/Series: {study_uid}/{series_uid}")
+                
                 try:
-                    # Call the multi-frame processing function
-                  
+                    # CRITICAL POINT - Add a timeout for this specific function call
+                    checkpoint("DURING_FUNCTION_CALL", "Inside process_video_with_multi_frame_tracking_enhanced call")
+                    
+                    # Start a timer for this function call
+                    function_start_time = time.time()
                     
                     result = process_video_with_multi_frame_tracking_enhanced(
                         video_path=video_path,
@@ -1762,17 +1872,23 @@ def process_videos_with_tracking():
                         project_id=PROJECT_ID,
                         dataset_id=DATASET_ID,
                         upload_to_mdai=True,
-                        debug_mode=True
+                        debug_mode=False
                     )
+                    
+                    function_duration = time.time() - function_start_time
+                    checkpoint("POST_FUNCTION_CALL", f"Multi-frame function completed in {function_duration:.2f}s")
                     
                     # Log successful completion
                     with open(os.path.join(multi_frame_output_dir, "function_call_log.txt"), "a") as f:
                         f.write(f"Function completed at {datetime.now()}\n")
+                        f.write(f"Duration: {function_duration:.2f}s\n")
                         f.write(f"Result type: {type(result)}\n")
                         if result:
                             f.write(f"Result keys: {result.keys()}\n")
                             f.write(f"Annotated frames: {result.get('annotated_frames', 0)}\n")
                             f.write(f"Predicted frames: {result.get('predicted_frames', 0)}\n")
+                    
+                    checkpoint("RESULT_LOGGED", "Results logged successfully")
                     
                     print("\nMulti-frame tracking completed successfully!")
                     print(f"Annotated frames: {result.get('annotated_frames', 0)}")
@@ -1784,12 +1900,15 @@ def process_videos_with_tracking():
                     
                     # Verify output video exists
                     output_video = result.get('output_video', 'None')
-                    if os.path.exists(output_video):
+                    if output_video and os.path.exists(output_video):
+                        checkpoint("VIDEO_VERIFIED", f"Output video created: {os.path.getsize(output_video)} bytes")
                         print(f"Confirmed: Output video created at {output_video} ({os.path.getsize(output_video)} bytes)")
                     else:
+                        checkpoint("VIDEO_MISSING", f"WARNING: Output video not found")
                         print(f"WARNING: Output video not found at expected path: {output_video}")
                     
                 except Exception as e:
+                    checkpoint("FUNCTION_ERROR", f"ERROR in multi-frame function: {str(e)}")
                     print(f"\n!!! ERROR IN MULTI-FRAME TRACKING FUNCTION CALL !!!")
                     print(f"Error type: {type(e).__name__}")
                     print(f"Error message: {str(e)}")
@@ -1804,15 +1923,23 @@ def process_videos_with_tracking():
                 
                 # Increment counter regardless of success
                 videos_processed += 1
+                checkpoint("VIDEO_COMPLETE", f"Completed video {videos_processed}")
                 
                 # Close video file
                 cap.release()
+                cleanup_memory()  # Add this
+                cleanup_debug_files(debug_dir) 
+                checkpoint("VIDEO_RELEASED", "Video capture released")
                 
             except Exception as e:
+                checkpoint("VIDEO_PROCESSING_ERROR", f"Error processing video: {str(e)}")
                 print(f"Error processing video: {str(e)}")
                 traceback.print_exc()
                 continue
+        
+        checkpoint("ISSUE_TYPE_COMPLETE", f"Completed issue type: {issue_type}")
     
+    checkpoint("ALL_COMPLETE", "All processing completed")
     print(f"\nProcessing completed. Total videos processed: {videos_processed}")
 
 
@@ -1887,7 +2014,8 @@ def get_annotations_for_study_series(mdai_client, project_id, dataset_id, study_
 
 def evaluate_with_expert_feedback(video_paths, study_series_pairs, flow_processor, output_dir,
                                  mdai_client, project_id, dataset_id, ground_truth_label_id,
-                                 algorithm_label_id):
+                                 algorithm_label_id, label_id_no_fluid=None, 
+                                 label_id_machine=None, annotations_json=None, args=None): 
     """
     Evaluates the algorithm against expert-refined ground truth annotations
     
@@ -1899,12 +2027,22 @@ def evaluate_with_expert_feedback(video_paths, study_series_pairs, flow_processo
         mdai_client: MD.ai client
         project_id: MD.ai project ID
         dataset_id: MD.ai dataset ID
-        ground_truth_label_id: Label ID for ground truth annotations
-        algorithm_label_id: Label ID for algorithm annotations
+        ground_truth_label_id: Label ID for ground truth annotations (your corrected annotations)
+        algorithm_label_id: Label ID for algorithm annotations (LABEL_ID_FLUID_OF)
+        args: Command line arguments (for checking no_upload flag)
         
     Returns:
         Dictionary with evaluation results
     """
+    # Debug output at the beginning
+    print("\n" + "="*60)
+    print("=== LABEL ID DEBUG IN evaluate_with_expert_feedback ===")
+    print(f"ground_truth_label_id: {ground_truth_label_id}")
+    print(f"algorithm_label_id: {algorithm_label_id}")
+    print(f"label_id_no_fluid: {label_id_no_fluid}")
+    print(f"label_id_machine: {label_id_machine}")
+    print("="*60 + "\n")
+    
     evaluation_results = {}
     
     for i, (video_path, (study_uid, series_uid)) in enumerate(zip(video_paths, study_series_pairs)):
@@ -1936,25 +2074,130 @@ def evaluate_with_expert_feedback(video_paths, study_series_pairs, flow_processo
                 frame_number = annotation.get('frameNumber')
                 if frame_number is not None and 'data' in annotation:
                     # Convert MD.ai format to binary mask
-                    mask = mdai.common_utils.convert_to_mask(
-                        annotation['data'],
-                        int(annotation.get('height', 0)),
-                        int(annotation.get('width', 0))
-                    )
-                    ground_truth_masks[frame_number] = mask
+                    try:
+                        # Use the correct function name from MD.ai library
+                        mask = mdai.common_utils.convert_mask_annotation_to_array(annotation)
+                        
+                        if mask is not None:
+                            ground_truth_masks[frame_number] = mask
+                        else:
+                            print(f"Could not convert annotation data for frame {frame_number}")
+                    
+                    except Exception as e:
+                        print(f"Error converting annotation data for frame {frame_number}: {e}")
+                        continue
             
             print(f"Found {len(ground_truth_masks)} ground truth masks")
             
             # Run the algorithm to generate new predictions
+            print("Running algorithm to generate new predictions...")
             annotations_df = pd.DataFrame(ground_truth_annotations)
             
             # Initialize the multi-frame tracker
-            tracker = MultiFrameTracker(flow_processor, video_output_dir, debug_mode=True)
+            tracker = MultiFrameTracker(flow_processor, video_output_dir, debug_mode=False)
             
             # Process using the existing workflow
             algorithm_masks = tracker.process_annotations(annotations_df, video_path, study_uid, series_uid)
             
             print(f"Generated {len(algorithm_masks)} algorithm masks")
+            
+            # Upload algorithm predictions to MD.ai (with option to skip)
+            if algorithm_masks and not (args and hasattr(args, 'no_upload') and args.no_upload):
+                print("Uploading algorithm predictions to MD.ai...")
+                
+                # Delete existing algorithm predictions first
+                try:
+                    deleted_count = delete_existing_annotations(
+                        client=mdai_client,
+                        study_uid=study_uid,
+                        series_uid=series_uid,
+                        label_id=algorithm_label_id,
+                        group_id=label_id_machine
+                    )
+                    print(f"Deleted {deleted_count} existing algorithm predictions")
+                except Exception as e:
+                    print(f"Error deleting existing annotations: {e}")
+                
+                # Prepare annotations for upload
+                annotations_to_upload = []
+                for frame_idx, mask_info in algorithm_masks.items():
+                    # Skip human annotations (they're already in MD.ai)
+                    if isinstance(mask_info, dict) and mask_info.get('is_annotation', False):
+                        continue
+                    
+                    # Get the mask
+                    if isinstance(mask_info, dict):
+                        mask = mask_info['mask']
+                        mask_type = mask_info.get('type', '')
+                    else:
+                        mask = mask_info
+                        mask_type = 'unknown'
+                    
+                    # Handle clear frames differently
+                    is_clear = 'clear' in mask_type if mask_type else False
+                    
+                    # Create annotation
+                    try:
+                        # For clear frames, create a special no fluid annotation
+                        if is_clear and label_id_no_fluid:
+                            annotation = {
+                                'labelId': label_id_no_fluid,
+                                'StudyInstanceUID': study_uid,
+                                'SeriesInstanceUID': series_uid,
+                                'frameNumber': int(frame_idx),
+                                'groupId': label_id_machine
+                            }
+                            annotations_to_upload.append(annotation)
+                        else:
+                            # For fluid frames, check if mask has content
+                            binary_mask = (mask > 0.5).astype(np.uint8)
+                            if np.sum(binary_mask) > 0:
+                                # Convert mask to MD.ai format
+                                mask_data = mdai.common_utils.convert_mask_data(binary_mask)
+                                if mask_data:
+                                    annotation = {
+                                        'labelId': algorithm_label_id,  # This is LABEL_ID_FLUID_OF
+                                        'StudyInstanceUID': study_uid,
+                                        'SeriesInstanceUID': series_uid,
+                                        'frameNumber': int(frame_idx),
+                                        'data': mask_data,
+                                        'groupId': label_id_machine
+                                    }
+                                    annotations_to_upload.append(annotation)
+                        
+                    except Exception as e:
+                        print(f"Error creating annotation for frame {frame_idx}: {str(e)}")
+                        continue
+                
+                # Upload to MD.ai
+                if annotations_to_upload:
+                    try:
+                        failed_annotations = mdai_client.import_annotations(
+                            annotations=annotations_to_upload,
+                            project_id=project_id,
+                            dataset_id=dataset_id
+                        )
+                        successful_count = len(annotations_to_upload) - (len(failed_annotations) if failed_annotations else 0)
+                        print(f"Successfully uploaded {successful_count} algorithm predictions as {algorithm_label_id}")
+                        
+                        try:
+                            exam_number = find_exam_number(study_uid, annotations_json)
+                            print(f"Annotations were uploaded to Exam #{exam_number}")
+                        except Exception as e:
+                            print(f"Could not determine exam number: {e}")
+                        
+                    except Exception as e:
+                        print(f"Error uploading algorithm predictions: {str(e)}")
+                        traceback.print_exc()
+                else:
+                    print("No valid algorithm predictions to upload")
+            else:
+                # Handle case where upload is skipped
+                if args and hasattr(args, 'no_upload') and args.no_upload:
+                    print("Skipping MD.ai upload (--no-upload flag specified)")
+                    print(f"Would have uploaded {len(algorithm_masks) if algorithm_masks else 0} algorithm predictions")
+                else:
+                    print("No algorithm masks generated")
             
             # Evaluate algorithm against ground truth
             metrics = evaluate_with_iou(algorithm_masks, ground_truth_masks)
@@ -2054,18 +2297,22 @@ def evaluate_with_expert_feedback(video_paths, study_series_pairs, flow_processo
         json.dump(json_results, f, indent=2)
     
     return evaluation_results
-
-def run_ground_truth_feedback_loop(target_videos, num_iterations=3):
+def run_ground_truth_feedback_loop(target_videos, num_iterations=3, matched_annotations=None, 
+                                 free_fluid_annotations=None, annotations_json=None, 
+                                 mdai_client=None, project_id=None, dataset_id=None,
+                                 label_id_ground_truth=None, label_id_fluid=None,
+                                 label_id_no_fluid=None, label_id_machine=None,
+                                 flow_processor=None):
     """
     Runs the complete feedback loop for ground truth creation and evaluation
-    
-    Args:
-        target_videos: List of (video_path, study_uid, series_uid) tuples to process
-        num_iterations: Number of feedback loop iterations to run
-        
-    Returns:
-        Dictionary with overall results
     """
+    print("\n" + "="*80)
+    print("=== DEBUGGING run_ground_truth_feedback_loop PARAMETERS ===")
+    print(f"label_id_ground_truth: {label_id_ground_truth}")
+    print(f"label_id_fluid: {label_id_fluid}")
+    print(f"Expected LABEL_ID_FLUID_OF: {LABEL_ID_FLUID_OF if 'LABEL_ID_FLUID_OF' in globals() else 'NOT DEFINED'}")
+    print(f"Are they equal? {label_id_fluid == LABEL_ID_FLUID_OF if 'LABEL_ID_FLUID_OF' in globals() else 'Cannot compare'}")
+    print("="*80 + "\n")
     results = {
         'iterations': []
     }
@@ -2085,34 +2332,62 @@ def run_ground_truth_feedback_loop(target_videos, num_iterations=3):
         print(f"STARTING ITERATION {iteration+1}/{num_iterations}")
         print(f"{'='*50}\n")
         
+        
         # Create iteration output directory
         iter_output_dir = os.path.join(base_output_dir, f"iteration_{iteration+1}")
         os.makedirs(iter_output_dir, exist_ok=True)
         
-        # Step 1: Create/update ground truth dataset
-        print("\nStep 1: Creating/updating ground truth dataset...")
-        gt_results = create_ground_truth_dataset(
-            video_paths, study_series_pairs, flow_processor, 
-            os.path.join(iter_output_dir, "ground_truth"),
-            mdai_client, PROJECT_ID, DATASET_ID, LABEL_ID_GROUND_TRUTH
+        # Step 1: Create/update ground truth dataset (ONLY ON FIRST ITERATION)
+        if iteration == 0:
+            # Check if ground truth already exists
+            existing_gt = get_annotations_for_study_series(
+            mdai_client, project_id, dataset_id, study_series_pairs[0][0], study_series_pairs[0][1],
+            label_id=label_id_ground_truth
+    )
+    
+            if existing_gt:
+             print(f"\nStep 1: Found {len(existing_gt)} existing ground truth annotations, skipping creation")
+             gt_results = {"status": "skipped", "message": "Ground truth already exists"}
+            else:
+                print("\nStep 1: Creating initial ground truth dataset...")
+                gt_results = create_ground_truth_dataset(
+                video_paths, study_series_pairs, flow_processor, 
+                os.path.join(iter_output_dir, "ground_truth"),
+                mdai_client, project_id, dataset_id, label_id_ground_truth,
+                matched_annotations,       
+                free_fluid_annotations,     
+                label_id_fluid=label_id_fluid,
+                label_id_no_fluid=label_id_no_fluid,
+                label_id_machine=label_id_machine,
+                annotations_json=annotations_json
         )
-        
-        # Step 2: Wait for expert review
-        print("\nStep 2: Expert review phase")
-        print("Please have experts review and modify the ground truth annotations in MD.ai.")
-        print("The ground truth annotations have been uploaded with label ID:", LABEL_ID_GROUND_TRUTH)
-        
-        if iteration < num_iterations - 1:  # Don't prompt on last iteration
-            input("Press Enter once expert review is complete to continue to evaluation...")
+           
+            
+            # Step 2: Wait for expert review (ONLY ON FIRST ITERATION)
+            print("\nStep 2: Expert review phase")
+            print("Please have experts review and modify the ground truth annotations in MD.ai.")
+            print("The ground truth annotations have been uploaded with label ID:", label_id_ground_truth)
+            
+            if num_iterations > 1:
+                input("Press Enter once expert review is complete to continue to evaluation...")
+        else:
+            print(f"\nStep 1: Skipping ground truth creation for iteration {iteration+1}")
+            print("Using existing expert-corrected ground truth annotations...")
+            gt_results = {"status": "skipped", "message": "Using existing ground truth"}
         
         # Step 3: Evaluate algorithm against expert-refined ground truth
         print("\nStep 3: Evaluating algorithm against expert-refined ground truth...")
         eval_results = evaluate_with_expert_feedback(
             video_paths, study_series_pairs, flow_processor,
             os.path.join(iter_output_dir, "evaluation"),
-            mdai_client, PROJECT_ID, DATASET_ID, 
-            LABEL_ID_GROUND_TRUTH, LABEL_ID_FLUID_OF
-        )
+            mdai_client, project_id, dataset_id, 
+            label_id_ground_truth,   # Your corrected annotations
+    label_id_fluid,          # This should be LABEL_ID_FLUID_OF (use parameter)
+    label_id_no_fluid,       # Add this parameter
+    label_id_machine,        # Add this parameter
+    annotations_json, 
+    args= args   
+        )  
         
         # Store iteration results
         results['iterations'].append({
@@ -2127,10 +2402,6 @@ def run_ground_truth_feedback_loop(target_videos, num_iterations=3):
             print("\nIteration Summary:")
             print(f"- Overall Mean IoU: {summary['overall_mean_iou']:.4f}")
             print(f"- Overall Mean Dice: {summary['overall_mean_dice']:.4f}")
-        
-        # Optional: Implement algorithm improvements based on evaluation
-        # This would be where you'd adjust algorithm parameters or implement new features
-        # based on the evaluation results
         
     # Generate final report comparing all iterations
     if results['iterations']:
@@ -2159,11 +2430,41 @@ def parse_arguments():
     parser.add_argument('--ground-truth-single-exam', type=str, help='Create ground truth for a single exam number (for debugging)')
     parser.add_argument('--ground-truth-single-study', type=str, help='Create ground truth for a single StudyInstanceUID (for debugging)')
     parser.add_argument('--ground-truth-single-series', type=str, help='Create ground truth for a single SeriesInstanceUID (for debugging)')
+    parser.add_argument('--no-upload', action='store_true', help='Skip uploading annotations to MD.ai')
     
     
     return parser.parse_args()
+def quick_test():
+    """Run a quick test to make sure everything works"""
+    try:
+        print("Testing imports...")
+        from multi_frame_tracking.opticalflowprocessor import OpticalFlowProcessor
+        from multi_frame_tracking.multi_frame_tracker import MultiFrameTracker
+        from multi_frame_tracking.utils import track_frames
+        print("✓ All imports successful")
+        
+        print("Testing basic functionality...")
+        flow_processor = OpticalFlowProcessor(method='dis')
+        print("✓ Flow processor created")
+        
+        print("All tests passed! Ready to run.")
+        return True
+    except Exception as e:
+        print(f"✗ Test failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 if __name__ == "__main__":
+
+    setup_timeout_monitor(30)
+
+    if not quick_test():
+        print("❌ STOPPING: Fix the import errors above before proceeding.")
+        sys.exit(1)
+    
+    print("✅ Tests passed! Proceeding with main processing...")
+
     # Parse command line arguments
     args = parse_arguments()
     
@@ -2208,7 +2509,25 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error connecting to MD.ai: {str(e)}")
         raise
+    print("\n=== DEBUGGING PROJECT STRUCTURE ===")
+    try:
+    # Try to get project info without specifying dataset
+       project = mdai_client.project(project_id=PROJECT_ID)
+       print(f"Project loaded successfully: {PROJECT_ID}")
     
+    # List all datasets in the project
+       datasets = project.datasets
+       print(f"Available datasets: {[d.id for d in datasets]}")
+    
+    # Check if our specific dataset exists
+       for dataset in datasets:
+           print(f"Dataset ID: {dataset.id}, Name: {getattr(dataset, 'name', 'N/A')}")
+           if dataset.id == DATASET_ID:
+               print(f"Found target dataset: {DATASET_ID}")
+    except Exception as e:
+        print(f"Error loading project: {e}")
+        traceback.print_exc()
+
 
     # Validate that they're loaded
     if None in [LABEL_ID_MACHINE_GROUP, LABEL_ID_FLUID_OF]:
@@ -2414,7 +2733,7 @@ if __name__ == "__main__":
         if args.issue:
             f.write(f"Target issue type: {args.issue}\n")
 
-    # MAIN BRANCHING LOGIC - This is where the if-else should be
+   # MAIN BRANCHING LOGIC - This is where the if-else should be
     if args.create_ground_truth:
         print("\n==== CREATING GROUND TRUTH DATASET ====")
         
@@ -2595,9 +2914,72 @@ if __name__ == "__main__":
         # Exit after ground truth creation
         sys.exit(0)
     
+    elif args.feedback_loop:
+        print("\n==== RUNNING GROUND TRUTH FEEDBACK LOOP ====")
+        
+        # Prepare target videos based on your arguments
+        target_videos = []
+        
+        if args.ground_truth_single_exam:
+            # Find video for specific exam
+            found = False
+            for issue_type in LABEL_IDS.keys():
+                issue_annotations = matched_annotations[matched_annotations['issue_type'] == issue_type]
+                
+                for _, row in issue_annotations.iterrows():
+                    try:
+                        exam_number = find_exam_number(row['StudyInstanceUID'], annotations_json)
+                        if exam_number == args.ground_truth_single_exam:
+                            video_path = row['video_path'] 
+                            if os.path.exists(video_path):
+                                target_videos.append((video_path, row['StudyInstanceUID'], row['SeriesInstanceUID']))
+                                print(f"Found Exam #{exam_number}: {row['StudyInstanceUID']}/{row['SeriesInstanceUID']}")
+                                found = True
+                                break
+                    except Exception as e:
+                        continue
+                if found:
+                    break
+            
+            if not target_videos:
+                print(f"ERROR: No video found for Exam #{args.ground_truth_single_exam}")
+                sys.exit(1)
+        else:
+            # Handle case where no specific exam is requested
+            print("ERROR: Please specify --ground-truth-single-exam for feedback loop")
+            sys.exit(1)
+        
+        # Run the feedback loop
+        print(f"Running feedback loop evaluation on {len(target_videos)} video(s)")
+        
+        # Initialize flow processor
+        flow_processor = OpticalFlowProcessor(method=FLOW_METHOD[0])
+        
+        # Run the feedback loop
+        results = run_ground_truth_feedback_loop(
+        target_videos=target_videos, 
+        num_iterations=args.iterations,
+        matched_annotations=matched_annotations,           
+        free_fluid_annotations=free_fluid_annotations,     
+        annotations_json=annotations_json,                 
+        mdai_client=mdai_client,                         
+        project_id=PROJECT_ID,                           
+        dataset_id=DATASET_ID,                            
+        label_id_ground_truth=LABEL_ID_GROUND_TRUTH,      
+        label_id_fluid=LABEL_ID_FLUID_OF,              
+        label_id_no_fluid=LABEL_ID_NO_FLUID,              
+        label_id_machine=LABEL_ID_MACHINE_GROUP,          
+        flow_processor=flow_processor                      
+    )
+        
+        print("\nFeedback loop completed!")
+        print("Check the evaluation reports in: output/ground_truth_feedback_loop/")
+        sys.exit(0)
+    
     else:  
         # Run the normal processing function
         process_videos_with_tracking()
+    
     
     debug_print(f"=== DEBUG LOG ENDED AT {time.ctime()} ===")
     debug_log.close()
