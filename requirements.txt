@@ -3,7 +3,7 @@ matplotlib
 mdai
 numpy
 opencv-python
-opencv-python-headless
+opencv-contrib-python # For additional OpenCV functionalities like DeepFlow
 pandas
 pillow
 python-dotenv

@@ -85,10 +85,10 @@ print(f"Annotations with corresponding video files: {num_with_files}")
 print(f"Annotations without corresponding video files: {num_without_files}")
 
 # # Select five random annotations with corresponding video files
-# if DEBUG:
-#     matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=5, random_state=42)
-# else:
-matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
+if DEBUG:
+    matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=5, random_state=42)
+else:
+    matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
 
 # Display function
 def polygons_to_mask(polygons, height, width):
