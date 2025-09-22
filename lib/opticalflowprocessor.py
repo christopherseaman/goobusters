@@ -2,6 +2,7 @@ import cv2
 import torch
 import numpy as np
 import torchvision.models.optical_flow as optical_flow
+from torchvision.models.optical_flow import Raft_Large_Weights
 from torchvision.transforms.functional import resize
 
 class OpticalFlowProcessor:
@@ -14,7 +15,7 @@ class OpticalFlowProcessor:
     def load_raft_model(self):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {device} for RAFT")
-        self.raft_model = optical_flow.raft_large(pretrained=True, progress=False)
+        self.raft_model = optical_flow.raft_large(weights=Raft_Large_Weights.DEFAULT, progress=False)
         self.raft_model = self.raft_model.to(device)
         self.raft_model = self.raft_model.eval()
 
@@ -102,3 +103,41 @@ class OpticalFlowProcessor:
         new_mask = cv2.morphologyEx(new_mask, cv2.MORPH_OPEN, kernel)
         
         return new_mask
+    
+    def calculate_flow(self, prev_frame, curr_frame, method=None):
+        """
+        Calculate optical flow between two frames.
+        
+        Args:
+            prev_frame: Previous frame (grayscale)
+            curr_frame: Current frame (grayscale)
+            method: Optional method override
+            
+        Returns:
+            Optical flow field as numpy array
+        """
+        # Use provided method or fall back to instance method
+        flow_method = method or self.method
+        
+        # Ensure input frames are grayscale
+        if len(prev_frame.shape) == 3:
+            prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+        if len(curr_frame.shape) == 3:
+            curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
+        
+        if flow_method == 'farneback':
+            flow = cv2.calcOpticalFlowFarneback(prev_frame, curr_frame, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        elif flow_method == 'deepflow':
+            deep_flow = cv2.optflow.createOptFlow_DeepFlow()
+            flow = deep_flow.calc(prev_frame, curr_frame, None)
+        elif flow_method == 'dis':
+            dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_ULTRAFAST)
+            flow = dis.calc(prev_frame, curr_frame, None)
+        elif flow_method == 'raft':
+            prev_frame_tensor = torch.from_numpy(prev_frame).unsqueeze(0).unsqueeze(0).float() / 255.0
+            curr_frame_tensor = torch.from_numpy(curr_frame).unsqueeze(0).unsqueeze(0).float() / 255.0
+            flow = self.raft_optical_flow(prev_frame_tensor, curr_frame_tensor)
+        else:
+            raise ValueError(f"Unknown optical flow method: {flow_method}")
+        
+        return flow

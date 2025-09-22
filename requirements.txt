@@ -1,11 +1,14 @@
 ipython
 matplotlib
-mdai
+# mdai 0.16.0 with compatibility fix for current pydicom versions
+mdai==0.16.0
 numpy
 opencv-python
 opencv-contrib-python # For additional OpenCV functionalities like DeepFlow
 pandas
 pillow
+# Use current pydicom with compatibility bridge in lib/optical.py
+pydicom>=3.0.0
 python-dotenv
 scikit-image
 scipy
