@@ -22,7 +22,7 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 import logging
 from collections import defaultdict, deque
 from datetime import datetime
-from opticalflowprocessor import OpticalFlowProcessor
+from .opticalflowprocessor import OpticalFlowProcessor
 
 # Fix for pydicom deprecation warning from mdai 0.16.0
 # Approach: Monkey patch the pydicom module to prevent the deprecation warning
@@ -1949,11 +1949,22 @@ if __name__ == '__main__':
     print(f"ANNOTATIONS={ANNOTATIONS}")
     print(f"LABEL_ID={LABEL_ID}")
     
-    # Start MD.ai client
-    mdai_client = mdai.Client(domain=DOMAIN, access_token=ACCESS_TOKEN)
+    # Start MD.ai client (skip connection test if we have cached data)
+    try:
+        mdai_client = mdai.Client(domain=DOMAIN, access_token=ACCESS_TOKEN)
+    except Exception as e:
+        print(f"Warning: Could not connect to MD.ai ({e})")
+        print("Attempting to use cached data...")
+        mdai_client = None
     
     # Download the dataset from MD.ai (or use cached version)
-    project = mdai_client.project(project_id=PROJECT_ID, path=DATA_DIR)
+    if mdai_client:
+        project = mdai_client.project(project_id=PROJECT_ID, path=DATA_DIR)
+        dataset = project.get_dataset_by_id(DATASET_ID)
+        BASE = dataset.images_dir
+    else:
+        # Use cached data directly
+        BASE = os.path.join(DATA_DIR, 'mdai_ucsf_project_x9N2LJBZ_images_2025-09-18-050340')
     
     # Load the annotations
     annotations_data = mdai.common_utils.json_to_dataframe(ANNOTATIONS)
@@ -1962,14 +1973,9 @@ if __name__ == '__main__':
     
     # Create the label map, LABEL_ID => 1, others in labels => 0
     labels_dict = {LABEL_ID: 1}
-    project.set_labels_dict(labels_dict)
-    
-    # Get the dataset
-    dataset = project.get_dataset_by_id(DATASET_ID)
-    dataset.classes_dict = project.classes_dict
-    
-    # Ensure BASE is set after preparing the dataset
-    BASE = dataset.images_dir
+    if mdai_client:
+        project.set_labels_dict(labels_dict)
+        dataset.classes_dict = project.classes_dict
     
     # Filter annotations for the free fluid label
     free_fluid_annotations = annotations_df[annotations_df['labelId'] == LABEL_ID].copy()
@@ -1998,49 +2004,65 @@ if __name__ == '__main__':
     else:
         matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
     
-    # Main processing loop using multi-frame tracking
+    # Import the new multi-frame tracker and optical flow processor
+    from .multi_frame_tracker import process_video_with_multi_frame_tracking
+    from .opticalflowprocessor import OpticalFlowProcessor
+    
+    # Group annotations by video for multi-frame processing
+    video_groups = matched_annotations.groupby(['StudyInstanceUID', 'SeriesInstanceUID'])
+    
+    print(f"Found {len(video_groups)} unique videos to process")
+    
+    # Main processing loop using true multi-frame tracking
     for method in FLOW_METHOD:
-        print(f"Running tracking with method: {method}")
+        print(f"\n=== Running multi-frame tracking with method: {method} ===")
         output_base_dir = os.path.join('output', method)
         os.makedirs(output_base_dir, exist_ok=True)
         
-        # Create configuration for multi-frame tracker
-        config = {
-            'optical_flow': {'method': method},
-            'tracking': {
-                'max_corners': 100,
-                'quality_level': 0.01,
-                'min_distance': 10,
-                'block_size': 3,
-                'frame_window': 5,
-                'min_track_length': 3,
-                'flow_quality_threshold': 0.7,
-                'temporal_smoothing': True
-            }
-        }
-        
-        # Process each annotation
-        for index, annotation in tqdm(matched_annotations.iterrows(),
-                                    total=len(matched_annotations),
-                                    desc=f"Tracking {method}"):
+        # Process each video with all its annotations
+        for (study_uid, series_uid), video_annotations in tqdm(video_groups, desc=f"Processing videos with {method}"):
             try:
-                annotation_id = f"annotation_{index}"
-                video_path = annotation['video_path']
+                # Get video path (should be the same for all annotations in this group)
+                video_path = video_annotations.iloc[0]['video_path']
                 
-                # Create tracker instance
-                tracker = OpticalFlowTracker(config)
+                print(f"\nProcessing video: {video_path}")
+                print(f"Study UID: {study_uid}")
+                print(f"Series UID: {series_uid}")
+                print(f"Annotations in this video: {len(video_annotations)}")
                 
-                # Process video
-                success = tracker.process_video(video_path, output_base_dir, annotation_id)
+                # Create output directory for this video
+                video_output_dir = os.path.join(output_base_dir, f"{study_uid}_{series_uid}")
+                os.makedirs(video_output_dir, exist_ok=True)
                 
-                if success:
-                    # logger.info(f"Successfully processed {annotation_id} with {method}")
-                    pass
-                else:
-                    logger.error(f"Failed to process {annotation_id} with {method}")
-                    
+                # Initialize optical flow processor
+                flow_processor = OpticalFlowProcessor(method)
+                
+                # Process the video with multi-frame tracking
+                result = process_video_with_multi_frame_tracking(
+                    video_path=video_path,
+                    annotations_df=video_annotations,
+                    study_uid=study_uid,
+                    series_uid=series_uid,
+                    flow_processor=flow_processor,
+                    output_dir=video_output_dir,
+                    mdai_client=mdai_client,
+                    label_id_fluid=LABEL_ID,
+                    label_id_machine=os.getenv('LABEL_ID_MACHINE_GROUP', 'G_RJY6Qn'),
+                    upload_to_mdai=False,  # Set to True if you want to upload results
+                    project_id=PROJECT_ID,
+                    dataset_id=DATASET_ID
+                )
+                
+                print(f"✅ Successfully processed video with {method}")
+                print(f"   - Annotated frames: {result['annotated_frames']}")
+                print(f"   - Predicted frames: {result['predicted_frames']}")
+                print(f"   - Annotation types: {result['annotation_types']}")
+                print(f"   - Output video: {result['output_video']}")
+                
             except Exception as e:
-                logger.error(f"Error processing annotation {index} with {method}: {str(e)}")
+                logger.error(f"Error processing video {study_uid}/{series_uid} with {method}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 continue
     
-    print("Multi-frame tracking completed.")
+    print("\n=== Multi-frame tracking completed ===")
