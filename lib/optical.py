@@ -1922,12 +1922,12 @@ if __name__ == '__main__':
     import pandas as pd
     from tqdm import tqdm
     
-    DEBUG = True
-
     load_dotenv('dot.env')
 
+    DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes')
+
     # Load optical flow methods from environment
-    FLOW_METHOD = os.getenv('FLOW_METHOD', 'farneback').split(',')
+    FLOW_METHOD = [method.strip() for method in os.getenv('FLOW_METHOD', 'farneback').split(',')]
     
     ACCESS_TOKEN = os.getenv('MDAI_TOKEN')
     DATA_DIR = os.getenv('DATA_DIR')
@@ -2037,10 +2037,7 @@ if __name__ == '__main__':
                 # Get video path (should be the same for all annotations in this group)
                 video_path = video_annotations.iloc[0]['video_path']
                 
-                print(f"\nProcessing video: {video_path}")
-                print(f"Study UID: {study_uid}")
-                print(f"Series UID: {series_uid}")
-                print(f"Annotations in this video: {len(video_annotations)}")
+                # Processing {len(video_annotations)} annotations
                 
                 # Create output directory for this video
                 video_output_dir = os.path.join(output_base_dir, f"{study_uid}_{series_uid}")
@@ -2065,11 +2062,12 @@ if __name__ == '__main__':
                     dataset_id=DATASET_ID
                 )
                 
-                print(f"✅ Successfully processed video with {method}")
-                print(f"   - Annotated frames: {result['annotated_frames']}")
-                print(f"   - Predicted frames: {result['predicted_frames']}")
-                print(f"   - Annotation types: {result['annotation_types']}")
-                print(f"   - Output video: {result['output_video']}")
+                if DEBUG:
+                    print(f"✅ Successfully processed video with {method}")
+                    print(f"   - Annotated frames: {result['annotated_frames']}")
+                    print(f"   - Predicted frames: {result['predicted_frames']}")
+                    print(f"   - Annotation types: {result['annotation_types']}")
+                    print(f"   - Output video: {result['output_video']}")
                 
             except Exception as e:
                 logger.error(f"Error processing video {study_uid}/{series_uid} with {method}: {str(e)}")

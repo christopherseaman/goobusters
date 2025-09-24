@@ -82,16 +82,7 @@ class SharedParams:
         if params_file and os.path.exists(params_file):
             self.load_from_file(params_file)
        
-        print(f"\n🔧 SharedParams initialized:")
-        print(f"🔧   - Version: {self.version}")
-        print(f"🔧   - Window size: {self.tracking_params['window_size']}")
-        print(f"🔧   - Flow quality: {self.tracking_params['flow_quality_threshold']:.3f}")
-        print(f"🔧   - Learning rate: {self.tracking_params['learning_rate']:.3f}")
-        if params_file:
-            print(f"🔧   - Loaded from file: {params_file}")
-        else:
-            print(f"🔧   - Using default parameters")
-        print(f"🔧 ==========================================\n")
+        # SharedParams v{self.version} initialized
     
     def load_from_file(self, params_file):
         """Load parameters from a JSON file"""
@@ -208,11 +199,7 @@ class MultiFrameTracker:
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
         
-        self.logger.info("Initialized MultiFrameTracker")
-        print(f"Debug mode is {'enabled' if self.debug_mode else 'disabled'}")
-        print(f"Debug directory: {self.debug_dir}")
-        print(f"Feedback loop mode: {'enabled' if self.feedback_loop_mode else 'disabled'}")
-        print(f"Learning mode: {'enabled' if self.learning_mode else 'disabled'}")
+        # Debug: {'on' if self.debug_mode else 'off'}, Feedback: {'on' if self.feedback_loop_mode else 'off'}, Learning: {'on' if self.learning_mode else 'off'}
     
     def process_annotations(self, annotations_df, video_path, study_uid, series_uid):
         """
@@ -227,13 +214,7 @@ class MultiFrameTracker:
         Returns:
             Dictionary mapping frame numbers to mask data
         """
-        print("\n=== Processing annotations with MultiFrameTracker ===")
-        print(f"Annotations count: {len(annotations_df)}")
-        print(f"Video path: {video_path}")
-        print(f"Study/Series UIDs: {study_uid}/{series_uid}")
         
-        self.logger.info(f"Processing video: {video_path}")
-        self.logger.info(f"Study UID: {study_uid}, Series UID: {series_uid}")
 
         # Initialize video capture
         self.cap = cv2.VideoCapture(video_path)
@@ -250,7 +231,6 @@ class MultiFrameTracker:
         fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
         
-        print(f"Video properties: {total_frames} frames, {frame_width}x{frame_height}, {fps} fps")
         
         # Store total frames for use in other methods
         self.total_frames = total_frames
@@ -283,28 +263,26 @@ class MultiFrameTracker:
 
         # Process segments BETWEEN consecutive annotations
         fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
-        print(f"\nProcessing {len(fluid_annotations)} fluid annotations")
+        # Processing {len(fluid_annotations)} fluid annotations
 
         for i in range(len(fluid_annotations)):
             current = fluid_annotations[i]
 
             # Process segment from start of video to first annotation
             if i == 0 and current['frame'] > 0:
-                print(f"\nTracking from start (0) to first annotation ({current['frame']})")
                 self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
 
             # Process segment between consecutive annotations
             if i < len(fluid_annotations) - 1:
                 next_ann = fluid_annotations[i + 1]
                 if next_ann['frame'] - current['frame'] > 1:
-                    print(f"\nProcessing segment between annotations: {current['frame']} → {next_ann['frame']}")
+                    # Segment {current['frame']} → {next_ann['frame']}
                     self._process_segment(current['frame'], next_ann['frame'],
                                         current['mask'], next_ann['mask'],
                                         all_masks, clear_frames, video_path)
 
             # Process segment from last annotation to end of video
             if i == len(fluid_annotations) - 1 and current['frame'] < total_frames - 1:
-                print(f"\nTracking from last annotation ({current['frame']}) to end ({total_frames - 1})")
                 self._process_segment(current['frame'], total_frames - 1,
                                     current['mask'], None, all_masks, clear_frames, video_path)
         
@@ -329,14 +307,14 @@ class MultiFrameTracker:
         # Save results
         self._save_results(all_masks, video_path, study_uid, series_uid)
         
-        print(f"Multi-frame processing completed: {len(all_masks)} frames processed")
+        if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
+            print(f"Multi-frame processing completed: {len(all_masks)} frames processed")
         return all_masks
     
     def _classify_annotations(self, annotations_df, frame_height, frame_width):
         """Classify annotations as fluid or clear based on label IDs."""
         annotations = []
         
-        print(f"Processing {len(annotations_df)} annotations for video")
         
         for _, row in annotations_df.iterrows():
             frame_num = int(row['frameNumber'])
@@ -365,7 +343,6 @@ class MultiFrameTracker:
                             'id': row.get('id', f'fluid_{frame_num}')
                         })
         
-        print(f"\nTotal valid annotations found: {len(annotations)}")
         return annotations
     
     def _polygons_to_mask(self, polygons, height, width):
@@ -441,7 +418,7 @@ class MultiFrameTracker:
             # Update prev_frame for next iteration
             prev_frame = curr_frame
         
-        print(f"Forward tracking: {frames_tracked} frames tracked")
+        # Forward: {frames_tracked} frames
         return masks
     
     def _track_backward(self, start_frame, end_frame, initial_mask):
@@ -495,7 +472,7 @@ class MultiFrameTracker:
             # Update prev_frame for next iteration
             prev_frame = curr_frame
 
-        print(f"Backward tracking: {frames_tracked} frames tracked")
+        # Backward: {frames_tracked} frames
         return masks
     
     def _get_previous_frame(self):
@@ -541,7 +518,7 @@ class MultiFrameTracker:
         # Track forward from start if we have a start mask
         forward_masks = {}
         if start_mask is not None:
-            print(f"  Forward tracking from {start_frame}")
+            # Forward from {start_frame}
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             current_mask = start_mask.copy()
 
@@ -562,7 +539,7 @@ class MultiFrameTracker:
         # Track backward from end if we have an end mask
         backward_masks = {}
         if end_mask is not None:
-            print(f"  Backward tracking from {end_frame}")
+            # Backward from {end_frame}
             cap.set(cv2.CAP_PROP_POS_FRAMES, end_frame)
             current_mask = end_mask.copy()
 
@@ -724,7 +701,8 @@ class MultiFrameTracker:
         cap.release()
         out.release()
         
-        print(f"Results saved to: {output_video_path}")
+        if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
+            print(f"Results saved to: {output_video_path}")
 
 
 def process_video_with_multi_frame_tracking(
@@ -746,12 +724,7 @@ def process_video_with_multi_frame_tracking(
     
     This function integrates the MultiFrameTracker with the existing workflow.
     """
-    print(f"\n=== MULTI-FRAME TRACKING PROCESS STARTED ===")
-    print(f"Video: {video_path}")
-    print(f"Study UID: {study_uid}")
-    print(f"Series UID: {series_uid}")
-    print(f"Output directory: {output_dir}")
-    print(f"Upload to MD.ai: {upload_to_mdai}")
+    # Processing {len(annotations_df)} annotations
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -767,13 +740,14 @@ def process_video_with_multi_frame_tracking(
         pass
     
     # Initialize MultiFrameTracker
-    print("Initializing MultiFrameTracker...")
+    # Initializing tracker
     tracker = MultiFrameTracker(flow_processor, output_dir, debug_mode=True)
     
     # Process annotations
-    print("Calling tracker.process_annotations...")
+    # Running tracking
     all_masks = tracker.process_annotations(annotations_df, video_path, study_uid, series_uid)
-    print(f"Received {len(all_masks)} masks from process_annotations")
+    if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
+        print(f"Received {len(all_masks)} masks from process_annotations")
     
     # Update checkpoint
     try:
@@ -790,7 +764,7 @@ def process_video_with_multi_frame_tracking(
             annotation_type = info['type']
             annotation_types[annotation_type] = annotation_types.get(annotation_type, 0) + 1
     
-    print("==== MULTI-FRAME TRACKING PROCESS COMPLETED ====")
+    # Tracking complete
     
     return {
         'all_masks': all_masks,
