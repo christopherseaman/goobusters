@@ -29,7 +29,11 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from collections import defaultdict, deque
 
 # Import the optical flow processor from the current implementation
-from .opticalflowprocessor import OpticalFlowProcessor
+try:
+    from .opticalflowprocessor import OpticalFlowProcessor
+except ImportError:
+    # Fallback for direct script execution
+    from opticalflowprocessor import OpticalFlowProcessor
 
 LABEL_ID_NO_FLUID = os.getenv("LABEL_ID_NO_FLUID", "L_75K42J") 
 
@@ -266,41 +270,43 @@ class MultiFrameTracker:
         
         # Process each segment according to the rules
         all_masks = {}
-        
-        # Process fluid annotations with multi-frame tracking
-        for i, annotation in enumerate(annotations):
+
+        # First, store all annotation frames
+        for annotation in annotations:
             if annotation['type'] == 'fluid':
-                print(f"Processing fluid annotation at frame {annotation['frame']}")
-                
-                # Get the mask for this annotation
-                mask = annotation['mask']
-                
-                # Store the original annotation
                 all_masks[annotation['frame']] = {
-                    'mask': mask,
+                    'mask': annotation['mask'],
                     'type': 'fluid',
                     'is_annotation': True,
                     'annotation_id': annotation.get('id', f'fluid_{annotation["frame"]}')
                 }
-                
-                # For true multi-frame tracking, track across the entire video
-                # Track forward to the end of the video
-                forward_masks = self._track_forward(
-                    annotation['frame'], 
-                    total_frames - 1,  # Track to end of video
-                    mask
-                )
-                all_masks.update(forward_masks)
-                
-                # Track backward to the beginning of the video
-                backward_masks = self._track_backward(
-                    0,  # Track from beginning of video
-                    annotation['frame'],
-                    mask
-                )
-                all_masks.update(backward_masks)
-                
-                print(f"Tracked from frame {annotation['frame']} across entire video ({len(forward_masks)} forward, {len(backward_masks)} backward frames)")
+
+        # Process segments BETWEEN consecutive annotations
+        fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
+        print(f"\nProcessing {len(fluid_annotations)} fluid annotations")
+
+        for i in range(len(fluid_annotations)):
+            current = fluid_annotations[i]
+
+            # Process segment from start of video to first annotation
+            if i == 0 and current['frame'] > 0:
+                print(f"\nTracking from start (0) to first annotation ({current['frame']})")
+                self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
+
+            # Process segment between consecutive annotations
+            if i < len(fluid_annotations) - 1:
+                next_ann = fluid_annotations[i + 1]
+                if next_ann['frame'] - current['frame'] > 1:
+                    print(f"\nProcessing segment between annotations: {current['frame']} → {next_ann['frame']}")
+                    self._process_segment(current['frame'], next_ann['frame'],
+                                        current['mask'], next_ann['mask'],
+                                        all_masks, clear_frames, video_path)
+
+            # Process segment from last annotation to end of video
+            if i == len(fluid_annotations) - 1 and current['frame'] < total_frames - 1:
+                print(f"\nTracking from last annotation ({current['frame']}) to end ({total_frames - 1})")
+                self._process_segment(current['frame'], total_frames - 1,
+                                    current['mask'], None, all_masks, clear_frames, video_path)
         
         # Process clear frames
         for clear_frame in clear_frames:
@@ -398,35 +404,42 @@ class MultiFrameTracker:
         
         # Set video to start frame
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        
+
         current_mask = initial_mask.copy()
         masks[start_frame] = {
             'mask': current_mask,
             'type': 'fluid',
             'is_annotation': True
         }
-        
+
         frames_tracked = 0
+        prev_frame = None
+
+        # Read the initial frame to use as previous frame
+        ret, prev_frame = self.cap.read()
+        if not ret:
+            print(f"Failed to read initial frame {start_frame}")
+            return masks
+
         for frame_num in range(start_frame + 1, end_frame + 1):
-            ret, frame = self.cap.read()
+            ret, curr_frame = self.cap.read()
             if not ret:
                 print(f"Failed to read frame {frame_num}")
                 break
-            
-            # Use optical flow to track the mask
-            prev_frame = self._get_previous_frame()
-            if prev_frame is not None:
-                flow = self.flow_processor.calculate_flow(prev_frame, frame)
-                current_mask = self._warp_mask_with_flow(current_mask, flow)
-                
-                masks[frame_num] = {
-                    'mask': current_mask,
-                    'type': 'fluid',
-                    'is_annotation': False
-                }
-                frames_tracked += 1
-            else:
-                print(f"No previous frame available for frame {frame_num}")
+
+            # Calculate optical flow from previous to current frame
+            flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
+            current_mask = self._warp_mask_with_flow(current_mask, flow)
+
+            masks[frame_num] = {
+                'mask': current_mask,
+                'type': 'fluid',
+                'is_annotation': False
+            }
+            frames_tracked += 1
+
+            # Update prev_frame for next iteration
+            prev_frame = curr_frame
         
         print(f"Forward tracking: {frames_tracked} frames tracked")
         return masks
@@ -434,7 +447,9 @@ class MultiFrameTracker:
     def _track_backward(self, start_frame, end_frame, initial_mask):
         """Track a mask backward from start_frame to end_frame."""
         masks = {}
-        
+
+        print(f"Tracking backward from frame {start_frame} to {end_frame}")
+
         # Set video to start frame
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         
@@ -445,27 +460,42 @@ class MultiFrameTracker:
             'is_annotation': True
         }
         
+        frames_tracked = 0
+        prev_frame = None
+
+        # Read the initial frame
+        ret, prev_frame = self.cap.read()
+        if not ret:
+            print(f"Failed to read initial frame {start_frame}")
+            return masks
+
+        # Track backward through frames
         for frame_num in range(start_frame - 1, end_frame - 1, -1):
             if frame_num < 0:
                 break
-                
+
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-            ret, frame = self.cap.read()
+            ret, curr_frame = self.cap.read()
             if not ret:
+                print(f"Failed to read frame {frame_num}")
                 break
-            
-            # Use optical flow to track the mask backward
-            next_frame = self._get_next_frame()
-            if next_frame is not None:
-                flow = self.flow_processor.calculate_flow(next_frame, frame)
-                current_mask = self._warp_mask_with_flow(current_mask, flow)
-                
-                masks[frame_num] = {
-                    'mask': current_mask,
-                    'type': 'fluid',
-                    'is_annotation': False
-                }
-        
+
+            # Calculate optical flow from current frame to previous frame (backward)
+            # Since we're going backward, flow goes from curr_frame to prev_frame
+            flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
+            current_mask = self._warp_mask_with_flow(current_mask, flow)
+
+            masks[frame_num] = {
+                'mask': current_mask,
+                'type': 'fluid',
+                'is_annotation': False
+            }
+            frames_tracked += 1
+
+            # Update prev_frame for next iteration
+            prev_frame = curr_frame
+
+        print(f"Backward tracking: {frames_tracked} frames tracked")
         return masks
     
     def _get_previous_frame(self):
@@ -489,6 +519,140 @@ class MultiFrameTracker:
             return frame
         return None
     
+    def _process_segment(self, start_frame, end_frame, start_mask, end_mask, all_masks, clear_frames, video_path):
+        """
+        Process a segment between two frames using bidirectional tracking with distance weighting.
+
+        Args:
+            start_frame: Starting frame number
+            end_frame: Ending frame number
+            start_mask: Mask at start frame (None if tracking from beginning)
+            end_mask: Mask at end frame (None if tracking to end)
+            all_masks: Dictionary to store results
+            clear_frames: Set of frames marked as clear
+            video_path: Path to video file
+        """
+        if end_frame - start_frame <= 1:
+            return  # No frames to interpolate
+
+        # Open video for this segment
+        cap = cv2.VideoCapture(video_path)
+
+        # Track forward from start if we have a start mask
+        forward_masks = {}
+        if start_mask is not None:
+            print(f"  Forward tracking from {start_frame}")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            current_mask = start_mask.copy()
+
+            # Read start frame
+            ret, prev_frame = cap.read()
+            if ret:
+                for frame_idx in range(start_frame + 1, min(end_frame + 1, start_frame + 100)):  # Limit range
+                    ret, curr_frame = cap.read()
+                    if not ret:
+                        break
+
+                    # Calculate optical flow
+                    flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
+                    current_mask = self._warp_mask_with_flow(current_mask, flow)
+                    forward_masks[frame_idx] = current_mask
+                    prev_frame = curr_frame
+
+        # Track backward from end if we have an end mask
+        backward_masks = {}
+        if end_mask is not None:
+            print(f"  Backward tracking from {end_frame}")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, end_frame)
+            current_mask = end_mask.copy()
+
+            # Read end frame
+            ret, prev_frame = cap.read()
+            if ret:
+                for frame_idx in range(end_frame - 1, max(start_frame - 1, end_frame - 100), -1):  # Limit range
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, curr_frame = cap.read()
+                    if not ret:
+                        break
+
+                    # Calculate optical flow (backward)
+                    flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
+                    current_mask = self._warp_mask_with_flow(current_mask, flow)
+                    backward_masks[frame_idx] = current_mask
+                    prev_frame = curr_frame
+
+        cap.release()
+
+        # Combine masks with distance-based weighting
+        for frame_idx in range(start_frame + 1, end_frame):
+            if frame_idx in clear_frames:
+                continue  # Skip clear frames
+
+            if frame_idx in forward_masks and frame_idx in backward_masks:
+                # Calculate distance-based weights
+                total_dist = end_frame - start_frame
+                forward_weight = (end_frame - frame_idx) / total_dist
+                backward_weight = (frame_idx - start_frame) / total_dist
+
+                # Combine masks with weights
+                combined_mask = self._combine_masks_weighted(
+                    forward_masks[frame_idx], backward_masks[frame_idx],
+                    forward_weight, backward_weight
+                )
+
+                all_masks[frame_idx] = {
+                    'mask': combined_mask,
+                    'type': 'fluid_combined',
+                    'is_annotation': False,
+                    'forward_weight': forward_weight,
+                    'backward_weight': backward_weight
+                }
+            elif frame_idx in forward_masks:
+                all_masks[frame_idx] = {
+                    'mask': forward_masks[frame_idx],
+                    'type': 'fluid_forward',
+                    'is_annotation': False
+                }
+            elif frame_idx in backward_masks:
+                all_masks[frame_idx] = {
+                    'mask': backward_masks[frame_idx],
+                    'type': 'fluid_backward',
+                    'is_annotation': False
+                }
+
+    def _combine_masks_weighted(self, mask1, mask2, weight1, weight2):
+        """
+        Combine two masks with specified weights.
+
+        Args:
+            mask1: First mask
+            mask2: Second mask
+            weight1: Weight for first mask
+            weight2: Weight for second mask
+
+        Returns:
+            Combined mask
+        """
+        # Convert to float for weighted combination
+        mask1_float = mask1.astype(np.float32) / 255.0
+        mask2_float = mask2.astype(np.float32) / 255.0
+
+        # Weighted combination
+        combined = mask1_float * weight1 + mask2_float * weight2
+
+        # Convert back to uint8
+        combined = np.clip(combined * 255, 0, 255).astype(np.uint8)
+
+        # Apply threshold to get binary mask
+        _, combined = cv2.threshold(combined, 127, 255, cv2.THRESH_BINARY)
+
+        # Optional: Apply morphological operations to clean up
+        kernel = np.ones((3, 3), np.uint8)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel)
+
+        return combined
+
     def _warp_mask_with_flow(self, mask, flow):
         """Warp a mask using optical flow."""
         # Create coordinate grids

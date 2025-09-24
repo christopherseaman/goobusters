@@ -1923,10 +1923,11 @@ if __name__ == '__main__':
     from tqdm import tqdm
     
     DEBUG = True
-    # Set the optical flow method to use
-    FLOW_METHOD = ['farneback', 'deepflow', 'dis', 'raft']
-    
+
     load_dotenv('dot.env')
+
+    # Load optical flow methods from environment
+    FLOW_METHOD = os.getenv('FLOW_METHOD', 'farneback').split(',')
     
     ACCESS_TOKEN = os.getenv('MDAI_TOKEN')
     DATA_DIR = os.getenv('DATA_DIR')
@@ -1999,7 +2000,18 @@ if __name__ == '__main__':
     print(f"Annotations without corresponding video files: {num_without_files}")
     
     # Select annotations for processing
-    if DEBUG:
+    TEST_STUDY_UID = os.getenv('TEST_STUDY_UID')
+    TEST_SERIES_UID = os.getenv('TEST_SERIES_UID')
+
+    if TEST_STUDY_UID and TEST_SERIES_UID:
+        # Use specific test study if provided
+        matched_annotations = free_fluid_annotations[
+            (free_fluid_annotations['StudyInstanceUID'] == TEST_STUDY_UID) &
+            (free_fluid_annotations['SeriesInstanceUID'] == TEST_SERIES_UID) &
+            (free_fluid_annotations['file_exists'])
+        ]
+        print(f"Using TEST_STUDY_UID: Found {len(matched_annotations)} annotations")
+    elif DEBUG:
         matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=1, random_state=42)
     else:
         matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
