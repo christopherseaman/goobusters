@@ -427,6 +427,11 @@ class MultiFrameTracker:
 
         print(f"Tracking backward from frame {start_frame} to {end_frame}")
 
+        # Ensure we have a video capture open
+        if self.cap is None or not self.cap.isOpened():
+            self.logger.error("Video capture not initialized for backward tracking")
+            return masks
+
         # Set video to start frame
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
         
@@ -668,38 +673,40 @@ class MultiFrameTracker:
         """Save the tracking results."""
         # Create output video with overlayed masks
         output_video_path = os.path.join(self.output_dir, "multi_frame_tracking.mp4")
-        
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-        
-        frame_num = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            if frame_num in all_masks:
-                mask_info = all_masks[frame_num]
-                mask = mask_info['mask']
-                
-                # Create colored overlay
-                overlay = np.zeros_like(frame)
-                overlay[mask > 0] = [0, 255, 0]  # Green for fluid
-                
-                # Blend with original frame
-                alpha = 0.3
-                frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
-            
-            out.write(frame)
-            frame_num += 1
-        
-        cap.release()
-        out.release()
+
+        # Use context manager to ensure video capture is properly released
+        with video_capture(video_path) as cap:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+
+            try:
+                frame_num = 0
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    if frame_num in all_masks:
+                        mask_info = all_masks[frame_num]
+                        mask = mask_info['mask']
+
+                        # Create colored overlay
+                        overlay = np.zeros_like(frame)
+                        overlay[mask > 0] = [0, 255, 0]  # Green for fluid
+
+                        # Blend with original frame
+                        alpha = 0.3
+                        frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+
+                    out.write(frame)
+                    frame_num += 1
+            finally:
+                # Ensure video writer is always released
+                out.release()
         
         if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
             print(f"Results saved to: {output_video_path}")
