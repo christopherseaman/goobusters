@@ -4,19 +4,27 @@ import numpy as np
 import torchvision.models.optical_flow as optical_flow
 from torchvision.models.optical_flow import Raft_Large_Weights
 from torchvision.transforms.functional import resize
+try:
+    from .performance_config import get_optimizer
+except ImportError:
+    from performance_config import get_optimizer
 
 class OpticalFlowProcessor:
     def __init__(self, method):
         self.method = method
         self.raft_model = None
+
+        # Initialize performance optimizer
+        self.optimizer = get_optimizer()
+        self.device = self.optimizer.device
+
         if self.method == 'raft':
             self.load_raft_model()
 
     def load_raft_model(self):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {device} for RAFT")
+        # print(f"Using device: {self.device} for RAFT")
         self.raft_model = optical_flow.raft_large(weights=Raft_Large_Weights.DEFAULT, progress=False)
-        self.raft_model = self.raft_model.to(device)
+        self.raft_model = self.raft_model.to(self.device)
         self.raft_model = self.raft_model.eval()
 
     def raft_optical_flow(self, image1, image2):
@@ -41,10 +49,9 @@ class OpticalFlowProcessor:
         image1 = resize(image1, [new_h, new_w])
         image2 = resize(image2, [new_h, new_w])
 
-        # Move images to the same device as the model
-        device = next(self.raft_model.parameters()).device
-        image1 = image1.to(device)
-        image2 = image2.to(device)
+        # Move images to the optimized device
+        image1 = image1.to(self.device)
+        image2 = image2.to(self.device)
 
         # Compute optical flow
         with torch.no_grad():

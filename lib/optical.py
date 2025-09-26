@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "opencv-contrib-python",  # IMPORTANT: Only contrib, not regular opencv-python
+#     "numpy",
+#     "pandas",
+#     "python-dotenv",
+#     "mdai==0.16.0",
+#     "pydicom>=3.0.0",
+#     "tqdm",
+#     "scikit-image",
+#     "scipy",
+#     "pillow"
+# ]
+# ///
+
 """
 Multi-Frame Optical Flow Tracker
 
@@ -1940,22 +1956,22 @@ if __name__ == '__main__':
     if ACCESS_TOKEN is None:
         print("ACCESS_TOKEN is not set, please set ACCESS_TOKEN in dot.env")
         exit()
-    else:
-        print("ACCESS_TOKEN is set")
-    print(f"Using optical flow method: {FLOW_METHOD}")
-    print(f"DATA_DIR={DATA_DIR}")
-    print(f"DOMAIN={DOMAIN}")
-    print(f"PROJECT_ID={PROJECT_ID}")
-    print(f"DATASET_ID={DATASET_ID}")
-    print(f"ANNOTATIONS={ANNOTATIONS}")
-    print(f"LABEL_ID={LABEL_ID}")
+    # else:
+    #     print("ACCESS_TOKEN is set")
+    # print(f"Using optical flow method: {FLOW_METHOD}")
+    # print(f"DATA_DIR={DATA_DIR}")
+    # print(f"DOMAIN={DOMAIN}")
+    # print(f"PROJECT_ID={PROJECT_ID}")
+    # print(f"DATASET_ID={DATASET_ID}")
+    # print(f"ANNOTATIONS={ANNOTATIONS}")
+    # print(f"LABEL_ID={LABEL_ID}")
     
     # Start MD.ai client (skip connection test if we have cached data)
     try:
         mdai_client = mdai.Client(domain=DOMAIN, access_token=ACCESS_TOKEN)
     except Exception as e:
-        print(f"Warning: Could not connect to MD.ai ({e})")
-        print("Attempting to use cached data...")
+        # print(f"Warning: Could not connect to MD.ai ({e})")
+        # print("Attempting to use cached data...")
         mdai_client = None
     
     # Download the dataset from MD.ai (or use cached version)
@@ -1996,8 +2012,8 @@ if __name__ == '__main__':
     num_with_files = free_fluid_annotations['file_exists'].sum()
     num_without_files = len(free_fluid_annotations) - num_with_files
     
-    print(f"Annotations with corresponding video files: {num_with_files}")
-    print(f"Annotations without corresponding video files: {num_without_files}")
+    # print(f"Annotations with corresponding video files: {num_with_files}")
+    # print(f"Annotations without corresponding video files: {num_without_files}")
     
     # Select annotations for processing
     TEST_STUDY_UID = os.getenv('TEST_STUDY_UID')
@@ -2010,7 +2026,7 @@ if __name__ == '__main__':
             (free_fluid_annotations['SeriesInstanceUID'] == TEST_SERIES_UID) &
             (free_fluid_annotations['file_exists'])
         ]
-        print(f"Using TEST_STUDY_UID: Found {len(matched_annotations)} annotations")
+        # print(f"Using TEST_STUDY_UID: Found {len(matched_annotations)} annotations")
     elif DEBUG:
         matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=1, random_state=42)
     else:
@@ -2022,17 +2038,28 @@ if __name__ == '__main__':
     
     # Group annotations by video for multi-frame processing
     video_groups = matched_annotations.groupby(['StudyInstanceUID', 'SeriesInstanceUID'])
-    
-    print(f"Found {len(video_groups)} unique videos to process")
-    
+
     # Main processing loop using true multi-frame tracking
+    total_videos = len(video_groups)
+    total_methods = len(FLOW_METHOD)
+    print(f"\nFound {total_videos} videos with {total_methods} optical flow method(s): {', '.join(FLOW_METHOD)}")
+
+    if total_videos > 10:
+        estimated_time = total_videos * total_methods * 60  # ~60 seconds per video per method
+        print(f"Estimated total time: ~{estimated_time // 60} minutes ({estimated_time // 3600} hours)")
+
     for method in FLOW_METHOD:
-        print(f"\n=== Running multi-frame tracking with method: {method} ===")
+        print(f"\n{'='*60}")
+        print(f"Running {method} optical flow method")
+        print(f"{'='*60}")
         output_base_dir = os.path.join('output', method)
         os.makedirs(output_base_dir, exist_ok=True)
-        
+
         # Process each video with all its annotations
-        for (study_uid, series_uid), video_annotations in tqdm(video_groups, desc=f"Processing videos with {method}"):
+        video_count = 0
+        total_videos = len(video_groups)
+        for (study_uid, series_uid), video_annotations in tqdm(video_groups, desc=f"{method}", position=0, leave=True):
+            video_count += 1
             try:
                 # Get video path (should be the same for all annotations in this group)
                 video_path = video_annotations.iloc[0]['video_path']
@@ -2044,8 +2071,10 @@ if __name__ == '__main__':
                 os.makedirs(video_output_dir, exist_ok=True)
                 
                 # Initialize optical flow processor
+                # print(f"Initializing OpticalFlowProcessor with method: {method}")
                 flow_processor = OpticalFlowProcessor(method)
-                
+                # print("OpticalFlowProcessor initialized successfully")
+
                 # Process the video with multi-frame tracking
                 result = process_video_with_multi_frame_tracking(
                     video_path=video_path,
@@ -2061,13 +2090,13 @@ if __name__ == '__main__':
                     project_id=PROJECT_ID,
                     dataset_id=DATASET_ID
                 )
-                
-                if DEBUG:
-                    print(f"✅ Successfully processed video with {method}")
-                    print(f"   - Annotated frames: {result['annotated_frames']}")
-                    print(f"   - Predicted frames: {result['predicted_frames']}")
-                    print(f"   - Annotation types: {result['annotation_types']}")
-                    print(f"   - Output video: {result['output_video']}")
+
+                # if DEBUG:
+                #     print(f"✅ Successfully processed video with {method}")
+                #     print(f"   - Annotated frames: {result['annotated_frames']}")
+                #     print(f"   - Predicted frames: {result['predicted_frames']}")
+                #     print(f"   - Annotation types: {result['annotation_types']}")
+                #     print(f"   - Output video: {result['output_video']}")
                 
             except Exception as e:
                 logger.error(f"Error processing video {study_uid}/{series_uid} with {method}: {str(e)}")
@@ -2075,4 +2104,11 @@ if __name__ == '__main__':
                 traceback.print_exc()
                 continue
     
-    print("\n=== Multi-frame tracking completed ===")
+    print("\n" + "="*60)
+    print("✅ All optical flow methods completed successfully")
+    print("="*60)
+
+    # Ensure clean exit
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()

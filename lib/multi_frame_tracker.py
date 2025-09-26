@@ -31,9 +31,38 @@ from collections import defaultdict, deque
 # Import the optical flow processor from the current implementation
 try:
     from .opticalflowprocessor import OpticalFlowProcessor
+    from .video_capture_manager import video_capture, get_video_properties
 except ImportError:
     # Fallback for direct script execution
     from opticalflowprocessor import OpticalFlowProcessor
+    try:
+        from video_capture_manager import video_capture, get_video_properties
+    except ImportError:
+        # If video_capture_manager doesn't exist, create simple fallbacks
+        import cv2
+        from contextlib import contextmanager
+
+        @contextmanager
+        def video_capture(video_path):
+            """Simple fallback video capture context manager."""
+            cap = None
+            try:
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    raise RuntimeError(f"Failed to open video: {video_path}")
+                yield cap
+            finally:
+                if cap is not None and cap.isOpened():
+                    cap.release()
+
+        def get_video_properties(video_path):
+            """Get video properties safely."""
+            with video_capture(video_path) as cap:
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                return total_frames, width, height, fps
 
 LABEL_ID_NO_FLUID = os.getenv("LABEL_ID_NO_FLUID", "L_75K42J") 
 
@@ -101,10 +130,10 @@ class SharedParams:
             if 'last_updated' in data:
                 self.last_updated = data['last_updated']
                 
-            print(f"Loaded parameters (version {self.version}) from {params_file}")
+            # print(f"Loaded parameters (version {self.version}) from {params_file}")
             return True
         except Exception as e:
-            print(f"Error loading parameters: {str(e)}")
+            # print(f"Error loading parameters: {str(e)}")
             return False
     
     def save_to_file(self, params_file):
@@ -127,14 +156,14 @@ class SharedParams:
             with open(params_file, 'w') as f:
                 json.dump(data, f, indent=4)
                 
-            print(f"✅ PARAMETERS UPDATED: v{old_version} → v{self.version}")
-            print(f"   Window size: {self.tracking_params['window_size']}")
-            print(f"   Flow quality: {self.tracking_params['flow_quality_threshold']:.3f}")
-            print(f"   Learning rate: {self.tracking_params['learning_rate']:.3f}")
-            print(f"   Saved to: {params_file}")
+            # print(f"✅ PARAMETERS UPDATED: v{old_version} → v{self.version}")
+            # print(f"   Window size: {self.tracking_params['window_size']}")
+            # print(f"   Flow quality: {self.tracking_params['flow_quality_threshold']:.3f}")
+            # print(f"   Learning rate: {self.tracking_params['learning_rate']:.3f}")
+            # print(f"   Saved to: {params_file}")
             return True
         except Exception as e:
-            print(f"Error saving parameters: {str(e)}")
+            # print(f"Error saving parameters: {str(e)}")
             return False
 
 
@@ -187,49 +216,58 @@ class MultiFrameTracker:
         self.debug_dir = os.path.join(output_dir, 'debug')
         os.makedirs(self.debug_dir, exist_ok=True)
         
-        # Setup logging
+        # Setup logging (reuse existing logger to avoid file handle leaks)
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
-        
-        log_file = os.path.join(output_dir, f'multi_frame_tracker_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
+
+        # Only add file handler if not already present
+        if not self.logger.handlers:
+            log_file = os.path.join(output_dir, f'multi_frame_tracker_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+            self.file_handler = logging.FileHandler(log_file)
+            self.file_handler.setLevel(logging.DEBUG)
+
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            self.file_handler.setFormatter(formatter)
+            self.logger.addHandler(self.file_handler)
+        else:
+            self.file_handler = None
         
         # Debug: {'on' if self.debug_mode else 'off'}, Feedback: {'on' if self.feedback_loop_mode else 'off'}, Learning: {'on' if self.learning_mode else 'off'}
     
+    def __del__(self):
+        """Cleanup file handlers on deletion."""
+        if hasattr(self, 'file_handler') and self.file_handler:
+            self.file_handler.close()
+            self.logger.removeHandler(self.file_handler)
+
     def process_annotations(self, annotations_df, video_path, study_uid, series_uid):
         """
         Process annotations for a video and generate predictions using multi-frame tracking.
-        
+
         Args:
             annotations_df: DataFrame containing annotation data
             video_path: Path to the video file
             study_uid: Study instance UID
             series_uid: Series instance UID
-            
+
         Returns:
             Dictionary mapping frame numbers to mask data
         """
-        
 
-        # Initialize video capture
-        self.cap = cv2.VideoCapture(video_path)
-        if not self.cap.isOpened():
-           self.logger.error(f"Failed to open video: {video_path}")
-           print(f"ERROR: Failed to open video: {video_path}")
-           return {}
-        
-        # Get video properties
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        cap.release()
+        # print(f"Starting process_annotations for video: {os.path.basename(video_path)}")
+
+        # Get video properties using context manager to ensure cleanup
+        try:
+            # print("Getting video properties...")
+            total_frames, frame_width, frame_height, fps = get_video_properties(video_path)
+            # print(f"Video properties: {total_frames} frames, {frame_width}x{frame_height}, {fps} fps")
+        except Exception as e:
+            self.logger.error(f"Failed to get video properties: {video_path} - {str(e)}")
+            # print(f"ERROR: Failed to get video properties: {video_path}")
+            return {}
+
+        # Store self.cap as None initially - will be created as needed
+        self.cap = None
         
         
         # Store total frames for use in other methods
@@ -263,7 +301,6 @@ class MultiFrameTracker:
 
         # Process segments BETWEEN consecutive annotations
         fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
-        # Processing {len(fluid_annotations)} fluid annotations
 
         for i in range(len(fluid_annotations)):
             current = fluid_annotations[i]
@@ -308,7 +345,7 @@ class MultiFrameTracker:
         self._save_results(all_masks, video_path, study_uid, series_uid)
         
         if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
-            print(f"Multi-frame processing completed: {len(all_masks)} frames processed")
+            pass  # print(f"Multi-frame processing completed: {len(all_masks)} frames processed")
         return all_masks
     
     def _classify_annotations(self, annotations_df, frame_height, frame_width):
@@ -377,7 +414,7 @@ class MultiFrameTracker:
         """Track a mask forward from start_frame to end_frame."""
         masks = {}
         
-        print(f"Tracking forward from frame {start_frame} to {end_frame}")
+        # print(f"Tracking forward from frame {start_frame} to {end_frame}")
         
         # Set video to start frame
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -395,7 +432,7 @@ class MultiFrameTracker:
         # Read the initial frame to use as previous frame
         ret, prev_frame = self.cap.read()
         if not ret:
-            print(f"Failed to read initial frame {start_frame}")
+            # print(f"Failed to read initial frame {start_frame}")
             return masks
 
         for frame_num in range(start_frame + 1, end_frame + 1):
@@ -425,7 +462,7 @@ class MultiFrameTracker:
         """Track a mask backward from start_frame to end_frame."""
         masks = {}
 
-        print(f"Tracking backward from frame {start_frame} to {end_frame}")
+        # print(f"Tracking backward from frame {start_frame} to {end_frame}")
 
         # Ensure we have a video capture open
         if self.cap is None or not self.cap.isOpened():
@@ -448,7 +485,7 @@ class MultiFrameTracker:
         # Read the initial frame
         ret, prev_frame = self.cap.read()
         if not ret:
-            print(f"Failed to read initial frame {start_frame}")
+            # print(f"Failed to read initial frame {start_frame}")
             return masks
 
         # Track backward through frames
@@ -517,53 +554,50 @@ class MultiFrameTracker:
         if end_frame - start_frame <= 1:
             return  # No frames to interpolate
 
-        # Open video for this segment
-        cap = cv2.VideoCapture(video_path)
+        # Use context manager to ensure video capture is always released
+        with video_capture(video_path) as cap:
+            # Track forward from start if we have a start mask
+            forward_masks = {}
+            if start_mask is not None:
+                # Forward from {start_frame}
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                current_mask = start_mask.copy()
 
-        # Track forward from start if we have a start mask
-        forward_masks = {}
-        if start_mask is not None:
-            # Forward from {start_frame}
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            current_mask = start_mask.copy()
+                # Read start frame
+                ret, prev_frame = cap.read()
+                if ret:
+                    for frame_idx in range(start_frame + 1, min(end_frame + 1, start_frame + 100)):
+                        ret, curr_frame = cap.read()
+                        if not ret:
+                            break
 
-            # Read start frame
-            ret, prev_frame = cap.read()
-            if ret:
-                for frame_idx in range(start_frame + 1, min(end_frame + 1, start_frame + 100)):  # Limit range
-                    ret, curr_frame = cap.read()
-                    if not ret:
-                        break
+                        # Calculate optical flow
+                        flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
+                        current_mask = self._warp_mask_with_flow(current_mask, flow)
+                        forward_masks[frame_idx] = current_mask
+                        prev_frame = curr_frame
 
-                    # Calculate optical flow
-                    flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
-                    current_mask = self._warp_mask_with_flow(current_mask, flow)
-                    forward_masks[frame_idx] = current_mask
-                    prev_frame = curr_frame
+            # Track backward from end if we have an end mask
+            backward_masks = {}
+            if end_mask is not None:
+                # Backward from {end_frame}
+                cap.set(cv2.CAP_PROP_POS_FRAMES, end_frame)
+                current_mask = end_mask.copy()
 
-        # Track backward from end if we have an end mask
-        backward_masks = {}
-        if end_mask is not None:
-            # Backward from {end_frame}
-            cap.set(cv2.CAP_PROP_POS_FRAMES, end_frame)
-            current_mask = end_mask.copy()
+                # Read end frame
+                ret, prev_frame = cap.read()
+                if ret:
+                    for frame_idx in range(end_frame - 1, max(start_frame - 1, end_frame - 100), -1):
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                        ret, curr_frame = cap.read()
+                        if not ret:
+                            break
 
-            # Read end frame
-            ret, prev_frame = cap.read()
-            if ret:
-                for frame_idx in range(end_frame - 1, max(start_frame - 1, end_frame - 100), -1):  # Limit range
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                    ret, curr_frame = cap.read()
-                    if not ret:
-                        break
-
-                    # Calculate optical flow (backward)
-                    flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
-                    current_mask = self._warp_mask_with_flow(current_mask, flow)
-                    backward_masks[frame_idx] = current_mask
-                    prev_frame = curr_frame
-
-        cap.release()
+                        # Calculate optical flow (backward)
+                        flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
+                        current_mask = self._warp_mask_with_flow(current_mask, flow)
+                        backward_masks[frame_idx] = current_mask
+                        prev_frame = curr_frame
 
         # Combine masks with distance-based weighting
         for frame_idx in range(start_frame + 1, end_frame):
@@ -671,6 +705,20 @@ class MultiFrameTracker:
     
     def _save_results(self, all_masks, video_path, study_uid, series_uid):
         """Save the tracking results."""
+        # Save mask data summary
+        mask_data_path = os.path.join(self.output_dir, "mask_data.json")
+        mask_summary = {}
+        for frame_num, mask_info in all_masks.items():
+            if isinstance(mask_info, dict):
+                mask_summary[str(frame_num)] = {
+                    'type': mask_info.get('type', 'unknown'),
+                    'is_annotation': mask_info.get('is_annotation', False),
+                    'has_mask': mask_info.get('mask') is not None
+                }
+
+        with open(mask_data_path, 'w') as f:
+            json.dump(mask_summary, f, indent=2)
+
         # Create output video with overlayed masks
         output_video_path = os.path.join(self.output_dir, "multi_frame_tracking.mp4")
 
@@ -685,31 +733,40 @@ class MultiFrameTracker:
 
             try:
                 frame_num = 0
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-                    if frame_num in all_masks:
-                        mask_info = all_masks[frame_num]
-                        mask = mask_info['mask']
+                # Skip video writing for very long videos to prevent hanging
+                # Only write first 1000 frames for long videos
+                max_frames = min(total_frames, 1000)
 
-                        # Create colored overlay
-                        overlay = np.zeros_like(frame)
-                        overlay[mask > 0] = [0, 255, 0]  # Green for fluid
+                # Add progress bar for video writing
+                with tqdm(total=max_frames, desc="Writing video", leave=False, position=1) as pbar:
+                    while frame_num < max_frames:
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
 
-                        # Blend with original frame
-                        alpha = 0.3
-                        frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+                        if frame_num in all_masks:
+                            mask_info = all_masks[frame_num]
+                            mask = mask_info['mask']
 
-                    out.write(frame)
-                    frame_num += 1
+                            # Create colored overlay
+                            overlay = np.zeros_like(frame)
+                            overlay[mask > 0] = [0, 255, 0]  # Green for fluid
+
+                            # Blend with original frame
+                            alpha = 0.3
+                            frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+
+                        out.write(frame)
+                        frame_num += 1
+                        pbar.update(1)
             finally:
                 # Ensure video writer is always released
                 out.release()
         
         if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
-            print(f"Results saved to: {output_video_path}")
+            pass  # print(f"Results saved to: {output_video_path}")
 
 
 def process_video_with_multi_frame_tracking(
@@ -728,11 +785,11 @@ def process_video_with_multi_frame_tracking(
 ):
     """
     Main function to process a video with multi-frame tracking.
-    
+
     This function integrates the MultiFrameTracker with the existing workflow.
     """
-    # Processing {len(annotations_df)} annotations
-    
+    # print(f"process_video_with_multi_frame_tracking called with {len(annotations_df)} annotations")
+
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
@@ -751,10 +808,9 @@ def process_video_with_multi_frame_tracking(
     tracker = MultiFrameTracker(flow_processor, output_dir, debug_mode=True)
     
     # Process annotations
-    # Running tracking
     all_masks = tracker.process_annotations(annotations_df, video_path, study_uid, series_uid)
     if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
-        print(f"Received {len(all_masks)} masks from process_annotations")
+        pass  # print(f"Received {len(all_masks)} masks from process_annotations")
     
     # Update checkpoint
     try:
@@ -772,7 +828,7 @@ def process_video_with_multi_frame_tracking(
             annotation_types[annotation_type] = annotation_types.get(annotation_type, 0) + 1
     
     # Tracking complete
-    
+
     return {
         'all_masks': all_masks,
         'annotated_frames': sum(1 for info in all_masks.values() if isinstance(info, dict) and info.get('is_annotation', False)),
