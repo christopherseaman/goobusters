@@ -141,7 +141,6 @@ class PerformanceOptimizer:
 
         try:
             if torch.backends.mps.is_available():
-                print("Testing MPS availability...")
                 # Test MPS with a small tensor to ensure it works
                 import signal
 
@@ -157,15 +156,12 @@ class PerformanceOptimizer:
                     _ = test_tensor * 2
                     signal.alarm(0)  # Cancel the alarm
                     signal.signal(signal.SIGALRM, old_handler)
-                    print("MPS test successful")
                     return True
                 except TimeoutError:
                     signal.alarm(0)  # Cancel the alarm
                     signal.signal(signal.SIGALRM, old_handler)
-                    print("MPS test timed out - disabling MPS")
                     return False
         except Exception as e:
-            print(f"MPS not available: {e}")
             pass
         return False
 
@@ -421,9 +417,7 @@ def get_optimizer(conservative_mode=None, force_reinit=False) -> PerformanceOpti
     """
     global _optimizer
     if _optimizer is None or force_reinit:
-        print("Creating new PerformanceOptimizer instance...")
         _optimizer = PerformanceOptimizer(conservative_mode)
-        print("PerformanceOptimizer created successfully")
         _optimizer.apply_optimizations()
     return _optimizer
 

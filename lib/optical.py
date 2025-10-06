@@ -6,12 +6,13 @@
 #     "numpy",
 #     "pandas",
 #     "python-dotenv",
-#     "mdai==0.16.0",
-#     "pydicom>=3.0.0",
+#     "mdai",
+#     "pydicom",
 #     "tqdm",
 #     "scikit-image",
 #     "scipy",
-#     "pillow"
+#     "pillow",
+#     "pyyaml"
 # ]
 # ///
 
@@ -34,6 +35,7 @@ import cv2
 import numpy as np
 import os
 import json
+import yaml
 from typing import Dict, List, Tuple, Optional, Any, Union
 import logging
 from collections import defaultdict, deque
@@ -109,6 +111,83 @@ def convert_numpy_types(obj):
     elif isinstance(obj, tuple):
         return tuple(convert_numpy_types(item) for item in obj)
     return obj
+
+
+def create_identity_file(video_output_dir: str, study_uid: str, series_uid: str, video_annotations, studies_data) -> None:
+    """
+    Create an identity YAML file for the video output folder containing metadata.
+    
+    Args:
+        video_output_dir: Path to the video output directory
+        study_uid: Study Instance UID
+        series_uid: Series Instance UID  
+        video_annotations: DataFrame containing annotation data for this video
+        studies_data: DataFrame containing studies data with exam numbers
+    """
+    # Extract metadata from the first annotation (they should all have the same metadata)
+    first_annotation = video_annotations.iloc[0]
+    
+    # Get exam number from studies data
+    study_match = studies_data[studies_data['StudyInstanceUID'] == study_uid]
+    exam_number = int(study_match.iloc[0]['number']) if not study_match.empty else 'Unknown'
+    
+    # Get all unique labels present in this video's annotations
+    unique_labels = video_annotations[['labelId', 'labelName']].drop_duplicates()
+    labels_info = unique_labels.to_dict('records')
+    
+    # Create identity data
+    identity_data = {
+        'study_instance_uid': study_uid,
+        'series_instance_uid': series_uid,
+        'exam_number': exam_number,
+        'dataset_name': first_annotation.get('dataset', 'Unknown'),
+        'dataset_id': first_annotation.get('datasetId', 'Unknown'),
+        'created_at': datetime.now().isoformat(),
+        'annotation_count': len(video_annotations),
+        'labels': labels_info
+    }
+    
+    # Write YAML file
+    identity_file_path = os.path.join(video_output_dir, 'identity.yaml')
+    try:
+        with open(identity_file_path, 'w') as f:
+            yaml.dump(identity_data, f, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        pass  # Silent failure for background task
+
+
+def copy_annotations_to_output(video_output_dir: str, video_annotations, annotations_data) -> None:
+    """
+    Copy input annotations JSON data to the video output directory.
+    This contains all original annotations for the video EXCEPT any with track_id.
+    
+    Args:
+        video_output_dir: Path to the video output directory
+        video_annotations: DataFrame containing annotation data for this video
+        annotations_data: Full annotations data structure
+    """
+    try:
+        # Filter out any annotations that have track_id (these are generated, not input)
+        input_annotations = []
+        for annotation in annotations_data.get('annotations', []):
+            # Only include annotations that don't have track_id (original annotations)
+            if 'track_id' not in annotation:
+                input_annotations.append(annotation)
+        
+        # Create input annotations data structure
+        input_data = {
+            'annotations': input_annotations,
+            'studies': annotations_data.get('studies', []),
+            'labels': annotations_data.get('labels', [])
+        }
+        
+        # Save the input annotations data for this video
+        annotations_file = os.path.join(video_output_dir, 'input_annotations.json')
+        with open(annotations_file, 'w') as f:
+            json.dump(input_data, f, indent=2, default=str)
+        
+    except Exception as e:
+        pass  # Silent failure for background task
 
 
 # Configure logging
@@ -2028,9 +2107,11 @@ if __name__ == '__main__':
         ]
         # print(f"Using TEST_STUDY_UID: Found {len(matched_annotations)} annotations")
     elif DEBUG:
-        matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=1, random_state=42)
+        matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']].sample(n=5, random_state=42)
     else:
         matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
+    
+    # Performance optimization removed - no measurable benefit for this workload
     
     # Import the new multi-frame tracker and optical flow processor
     from .multi_frame_tracker import process_video_with_multi_frame_tracking
@@ -2069,6 +2150,12 @@ if __name__ == '__main__':
                 # Create output directory for this video
                 video_output_dir = os.path.join(output_base_dir, f"{study_uid}_{series_uid}")
                 os.makedirs(video_output_dir, exist_ok=True)
+                
+                # Generate identity file for this video output folder
+                create_identity_file(video_output_dir, study_uid, series_uid, video_annotations, annotations_data['studies'])
+                
+                # Copy original annotations JSON to video output directory
+                copy_annotations_to_output(video_output_dir, video_annotations, annotations_data)
                 
                 # Initialize optical flow processor
                 # print(f"Initializing OpticalFlowProcessor with method: {method}")

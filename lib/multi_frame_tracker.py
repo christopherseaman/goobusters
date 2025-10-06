@@ -216,22 +216,6 @@ class MultiFrameTracker:
         self.debug_dir = os.path.join(output_dir, 'debug')
         os.makedirs(self.debug_dir, exist_ok=True)
         
-        # Setup logging (reuse existing logger to avoid file handle leaks)
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.DEBUG)
-
-        # Only add file handler if not already present
-        if not self.logger.handlers:
-            log_file = os.path.join(output_dir, f'multi_frame_tracker_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-            self.file_handler = logging.FileHandler(log_file)
-            self.file_handler.setLevel(logging.DEBUG)
-
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            self.file_handler.setFormatter(formatter)
-            self.logger.addHandler(self.file_handler)
-        else:
-            self.file_handler = None
-        
         # Debug: {'on' if self.debug_mode else 'off'}, Feedback: {'on' if self.feedback_loop_mode else 'off'}, Learning: {'on' if self.learning_mode else 'off'}
     
     def __del__(self):
@@ -296,7 +280,9 @@ class MultiFrameTracker:
                     'mask': annotation['mask'],
                     'type': 'fluid',
                     'is_annotation': True,
-                    'annotation_id': annotation.get('id', f'fluid_{annotation["frame"]}')
+                    'annotation_id': annotation.get('id', f'fluid_{annotation["frame"]}'),
+                    'track_id': f"annotation_{annotation['frame']}",
+                    'label_id': annotation.get('labelId', 'original_fluid')
                 }
 
         # Process segments BETWEEN consecutive annotations
@@ -435,7 +421,18 @@ class MultiFrameTracker:
             # print(f"Failed to read initial frame {start_frame}")
             return masks
 
-        for frame_num in range(start_frame + 1, end_frame + 1):
+        for frame_num in range(start_frame, end_frame + 1):
+            if frame_num == start_frame:
+                # This is the initial frame, just store the mask
+                masks[frame_num] = {
+                    'mask': current_mask,
+                    'type': 'fluid',
+                    'is_annotation': True,
+                    'track_id': f"annotation_{frame_num}",
+                    'label_id': 'original_fluid'
+                }
+                continue
+            
             ret, curr_frame = self.cap.read()
             if not ret:
                 print(f"Failed to read frame {frame_num}")
@@ -448,7 +445,9 @@ class MultiFrameTracker:
             masks[frame_num] = {
                 'mask': current_mask,
                 'type': 'fluid',
-                'is_annotation': False
+                'is_annotation': False,
+                'track_id': f"track_{frame_num}",
+                'label_id': 'tracked_fluid'
             }
             frames_tracked += 1
 
@@ -489,9 +488,20 @@ class MultiFrameTracker:
             return masks
 
         # Track backward through frames
-        for frame_num in range(start_frame - 1, end_frame - 1, -1):
+        for frame_num in range(start_frame, end_frame - 1, -1):
             if frame_num < 0:
                 break
+
+            if frame_num == start_frame:
+                # This is the initial frame, just store the mask
+                masks[frame_num] = {
+                    'mask': current_mask,
+                    'type': 'fluid',
+                    'is_annotation': True,
+                    'track_id': f"annotation_{frame_num}",
+                    'label_id': 'original_fluid'
+                }
+                continue
 
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             ret, curr_frame = self.cap.read()
@@ -507,7 +517,9 @@ class MultiFrameTracker:
             masks[frame_num] = {
                 'mask': current_mask,
                 'type': 'fluid',
-                'is_annotation': False
+                'is_annotation': False,
+                'track_id': f"track_{frame_num}",
+                'label_id': 'tracked_fluid'
             }
             frames_tracked += 1
 
@@ -566,7 +578,12 @@ class MultiFrameTracker:
                 # Read start frame
                 ret, prev_frame = cap.read()
                 if ret:
-                    for frame_idx in range(start_frame + 1, min(end_frame + 1, start_frame + 100)):
+                    for frame_idx in range(start_frame, min(end_frame + 1, start_frame + 100)):
+                        if frame_idx == start_frame:
+                            # This is the initial frame, just store the mask
+                            forward_masks[frame_idx] = current_mask
+                            continue
+                            
                         ret, curr_frame = cap.read()
                         if not ret:
                             break
@@ -587,7 +604,12 @@ class MultiFrameTracker:
                 # Read end frame
                 ret, prev_frame = cap.read()
                 if ret:
-                    for frame_idx in range(end_frame - 1, max(start_frame - 1, end_frame - 100), -1):
+                    for frame_idx in range(end_frame, max(start_frame - 1, end_frame - 100), -1):
+                        if frame_idx == end_frame:
+                            # This is the initial frame, just store the mask
+                            backward_masks[frame_idx] = current_mask
+                            continue
+                            
                         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                         ret, curr_frame = cap.read()
                         if not ret:
@@ -600,7 +622,7 @@ class MultiFrameTracker:
                         prev_frame = curr_frame
 
         # Combine masks with distance-based weighting
-        for frame_idx in range(start_frame + 1, end_frame):
+        for frame_idx in range(start_frame, end_frame + 1):
             if frame_idx in clear_frames:
                 continue  # Skip clear frames
 
@@ -621,19 +643,25 @@ class MultiFrameTracker:
                     'type': 'fluid_combined',
                     'is_annotation': False,
                     'forward_weight': forward_weight,
-                    'backward_weight': backward_weight
+                    'backward_weight': backward_weight,
+                    'track_id': f"track_{frame_idx}",
+                    'label_id': 'tracked_fluid'
                 }
             elif frame_idx in forward_masks:
                 all_masks[frame_idx] = {
                     'mask': forward_masks[frame_idx],
                     'type': 'fluid_forward',
-                    'is_annotation': False
+                    'is_annotation': False,
+                    'track_id': f"track_{frame_idx}",
+                    'label_id': 'tracked_fluid'
                 }
             elif frame_idx in backward_masks:
                 all_masks[frame_idx] = {
                     'mask': backward_masks[frame_idx],
                     'type': 'fluid_backward',
-                    'is_annotation': False
+                    'is_annotation': False,
+                    'track_id': f"track_{frame_idx}",
+                    'label_id': 'tracked_fluid'
                 }
 
     def _combine_masks_weighted(self, mask1, mask2, weight1, weight2):
@@ -704,23 +732,64 @@ class MultiFrameTracker:
         return np.zeros_like(source_mask)
     
     def _save_results(self, all_masks, video_path, study_uid, series_uid):
-        """Save the tracking results."""
-        # Save mask data summary
-        mask_data_path = os.path.join(self.output_dir, "mask_data.json")
-        mask_summary = {}
-        for frame_num, mask_info in all_masks.items():
-            if isinstance(mask_info, dict):
-                mask_summary[str(frame_num)] = {
-                    'type': mask_info.get('type', 'unknown'),
-                    'is_annotation': mask_info.get('is_annotation', False),
-                    'has_mask': mask_info.get('mask') is not None
-                }
+        """Save the tracking results with individual frame masks and comprehensive data."""
+        try:
+            # Create masks directory for individual frame outputs
+            masks_dir = os.path.join(self.output_dir, "masks")
+            os.makedirs(masks_dir, exist_ok=True)
+            
+            # Save individual frame masks
+            for frame_num, mask_info in all_masks.items():
+                if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
+                    mask = mask_info['mask']
+                    mask_file = os.path.join(masks_dir, f"frame_{frame_num:06d}_mask.png")
+                    cv2.imwrite(mask_file, mask)
+            
+            # Save enhanced mask data with track_id and label_id
+            mask_data_path = os.path.join(self.output_dir, "mask_data.json")
+            mask_summary = {}
+            for frame_num, mask_info in all_masks.items():
+                if isinstance(mask_info, dict):
+                    mask_summary[str(frame_num)] = {
+                        'type': mask_info.get('type', 'unknown'),
+                        'is_annotation': mask_info.get('is_annotation', False),
+                        'has_mask': mask_info.get('mask') is not None,
+                        'track_id': mask_info.get('track_id', f"track_{frame_num}"),
+                        'label_id': mask_info.get('label_id', 'unknown')
+                    }
 
-        with open(mask_data_path, 'w') as f:
-            json.dump(mask_summary, f, indent=2)
+            with open(mask_data_path, 'w') as f:
+                json.dump(mask_summary, f, indent=2)
+            
+            # Create tracked_annotations.json with all tracked annotations
+            tracked_annotations = []
+            for frame_num, mask_info in all_masks.items():
+                if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
+                    # Create annotation in MD.ai format
+                    annotation = {
+                        'id': mask_info.get('track_id', f"track_{frame_num}"),
+                        'labelId': mask_info.get('label_id', 'tracked_fluid'),
+                        'StudyInstanceUID': study_uid,
+                        'SeriesInstanceUID': series_uid,
+                        'frameNumber': frame_num,
+                        'type': mask_info.get('type', 'tracked'),
+                        'is_annotation': mask_info.get('is_annotation', False),
+                        'track_id': mask_info.get('track_id', f"track_{frame_num}"),
+                        'label_id': mask_info.get('label_id', 'tracked_fluid'),
+                        'mask_file': f"frame_{frame_num:06d}_mask.png"
+                    }
+                    tracked_annotations.append(annotation)
+            
+            # Save tracked annotations
+            tracked_file = os.path.join(self.output_dir, "tracked_annotations.json")
+            with open(tracked_file, 'w') as f:
+                json.dump(tracked_annotations, f, indent=2)
+            
+        except Exception as e:
+            pass  # Silent failure for background task
 
         # Create output video with overlayed masks
-        output_video_path = os.path.join(self.output_dir, "multi_frame_tracking.mp4")
+        output_video_path = os.path.join(self.output_dir, "tracked_video.mp4")
 
         # Use context manager to ensure video capture is properly released
         with video_capture(video_path) as cap:
@@ -750,9 +819,14 @@ class MultiFrameTracker:
                             mask_info = all_masks[frame_num]
                             mask = mask_info['mask']
 
-                            # Create colored overlay
+                            # Create colored overlay with different colors for tracked vs annotated
                             overlay = np.zeros_like(frame)
-                            overlay[mask > 0] = [0, 255, 0]  # Green for fluid
+                            if mask_info.get('is_annotation', False):
+                                # Green for original annotations (label_id)
+                                overlay[mask > 0] = [0, 255, 0]  # Green
+                            else:
+                                # Orange for tracked masks (track_id)
+                                overlay[mask > 0] = [0, 165, 255]  # Orange
 
                             # Blend with original frame
                             alpha = 0.3

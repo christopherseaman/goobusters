@@ -14,9 +14,9 @@ class OpticalFlowProcessor:
         self.method = method
         self.raft_model = None
 
-        # Initialize performance optimizer
-        self.optimizer = get_optimizer()
-        self.device = self.optimizer.device
+        # Use default device (no performance optimization)
+        import torch
+        self.device = torch.device('cpu')  # Default to CPU for simplicity
 
         if self.method == 'raft':
             self.load_raft_model()
