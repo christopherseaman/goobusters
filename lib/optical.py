@@ -3,16 +3,18 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "opencv-contrib-python",  # IMPORTANT: Only contrib, not regular opencv-python
-#     "numpy",
+#     "numpy>=1.21.0,<3.0.0",  # Support both NumPy 1.x and 2.x
 #     "pandas",
 #     "python-dotenv",
-#     "mdai",
-#     "pydicom",
+#     "mdai==0.16.0",
+#     "pydicom>=3.0.0",
 #     "tqdm",
 #     "scikit-image",
 #     "scipy",
 #     "pillow",
-#     "pyyaml"
+#     "pyyaml",
+#     "torch>=2.0.0",  # Use newer PyTorch that supports NumPy 2.x
+#     "torchvision>=0.15.0"  # Compatible with newer PyTorch
 # ]
 # ///
 
@@ -381,7 +383,10 @@ class MultiAnnotationProcessor:
             
             # Determine annotation type based on label ID
             label_id = annotation.get('labelId', '')
-            annotation_type = AnnotationType.CLEAR if label_id == os.getenv("LABEL_ID_NO_FLUID", "L_75K42J") else AnnotationType.FLUID
+            # Check for EMPTY_ID (no fluid frame) or LABEL_ID_NO_FLUID
+            empty_id = os.getenv("EMPTY_ID", "")
+            no_fluid_id = os.getenv("LABEL_ID_NO_FLUID", "L_75K42J")
+            annotation_type = AnnotationType.CLEAR if label_id in [empty_id, no_fluid_id] else AnnotationType.FLUID
             
             # Extract mask from data
             mask = None

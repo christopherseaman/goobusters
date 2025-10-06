@@ -134,7 +134,7 @@ def test_implementation():
     # Test 5: Video file with color coding
     total_tests += 1
     print("\n5️⃣ Testing color-coded video...")
-    video_file = os.path.join(test_dir, "multi_frame_tracking.mp4")
+    video_file = os.path.join(test_dir, "tracked_video.mp4")
     if os.path.exists(video_file):
         try:
             cap = cv2.VideoCapture(video_file)
@@ -153,7 +153,7 @@ def test_implementation():
         except Exception as e:
             print(f"   ❌ Error reading video file: {e}")
     else:
-        print("   ❌ multi_frame_tracking.mp4 not found")
+        print("   ❌ tracked_video.mp4 not found")
     
     # Summary
     print("\n" + "=" * 60)

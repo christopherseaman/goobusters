@@ -284,28 +284,61 @@ class MultiFrameTracker:
                     'track_id': f"annotation_{annotation['frame']}",
                     'label_id': annotation.get('labelId', 'original_fluid')
                 }
+            elif annotation['type'] == 'empty':
+                all_masks[annotation['frame']] = {
+                    'mask': annotation['mask'],
+                    'type': 'empty',
+                    'is_annotation': True,
+                    'annotation_id': annotation.get('id', f'empty_{annotation["frame"]}'),
+                    'track_id': f"annotation_{annotation['frame']}",
+                    'label_id': annotation.get('labelId', 'empty_frame')
+                }
 
         # Process segments BETWEEN consecutive annotations
-        fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
+        # Include both fluid and empty annotations for processing
+        all_annotations = [a for a in annotations if a['type'] in ['fluid', 'empty']]
 
-        for i in range(len(fluid_annotations)):
-            current = fluid_annotations[i]
+        for i in range(len(all_annotations)):
+            current = all_annotations[i]
 
             # Process segment from start of video to first annotation
             if i == 0 and current['frame'] > 0:
                 self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
 
             # Process segment between consecutive annotations
-            if i < len(fluid_annotations) - 1:
-                next_ann = fluid_annotations[i + 1]
+            if i < len(all_annotations) - 1:
+                next_ann = all_annotations[i + 1]
                 if next_ann['frame'] - current['frame'] > 1:
-                    # Segment {current['frame']} → {next_ann['frame']}
-                    self._process_segment(current['frame'], next_ann['frame'],
-                                        current['mask'], next_ann['mask'],
-                                        all_masks, clear_frames, video_path)
+                    # Determine tracking strategy based on annotation types
+                    tracking_strategy = self._determine_tracking_strategy(current, next_ann)
+                    
+                    if tracking_strategy == 'forward_only':
+                        # EMPTY_ID → LABEL_ID: only track forward from LABEL_ID
+                        if current['type'] == 'empty' and next_ann['type'] == 'fluid':
+                            # Track forward from the fluid annotation
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                None, next_ann['mask'], all_masks, clear_frames, video_path)
+                        else:
+                            # Track forward from current annotation
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
+                    elif tracking_strategy == 'backward_only':
+                        # LABEL_ID → EMPTY_ID: only track backward from LABEL_ID
+                        if current['type'] == 'fluid' and next_ann['type'] == 'empty':
+                            # Track backward from the fluid annotation
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                current['mask'], None, all_masks, clear_frames, video_path)
+                        else:
+                            # Track backward from next annotation
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
+                    else:
+                        # Default bidirectional or other strategies
+                        self._process_segment(current['frame'], next_ann['frame'],
+                                            current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
 
             # Process segment from last annotation to end of video
-            if i == len(fluid_annotations) - 1 and current['frame'] < total_frames - 1:
+            if i == len(all_annotations) - 1 and current['frame'] < total_frames - 1:
                 self._process_segment(current['frame'], total_frames - 1,
                                     current['mask'], None, all_masks, clear_frames, video_path)
         
@@ -335,16 +368,19 @@ class MultiFrameTracker:
         return all_masks
     
     def _classify_annotations(self, annotations_df, frame_height, frame_width):
-        """Classify annotations as fluid or clear based on label IDs."""
+        """Classify annotations as fluid, clear, or empty based on label IDs."""
         annotations = []
         
+        # Get label IDs from environment
+        label_id_fluid = os.getenv('LABEL_ID', '')
+        empty_id = os.getenv('EMPTY_ID', '')
         
         for _, row in annotations_df.iterrows():
             frame_num = int(row['frameNumber'])
             label_id = row.get('labelId', '')
             
             # Check if this is the expected free fluid label
-            if label_id == os.getenv('LABEL_ID', ''):
+            if label_id == label_id_fluid:
                 # Look for annotation data in the 'data' column
                 if 'data' not in row or row['data'] is None:
                     continue
@@ -363,10 +399,48 @@ class MultiFrameTracker:
                             'frame': frame_num,
                             'mask': mask,
                             'type': 'fluid',
-                            'id': row.get('id', f'fluid_{frame_num}')
+                            'id': row.get('id', f'fluid_{frame_num}'),
+                            'labelId': label_id
                         })
+            
+            # Check if this is an EMPTY_ID annotation (no fluid frame)
+            elif label_id == empty_id:
+                # Create empty mask for EMPTY_ID annotations
+                empty_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
+                
+                annotations.append({
+                    'frame': frame_num,
+                    'mask': empty_mask,
+                    'type': 'empty',
+                    'id': row.get('id', f'empty_{frame_num}'),
+                    'labelId': label_id
+                })
         
         return annotations
+    
+    def _determine_tracking_strategy(self, current_annotation, next_annotation):
+        """
+        Determine tracking strategy based on annotation types.
+        
+        Special handling for EMPTY_ID:
+        - EMPTY_ID → LABEL_ID: forward_only (track from LABEL_ID)
+        - LABEL_ID → EMPTY_ID: backward_only (track from LABEL_ID)
+        - Other combinations: bidirectional
+        """
+        current_type = current_annotation['type']
+        next_type = next_annotation['type']
+        
+        # Special case: EMPTY_ID → LABEL_ID (forward only from LABEL_ID)
+        if current_type == 'empty' and next_type == 'fluid':
+            return 'forward_only'
+        
+        # Special case: LABEL_ID → EMPTY_ID (backward only from LABEL_ID)
+        elif current_type == 'fluid' and next_type == 'empty':
+            return 'backward_only'
+        
+        # Default: bidirectional for other combinations
+        else:
+            return 'bidirectional'
     
     def _polygons_to_mask(self, polygons, height, width):
         """Convert polygon data to binary mask."""

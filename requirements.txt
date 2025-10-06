@@ -2,7 +2,7 @@ ipython
 matplotlib
 # mdai 0.16.0 with compatibility fix for current pydicom versions
 mdai==0.16.0
-numpy
+numpy>=1.21.0,<3.0.0  # Support both NumPy 1.x and 2.x
 # IMPORTANT: Only install opencv-contrib-python, NOT opencv-python
 # Having both causes conflicts and breaks optical flow methods
 opencv-contrib-python  # Latest version with all contrib modules
@@ -13,6 +13,7 @@ pydicom>=3.0.0
 python-dotenv
 scikit-image
 scipy
-torch
-torchvision
+torch>=2.0.0  # Use newer PyTorch that supports NumPy 2.x
+torchvision>=0.15.0  # Compatible with newer PyTorch
 tqdm
+pyyaml

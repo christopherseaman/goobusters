@@ -1,0 +1,273 @@
+---
+alwaysApply: true
+---
+
+# Development Rules & Best Practices
+
+## 🎯 **Core Principles**
+
+### **1. Configuration-Driven Development**
+- **Never hardcode variables** that can be defined in configuration files
+- Store parameters, thresholds, and settings in dedicated config files
+- Scripts should read from config, not contain embedded data definitions
+- Use centralized configuration for consistent behavior across modules
+
+### **2. DRY (Don't Repeat Yourself)**
+- **Single Source of Truth**: Each piece of knowledge should have a single, unambiguous representation
+- **Reuse shared functions** from utility modules
+- Extract common operations into shared libraries
+- Never duplicate functionality across scripts
+- Create centralized utilities for common tasks
+- Organize shared code into logical modules (e.g., `utils/`, `lib/`, `common/`)
+
+### **3. Clear Separation of Concerns**
+- **One responsibility per module**: Each script should have a focused purpose
+- Use shared utilities for consistent behavior
+- Separate data processing, analysis, and presentation layers
+- Keep orchestration logic separate from business logic
+
+### **4. Simplicity Over Complexity (KISS)**
+- **Clear, concise code** is better than overly defensive programming
+- Choose the simplest solution that works
+- Avoid unnecessary abstraction layers
+- Prefer explicit over implicit behavior
+- Minimize boilerplate code
+
+### **5. Test Before Declaring Success**
+- **Automated Testing**: Always run tests before declaring completion
+- **Validate Outputs**: Check that expected files exist and have correct content
+- **Manual Verification**: Spot-check key functionality manually
+- **Performance Testing**: Measure actual impact of optimizations
+- **Regression Testing**: Ensure changes don't break existing functionality
+
+### **6. Clear Data Flow Architecture**
+- Design explicit data pipelines with clear input/output contracts
+- Separate transformation, processing, and output generation phases
+- Coordinators should orchestrate, not perform business logic
+
+## 📋 **Implementation Rules**
+
+### **Rule 1: Always Test Before Success Declaration**
+```bash
+# MANDATORY: Run tests before declaring success
+uv run python3 test_implementation.py
+# Must achieve 100% pass rate (5/5 tests)
+```
+
+### **Rule 2: Configuration-Driven Development**
+- ✅ **Good**: Parameters in `dot.env` or config files
+- ❌ **Bad**: Hardcoded values in code
+- ✅ **Good**: `LABEL_ID = os.getenv('LABEL_ID', 'default')`
+- ❌ **Bad**: `label_id = 'L_13yPql'` embedded in code
+
+### **Rule 3: DRY - No Code Duplication**
+- ✅ **Good**: Single function for mask processing used by all algorithms
+- ❌ **Bad**: Copy-pasting mask processing code for each algorithm
+- ✅ **Good**: Centralized configuration in `dot.env`
+- ❌ **Bad**: Hardcoded values scattered throughout code
+
+### **Rule 4: Clear Separation of Concerns**
+- ✅ **Good**: `lib/optical.py` for orchestration, `lib/multi_frame_tracker.py` for business logic
+- ❌ **Bad**: Mixing file I/O, processing, and output generation in one function
+- ✅ **Good**: Shared utilities in `lib/` modules
+- ❌ **Bad**: Duplicating utility functions across scripts
+
+### **Rule 5: KISS - Simple Solutions**
+- ✅ **Good**: Direct file operations with clear error handling
+- ❌ **Bad**: Complex abstraction layers for simple file I/O
+- ✅ **Good**: Clear, descriptive function names
+- ❌ **Bad**: Cryptic abbreviations or unclear naming
+
+### **Rule 6: Validate All Outputs**
+```python
+# REQUIRED: Check these files exist and are correct
+required_files = [
+    'identity.yaml',
+    'input_annotations.json', 
+    'tracked_annotations.json',
+    'mask_data.json',
+    'masks/frame_*.png',
+    'multi_frame_tracking.mp4'
+]
+```
+
+### **Rule 7: Silent Success, Loud Failures**
+- ✅ **Good**: `print("✅ File created successfully")` for important operations
+- ❌ **Bad**: `print("Processing frame 1...")` for every frame
+- ✅ **Good**: `print("❌ Error: Failed to create mask")` for failures
+- ❌ **Bad**: Silent failures that hide problems
+
+### **Rule 8: Descriptive Naming**
+- ✅ **Good**: `calculate_optical_flow()`, `save_tracking_results()`
+- ❌ **Bad**: `process()`, `do_stuff()`, `handle()`
+- ✅ **Good**: `video_annotations`, `study_instance_uid`
+- ❌ **Bad**: `data`, `stuff`, `temp`
+
+### **Rule 9: Strategic Comments**
+- ✅ **Good**: Explain context, purpose, and interpretation
+- ❌ **Bad**: "Fixed bug", "Updated logic", "Replaced X with Y"
+- ✅ **Good**: Describe what the code does now
+- ❌ **Bad**: Reference previous code or changes
+
+### **Rule 10: Reuse Before Creating**
+- ✅ **Good**: Check existing utilities before writing new code
+- ❌ **Bad**: Rewriting functionality that already exists
+- ✅ **Good**: Use lookup tables/dictionaries instead of hardcoding
+- ❌ **Bad**: Hardcoded mappings and transformations
+
+## 🧪 **Testing Requirements**
+
+### **Automated Test Suite**
+- **Test File**: `test_implementation.py`
+- **Pass Rate**: 100% (5/5 tests must pass)
+- **Fresh Output**: Always test on newly generated output
+- **No Old Data**: Clean output directories before testing
+
+### **Manual Verification Checklist**
+- [ ] Identity file has correct exam numbers from studies data
+- [ ] Input annotations exclude track_id annotations
+- [ ] Tracked annotations include all generated track_id annotations
+- [ ] Individual frame masks exist and are valid images
+- [ ] Video has color-coded overlays (green/orange)
+- [ ] No runtime errors during processing
+
+### **Performance Validation**
+- [ ] Measure actual performance impact
+- [ ] Remove optimizations that don't provide measurable benefit
+- [ ] Test with realistic data sizes
+- [ ] Document performance characteristics
+
+## 📁 **File Structure Rules**
+
+### **Output Directory Structure**
+```
+{study_uid}_{series_uid}/
+├── identity.yaml                    # Video metadata
+├── input_annotations.json          # Original annotations (no track_id)
+├── tracked_annotations.json        # Generated annotations (with track_id)
+├── mask_data.json                  # Frame-by-frame metadata
+├── multi_frame_tracking.mp4        # Color-coded output video
+└── masks/                         # Individual frame masks
+    ├── frame_000001_mask.png
+    └── ...
+```
+
+### **Code Organization**
+- **`lib/`**: Core library modules
+- **`test_*.py`**: Test files
+- **`track.py`**: Main entry point
+- **`dot.env`**: Configuration
+- **`requirements.txt`**: Dependencies
+
+## 🌍 **Environment Management**
+
+### **Virtual Environment and Dependencies**
+- **Use modern package managers** (like `uv` or `conda`) for dependency management
+- **Prefer direct execution** through package manager rather than activating environments
+- **Document dependencies clearly** in requirements files or project manifests
+- Keep dependencies minimal and well-documented
+- Use inline dependency definitions for temporary/one-off scripts when supported
+
+### **Working Directory Best Practices**
+- **Maintain consistent working directory** - typically stay at project root
+- **Use relative paths consistently** - avoid changing directories mid-script
+- All file operations should use consistent path resolution
+- **Organize temporary files** in dedicated subdirectories (e.g., `tmp/`, `temp/`)
+- **Avoid complex command-line one-liners** - create temporary test scripts instead
+- Use temporary scripts for testing rather than complex inline commands
+
+### **Sensible Defaults**
+- Scripts should run without arguments whenever possible
+- Use conventional paths for common resources (e.g., `data/`, `config/`, `output/`)
+- If a parameter is consistently the same across runs, make it a default
+- Allow override of defaults through command line or environment variables
+
+## 📝 **Git Commit Rules**
+
+### **Commit Message Standards**
+- **NO Co-authored-by tags**: Do not add "Co-Authored-By: Claude" or similar attribution
+- **Clean commit messages**: Focus on technical changes and impact
+- **Standard format**: Use conventional commit format when appropriate
+- **Descriptive**: Explain what changed and why
+- **Concise**: Keep messages under 72 characters for the subject line
+
+### **Commit Examples**
+- ✅ **Good**: `fix: resolve off-by-one error in frame tracking`
+- ✅ **Good**: `feat: add individual frame mask output`
+- ✅ **Good**: `refactor: move performance optimization to main entry point`
+- ❌ **Bad**: `fix stuff`, `update`, `changes`
+
+## 🚫 **Anti-Patterns to Avoid**
+
+### **Code Smells**
+- ❌ **Copy-Paste Programming**: Duplicating code instead of creating functions
+- ❌ **Magic Numbers**: Hardcoded values instead of named constants
+- ❌ **Long Functions**: Functions over 50 lines should be broken down
+- ❌ **Deep Nesting**: More than 3 levels of indentation
+- ❌ **Silent Failures**: Catching exceptions without handling them
+
+### **Testing Anti-Patterns**
+- ❌ **Testing Old Output**: Running tests on cached/old results
+- ❌ **Declaring Success Without Testing**: Making claims without validation
+- ❌ **Ignoring Test Failures**: Proceeding when tests don't pass
+- ❌ **No Manual Verification**: Relying only on automated tests
+
+### **Performance Anti-Patterns**
+- ❌ **Premature Optimization**: Optimizing before measuring
+- ❌ **Optimization Without Testing**: Adding complexity without validation
+- ❌ **Ignoring Overhead**: Not measuring the cost of optimizations
+
+### **Environment Anti-Patterns**
+- ❌ **Hardcoded Paths**: Using absolute paths instead of relative
+- ❌ **Directory Changes**: Changing working directory mid-script
+- ❌ **Complex One-liners**: Using complex command-line operations
+- ❌ **Missing Dependencies**: Not documenting required packages
+
+## ✅ **Success Criteria**
+
+### **Code Quality**
+- [ ] No code duplication (DRY principle)
+- [ ] Simple, readable solutions (KISS principle)
+- [ ] Clear error handling and logging
+- [ ] Proper file structure and organization
+
+### **Testing**
+- [ ] 100% automated test pass rate
+- [ ] Manual verification completed
+- [ ] Fresh output tested (not cached)
+- [ ] Performance impact measured
+
+### **Documentation**
+- [ ] Clear commit messages
+- [ ] Updated TODO list
+- [ ] Code comments for complex logic
+- [ ] README updated if needed
+
+## 🎯 **Enforcement**
+
+### **Pre-Commit Checklist**
+1. Run automated tests: `uv run python3 test_implementation.py`
+2. Verify 100% pass rate
+3. Check for code duplication
+4. Ensure simple, readable solutions
+5. Validate all outputs manually
+6. Update TODO list
+
+### **Pre-Declaration Checklist**
+1. ✅ All tests pass (5/5)
+2. ✅ Fresh output generated and tested
+3. ✅ No code duplication
+4. ✅ Simple, maintainable solutions
+5. ✅ Manual verification completed
+6. ✅ Performance impact measured
+7. ✅ User confirmation obtained
+
+## 📝 **Remember**
+
+> **"Test before declaring success"** - This is not optional. Every task must be validated before completion.
+
+> **"Simple solutions work better"** - Complexity is the enemy of reliability.
+
+> **"Don't repeat yourself"** - Duplication leads to maintenance nightmares.
+
+> **"Measure, don't assume"** - Performance claims must be backed by data.
