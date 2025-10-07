@@ -7,7 +7,12 @@ from torchvision.transforms.functional import resize
 try:
     from .performance_config import get_optimizer
 except ImportError:
-    from performance_config import get_optimizer
+    try:
+        from lib.performance_config import get_optimizer
+    except ImportError:
+        # Fallback: create a simple optimizer function
+        def get_optimizer():
+            return None
 
 class OpticalFlowProcessor:
     def __init__(self, method):

@@ -17,3 +17,4 @@ torch>=2.0.0  # Use newer PyTorch that supports NumPy 2.x
 torchvision>=0.15.0  # Compatible with newer PyTorch
 tqdm
 pyyaml
+psutil  # For performance monitoring

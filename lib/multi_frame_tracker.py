@@ -303,7 +303,10 @@ class MultiFrameTracker:
 
             # Process segment from start of video to first annotation
             if i == 0 and current['frame'] > 0:
-                self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
+                # Only process if the first annotation is fluid (has content to track)
+                if current['type'] == 'fluid':
+                    self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
+                # If first annotation is empty, no tracking needed (no fluid to propagate)
 
             # Process segment between consecutive annotations
             if i < len(all_annotations) - 1:
@@ -313,9 +316,9 @@ class MultiFrameTracker:
                     tracking_strategy = self._determine_tracking_strategy(current, next_ann)
                     
                     if tracking_strategy == 'forward_only':
-                        # EMPTY_ID → LABEL_ID: only track forward from LABEL_ID
+                        # EMPTY_ID → LABEL_ID: only track forward from LABEL_ID (the fluid annotation)
                         if current['type'] == 'empty' and next_ann['type'] == 'fluid':
-                            # Track forward from the fluid annotation
+                            # Track forward from the fluid annotation only
                             self._process_segment(current['frame'], next_ann['frame'],
                                                 None, next_ann['mask'], all_masks, clear_frames, video_path)
                         else:
@@ -323,9 +326,9 @@ class MultiFrameTracker:
                             self._process_segment(current['frame'], next_ann['frame'],
                                                 current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
                     elif tracking_strategy == 'backward_only':
-                        # LABEL_ID → EMPTY_ID: only track backward from LABEL_ID
+                        # LABEL_ID → EMPTY_ID: only track backward from LABEL_ID (the fluid annotation)
                         if current['type'] == 'fluid' and next_ann['type'] == 'empty':
-                            # Track backward from the fluid annotation
+                            # Track backward from the fluid annotation only
                             self._process_segment(current['frame'], next_ann['frame'],
                                                 current['mask'], None, all_masks, clear_frames, video_path)
                         else:
@@ -339,8 +342,11 @@ class MultiFrameTracker:
 
             # Process segment from last annotation to end of video
             if i == len(all_annotations) - 1 and current['frame'] < total_frames - 1:
-                self._process_segment(current['frame'], total_frames - 1,
-                                    current['mask'], None, all_masks, clear_frames, video_path)
+                # Only process if the last annotation is fluid (has content to track)
+                if current['type'] == 'fluid':
+                    self._process_segment(current['frame'], total_frames - 1,
+                                        current['mask'], None, all_masks, clear_frames, video_path)
+                # If last annotation is empty, no tracking needed (no fluid to propagate)
         
         # Process clear frames
         for clear_frame in clear_frames:
@@ -792,6 +798,7 @@ class MultiFrameTracker:
     
     def _find_nearest_fluid_annotation(self, target_frame, annotations):
         """Find the nearest fluid annotation to a target frame."""
+        # Only consider fluid annotations, not empty ones
         fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
         if not fluid_annotations:
             return None
