@@ -10,14 +10,72 @@ Goobusters is an optical flow tracking system for free fluid detection in ultras
 
 **Approach**: Dense optical flow algorithms (Farneback, DIS, RAFT) applied to mask propagation with bidirectional temporal weighting.
 
-## Development Philosophy
+**Current Work**: See `TODO.md` for active issues and improvements. When encountering unused or overly complex code, simplify/remove it, but ALWAYS validate that changes don't break `track.py` by running it on real videos.
 
-This project strictly adheres to the principles in `.cursor/rules/goobusters.mdc`:
-- **KISS/DRY**: Simplicity and code reuse are paramount
-- **Configuration > Hardcoding**: All parameters in `dot.env`, never hardcoded
-- **Test Before Success**: ALWAYS run `track.py` on actual videos to validate changes
-- **NO MOCKS**: Only test with real data and actual execution
-- **User Validation Required**: Check with user for output quality before declaring success
+## Core Development Principles
+
+### Configuration-Driven Development
+- **NEVER hardcode variables** - use `dot.env` for all parameters
+- Store thresholds, settings, and constants in configuration files
+- Scripts read from config, not embedded data definitions
+- Magic numbers become named configuration values
+
+### DRY (Don't Repeat Yourself)
+- **Single source of truth** for each piece of knowledge
+- **Reuse shared functions** from `lib/` modules before writing new code
+- Extract common operations into centralized utilities
+- Never duplicate functionality across scripts
+- Organize shared code logically in `lib/` directory
+
+### Separation of Concerns
+- **One responsibility per module** - focused, clear purpose
+- Keep business logic separate from orchestration
+- Maintain distinct layers: data processing, analysis, presentation
+- Coordinators orchestrate; they don't perform business logic
+
+### Simplicity Over Complexity (KISS)
+- **Clear, concise code** beats defensive programming
+- Choose simplest solution that works
+- Avoid unnecessary abstraction layers
+- Prefer explicit over implicit behavior
+- Minimize boilerplate code
+- **As simple as possible, and no simpler**
+
+### Continuous Simplification
+- **Remove complexity as encountered** during normal work
+- Refactor overly complex code when touching it
+- Delete unused code, vestigial variables, dead branches
+- Question whether each layer of abstraction earns its keep
+- **Always validate** simplifications don't break `track.py`
+
+### Test Before Success
+- **NEVER declare completion without validation**
+- Run actual code in target environment with real data
+- Avoid mocks or simulated outputs for validation
+- User confirmation required for output quality
+- This is non-negotiable
+
+## Critical Testing Rules
+
+### NO MOCKS OR FAKE FUNCTIONS
+
+**This cannot be emphasized enough**: NEVER utilize mocks or fake functions. ALWAYS test with real data and run the actual `track.py` on at least a single video. Validate the outputs and check with user for output quality.
+
+### Validation Protocol
+
+1. **Run with real data**: Execute `track.py` on actual videos
+2. **Inspect outputs**: Check generated masks, videos, metadata
+3. **Validate quality**: Review tracking accuracy visually
+4. **User confirmation**: Get explicit approval before declaring success
+
+### Pre-Commit Checklist
+
+- [ ] Code runs without errors on real video
+- [ ] Test suite passes: `uv run python3 test_implementation.py`
+- [ ] Output quality validated visually
+- [ ] User has confirmed results are acceptable
+- [ ] No hardcoded values introduced
+- [ ] No code duplication introduced
 
 ## Core Commands
 
@@ -30,8 +88,7 @@ uv run python3 track.py
 # Debug mode - Process only 5 random videos
 DEBUG=True uv run python3 track.py
 
-# Test specific video (specify in dot.env)
-# Set TEST_STUDY_UID and TEST_SERIES_UID in dot.env first
+# Test specific video (set TEST_STUDY_UID and TEST_SERIES_UID in dot.env first)
 uv run python3 track.py
 ```
 
@@ -146,48 +203,170 @@ The current implementation in `lib/multi_frame_tracker.py`:
 5. Combines predictions using distance-weighted averaging
 6. Applies morphological operations to clean masks
 
-**Known Complexity Issues** (per TODO.md #1):
-- Possible over-engineering with both temporal weighting AND temporal smoothing
-- Vestigial variables from reference implementation
-- Need to validate if all complexity provides measurable value
+**Note**: The implementation may contain over-engineering (e.g., temporal weighting AND temporal smoothing, vestigial variables). When working in this code, simplify complexity that doesn't provide proven value, but always validate changes don't break tracking.
 
-## Reference Implementation Notes
+## Reference Implementation
 
 The `references/shreyasreeram/` directory contains a student implementation with known issues:
 - **Delayed change tracking**: Masks lag behind actual fluid movement
 - **Over-complex code**: Multiple abstraction layers that obscure logic
 - **Bugs in multi-frame tracking**: Temporal consistency issues
 
-**Do NOT copy patterns from reference implementation**. Use as cautionary examples only. The main implementation attempts to address these issues but may still contain over-engineered solutions.
+**Do NOT copy patterns from reference implementation**. Use as cautionary examples only.
 
-## Critical Development Rules
+## Code Quality Standards
+
+### Naming Conventions
+- Use descriptive names: `calculate_optical_flow()`, `save_tracking_results()`
+- Avoid generic names: `process()`, `do_stuff()`, `handle()`
+- Variables: `video_annotations`, `study_instance_uid`
+- Not: `data`, `stuff`, `temp`
+
+### Commenting Strategy
+- Focus on **context, purpose, and interpretation** when logic isn't self-evident
+- Never reference previous implementations or changes
+- Describe current state only, avoiding change logs
+- No "Fixed bug", "Updated logic", "Replaced X with Y"
+
+### Error Handling
+- Implement simple try/except with clear error messages
+- Avoid complex error hierarchies
+- Log failures loudly, successes quietly
+
+### External Mappings
+- Use lookup tables and dictionaries
+- No hardcoded mappings or transformations
+
+## Development Workflow
 
 ### Before Making Changes
 
 1. **Read the code**: Use `Read` tool to examine files before modification
 2. **Understand the architecture**: Review this file and `multiple_annotation_strategy.md`
 3. **Check configuration**: Ensure parameters are in `dot.env`, not hardcoded
+4. **Check existing utilities**: Review `lib/` for reusable functions
 
 ### When Making Changes
 
 1. **Maintain simplicity**: Remove complexity, don't add it
-2. **Reuse functions**: Check `lib/` for existing functionality
+2. **Reuse functions**: Check `lib/` for existing functionality before writing new
 3. **Configuration driven**: All magic numbers must become config values
 4. **No optimizations without measurement**: Profile before optimizing
+5. **Remove as you go**: Delete unused code, simplify complex sections
+6. **Preserve functionality**: Keep changes focused, avoid side effects
 
 ### After Making Changes
 
 1. **Test with real data**: Run `track.py` on at least one video
 2. **Validate output**: Check generated masks and videos for quality
 3. **User confirmation**: Show results to user for quality assessment
-4. **Never declare success without testing**: This is non-negotiable
+4. **Never declare success without testing**: This is absolutely non-negotiable
 
-### Specific Constraints
+## Session Work Tracking
 
-- **NEVER use mocks or fake functions**: All testing must use real data
-- **NEVER hardcode values**: Use `dot.env` or function parameters
-- **NEVER skip validation**: Always run on actual videos
-- **ALWAYS check with user**: Get explicit confirmation on output quality
+### Purpose of WORK_SUMMARY.md
+
+Track high-level work progress during development sessions between major commits and functionality releases. This provides a running log of what's being worked on, decisions made, and incremental progress.
+
+### When to Log
+
+- **Start of session**: Note what you're working on from TODO.md
+- **After significant changes**: Document what was modified and why
+- **Before major commits**: Summarize completed work
+- **When switching tasks**: Record current state before pivoting
+- **End of session**: Final summary of progress and next steps
+
+### What to Log
+
+Keep entries high-level and concise:
+
+```markdown
+## [Date] - [Brief Description]
+
+**Working On**: [TODO.md item or task description]
+
+**Changes Made**:
+- [File/module]: [What changed and why]
+- [File/module]: [What changed and why]
+
+**Testing**: [Results from track.py validation]
+
+**Status**: [Complete/In Progress/Blocked]
+
+**Next Steps**: [What needs to happen next]
+```
+
+### Example Entry
+
+```markdown
+## 2025-01-15 - Simplify Multi-Frame Tracker
+
+**Working On**: TODO.md #1 - Remove complexity from multi_frame_tracker.py
+
+**Changes Made**:
+- lib/multi_frame_tracker.py: Removed redundant temporal_smoothing (already have temporal_weighting)
+- lib/multi_frame_tracker.py: Deleted unused SharedParams fields (window_size, distance_decay_factor)
+
+**Testing**: Ran track.py on test video 1.2.840.113... - tracking quality unchanged, masks identical
+
+**Status**: In Progress
+
+**Next Steps**: Review opticalflowprocessor.py for similar complexity
+```
+
+### Guidelines
+
+- **Be factual**: Document what happened, not opinions
+- **Be concise**: High-level only, not line-by-line changes
+- **Link to validation**: Reference test results
+- **Note blockers**: If stuck, document why
+- **Don't duplicate git**: This is working notes, not commit messages
+
+## Environment & Dependency Management
+
+### Package Management
+- Use `uv` for dependency management
+- Prefer direct execution: `uv run python3 track.py`
+- Keep dependencies minimal and well-documented
+- Use inline dependency definitions for one-off scripts when supported
+
+### Working Directory Practices
+- Maintain consistent working directory (project root)
+- Use relative paths consistently
+- Avoid changing directories mid-script
+- Organize temporary files in dedicated subdirectories (`tmp/`, `temp/`)
+- Create temporary test scripts instead of complex one-liners
+
+### Sensible Defaults
+- Scripts should run without arguments when possible
+- Use conventional paths (`data/`, `config/`, `output/`)
+- Allow overrides via command line or environment variables
+
+## Long-Running Script Protocol
+
+### Duration Guidelines
+- Scripts under 30 seconds: run directly with normal output
+- Scripts over 30 seconds: implement logging and completion hooks
+
+### Implementation for Extended Processes
+- Redirect output to execution logs (stdout and stderr)
+- Add completion markers with timestamps
+- Monitor with `tail -f` or grep for completion/error patterns
+- Verify script status before proceeding
+
+## Git Commit Standards
+
+### Required Format
+- Use conventional commit format: `feat:`, `fix:`, `docs:`, `refactor:`
+- Focus on technical changes and measurable impact
+- Maintain professional, technical tone
+- Keep subject line under 72 characters
+
+### Prohibited Practices
+- No "Co-Authored-By: Claude" or similar attribution
+- No "via Happy" or credit references
+- No casual or cutesy language
+- Focus on what changed, not who changed it
 
 ## Common Tasks
 
@@ -209,30 +388,26 @@ uv run python3 track.py
 uv run python3 test_implementation.py
 ```
 
+### Simplifying Complex Code
+
+When encountering overly complex code:
+1. Understand what it does (read thoroughly)
+2. Identify unnecessary abstractions or steps
+3. Simplify while preserving functionality
+4. **Test immediately** on real video to validate
+5. Document what was simplified and why
+6. Get user confirmation on results
+
 ### Understanding Optical Flow Methods
 
 - **Farneback**: Fast, CPU-based, good baseline (OpenCV)
 - **DIS**: Dense inverse search, faster than Farneback (OpenCV)
-- **DeepFlow**: Slower, removed from main pipeline per TODO.md #1
+- **DeepFlow**: Slower, being removed from main pipeline (TODO.md #1)
 - **RAFT**: Deep learning, most accurate but slowest (PyTorch)
 
 Configure via `FLOW_METHOD` in `dot.env` (comma-separated for multiple methods).
 
 ## MD.ai Integration
-
-### Current Implementation (TODO.md #2 - NEEDS FIX)
-
-Track.py currently downloads entire project:
-```python
-project = mdai_client.project(project_id=PROJECT_ID, path=DATA_DIR)
-dataset = project.get_dataset_by_id(DATASET_ID)
-```
-
-**Should be**:
-```python
-# Only pull PROJECT_ID and DATASET_ID from dot.env
-mdai_client.project(project_id=PROJECT_ID, dataset_id=DATASET_ID, path=DATA_DIR)
-```
 
 ### Annotation Format
 
@@ -243,7 +418,7 @@ MD.ai annotations have:
 - `labelId`: Matches `LABEL_ID` (fluid) or `EMPTY_ID` (clear)
 - `data.foreground`: Polygon coordinates for mask
 
-## Performance Considerations (TODO.md #5)
+## Performance Considerations
 
 The `lib/performance_config.py` module handles:
 - Automatic hardware detection (Apple Silicon, Intel, NVIDIA)
@@ -251,31 +426,11 @@ The `lib/performance_config.py` module handles:
 - PyTorch device selection (CPU/MPS/CUDA)
 - Memory management based on available RAM
 
-**Open question**: Are current settings optimal? Profile to validate.
-
-## Known Issues & TODO
-
-See `TODO.md` for full list. Critical items:
-
-1. **Code cleanup**: Remove unused/overcomplexed bits (e.g., deepflow, temporal smoothing vs weighting redundancy)
-2. **MD.ai integration**: Fix to only pull PROJECT_ID/DATASET_ID
-3. **Empty frame annotations**: Properly handle EMPTY_ID in bidirectional tracking
-4. **Jerky tracking**: Frame-to-frame jumps need investigation
-5. **Performance tuning**: CPU vs GPU acceleration, parallelization
-
-## Development Workflow
-
-1. Make changes following KISS/DRY principles
-2. Update `dot.env` if new configuration needed
-3. Test on single video: `TEST_STUDY_UID=... TEST_SERIES_UID=... uv run python3 track.py`
-4. Validate output quality visually and with user
-5. Run test suite: `uv run python3 test_implementation.py`
-6. Only after explicit user approval, declare success
+Profile before making performance claims. Measure, don't assume.
 
 ## Anti-Patterns to Avoid
 
-Based on `.cursor/rules/goobusters.mdc`:
-
+### Code Smells
 - ❌ Hardcoding parameters in code
 - ❌ Using mocks or fake data in tests
 - ❌ Declaring success without running real tests
@@ -283,24 +438,58 @@ Based on `.cursor/rules/goobusters.mdc`:
 - ❌ Duplicating code instead of creating shared functions
 - ❌ Changing working directory mid-script
 - ❌ Testing on cached/old output
+- ❌ Magic numbers instead of named constants
+- ❌ Functions over 50 lines (consider breaking down)
+- ❌ Deep nesting (more than 3 levels)
+- ❌ Silent failures (catching exceptions without handling)
+
+### Testing Anti-Patterns
+- ❌ Testing old output instead of fresh generation
+- ❌ Declaring success without validation
+- ❌ Ignoring test failures
+- ❌ Relying only on automated tests (need visual validation too)
+
+### Performance Anti-Patterns
+- ❌ Premature optimization (optimize before measuring)
+- ❌ Optimization without testing (adding complexity without validation)
+- ❌ Ignoring overhead (not measuring cost of "optimizations")
+
+## Output & Communication Standards
+
+### Quality Requirements
+- Present factual, measurable information and numerical results
+- Avoid subjective interpretation; stick to observable outcomes
+- Use neutral, objective language when describing patterns
+- Clearly document methodology, tests, and assumptions
+- Limit conclusions to what data directly supports
+- Maintain standardized formatting and terminology
+
+### What to Include
+- What's being tested
+- Why it matters
+- What results mean
+- Methodology used
+- Underlying assumptions
 
 ## Key Files Reference
 
-- `track.py`: Main entrypoint (151 lines)
+- `track.py`: Main entrypoint (196 lines)
 - `lib/multi_frame_tracker.py`: Core tracking logic (993 lines)
 - `lib/opticalflowprocessor.py`: Flow algorithm wrapper (155 lines)
-- `lib/optical.py`: MD.ai utilities (1999 lines, includes helper classes)
+- `lib/optical.py`: MD.ai utilities (1999 lines)
 - `lib/performance_config.py`: Hardware optimization (476 lines)
 - `dot.env`: Configuration (all runtime parameters)
-- `TODO.md`: Current work items
+- **`TODO.md`**: Current work items and known issues
+- **`WORK_SUMMARY.md`**: Session work log (high-level progress tracking)
 - `multiple_annotation_strategy.md`: Bidirectional tracking specification
-- `.cursor/rules/goobusters.mdc`: Development rules and best practices
+- `.cursor/rules/goobusters.mdc`: Detailed development rules
 
 ## Questions or Uncertainties?
 
 When in doubt:
-1. Check `multiple_annotation_strategy.md` for tracking behavior
-2. Check `.cursor/rules/goobusters.mdc` for development practices
-3. Ask user for clarification rather than making assumptions
-4. Test with real data to validate behavior
-5. Review reference implementation as anti-pattern examples
+1. Check `TODO.md` for known issues and current work
+2. Check `multiple_annotation_strategy.md` for tracking behavior
+3. Check `.cursor/rules/goobusters.mdc` for development practices
+4. Ask user for clarification rather than making assumptions
+5. Test with real data to validate behavior
+6. Review reference implementation as anti-pattern examples
