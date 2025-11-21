@@ -2,18 +2,14 @@
 
 ## To Do
 
-- [ ] lib/optical.py cleanup - 1998 lines but only 2 exported functions used (create_identity_file, copy_annotations_to_output). Consider refactoring or removing dead code.
+- [ ] lib/optical.py cleanup - 1998 lines but only 2 exported functions used (create_identity_file, copy_annotations_to_output). Consider refactoring or removing dead code. 
 - [ ] dot.env.example update for new/modified options
 - [ ] `tracked_annotations` should include TRACK_ID, EMPTY_ID, and LABEL_ID
 - [ ] lib/debug_visualization.py abandoned. If needed, will will have to fix debug viz and reincorporate
-- [ ] Local annotaion feedback loop?
+- [ ] Local annotaion feedback loop? See references/teef for simpler example app with single annotation type
     - [ ] Server for reviewing/modifying annotations (LABEL_ID, EMPTY_ID, and TRACK_ID)
     - [ ] Save human reviewed/modified free fluid (LABEL_ID), no fluid (EMPTY_ID) annotations outside data/ bc data reflects mdai truth (maybe local db? duckdb with file?); may be better to store as masks (grayscale images) for local iterations, update annotation from masks on tracking runs (think this happens already but may need fixing)
     - [ ] Re-run tracking with locally updated annotations (LABEL_ID & EMPTY_ID annotations, no TRACK_ID; if in local db then don't source mdai annotations json)
-
-## Don't Do
-
-- [ ] (DO NOT ATTEMPT YET) Push annotations back to mdai: start with single annotation on Pelvic-1, then multiple, then tracking feedback loop for single video, then multiple
 
 ## Done
 

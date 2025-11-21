@@ -1,0 +1,6 @@
+.DS_Store
+masks/
+images/
+.venv/
+data.zip
+modified/
