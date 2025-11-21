@@ -390,7 +390,7 @@ class PerformanceOptimizer:
         # PyTorch optimizations
         self.get_torch_optimizations()
 
-        print("✅ Performance optimizations applied")
+        pass  # Performance optimizations applied
 
         return self.get_video_processing_config()
 
