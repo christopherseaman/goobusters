@@ -658,7 +658,7 @@ class MultiFrameTracker:
                 # Read start frame
                 ret, prev_frame = cap.read()
                 if ret:
-                    for frame_idx in range(start_frame, min(end_frame + 1, start_frame + 100)):
+                    for frame_idx in range(start_frame, end_frame + 1):
                         if frame_idx == start_frame:
                             # This is the initial frame, just store the mask
                             forward_masks[frame_idx] = current_mask
@@ -684,7 +684,7 @@ class MultiFrameTracker:
                 # Read end frame
                 ret, prev_frame = cap.read()
                 if ret:
-                    for frame_idx in range(end_frame, max(start_frame - 1, end_frame - 100), -1):
+                    for frame_idx in range(end_frame, start_frame - 1, -1):
                         if frame_idx == end_frame:
                             # This is the initial frame, just store the mask
                             backward_masks[frame_idx] = current_mask
@@ -695,8 +695,12 @@ class MultiFrameTracker:
                         if not ret:
                             break
 
-                        # Calculate optical flow (backward)
-                        flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
+                        # Calculate optical flow: prev_frame (later in time) → curr_frame (earlier in time)
+                        # Since we're tracking backward in time, prev_frame is actually the LATER frame
+                        # and curr_frame is the EARLIER frame
+                        flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
+                        # _warp_mask_with_flow does backward warping (x - flow), which is correct here
+                        # because we're warping from prev (later) to curr (earlier)
                         current_mask = self._warp_mask_with_flow(current_mask, flow)
                         backward_masks[frame_idx] = current_mask
                         prev_frame = curr_frame
@@ -708,9 +712,11 @@ class MultiFrameTracker:
 
             if frame_idx in forward_masks and frame_idx in backward_masks:
                 # Calculate distance-based weights
+                # Forward tracking: most accurate near start_frame, degrades toward end_frame
+                # Backward tracking: most accurate near end_frame, degrades toward start_frame
                 total_dist = end_frame - start_frame
-                forward_weight = (end_frame - frame_idx) / total_dist
-                backward_weight = (frame_idx - start_frame) / total_dist
+                forward_weight = (end_frame - frame_idx) / total_dist   # HIGH near start, LOW near end
+                backward_weight = (frame_idx - start_frame) / total_dist # LOW near start, HIGH near end
 
                 # Combine masks with weights
                 combined_mask = self._combine_masks_weighted(
@@ -778,22 +784,21 @@ class MultiFrameTracker:
         return combined
 
     def _warp_mask_with_flow(self, mask, flow):
-        """Warp a mask using optical flow."""
-        # Create coordinate grids
+        """Warp a mask using optical flow (backward warping with remap)."""
         h, w = mask.shape
+
+        # Create coordinate grid
         y, x = np.mgrid[0:h, 0:w].astype(np.float32)
-        
-        # Apply flow to coordinates
-        new_x = x + flow[:, :, 0]
-        new_y = y + flow[:, :, 1]
-        
-        # Create remap coordinates
-        map_x = new_x.astype(np.float32)
-        map_y = new_y.astype(np.float32)
-        
-        # Warp the mask
-        warped_mask = cv2.remap(mask, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        
+
+        # For backward warping: find where each destination pixel came from
+        # Flow tells us where pixels GO, so we subtract to find where they CAME FROM
+        map_x = (x - flow[:, :, 0]).astype(np.float32)
+        map_y = (y - flow[:, :, 1]).astype(np.float32)
+
+        # Remap with linear interpolation to avoid holes
+        warped_mask = cv2.remap(mask, map_x, map_y, cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
         return warped_mask
     
     def _find_nearest_fluid_annotation(self, target_frame, annotations):

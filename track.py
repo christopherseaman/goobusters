@@ -38,6 +38,66 @@ from lib.optical import create_identity_file, copy_annotations_to_output
 from lib.multi_frame_tracker import process_video_with_multi_frame_tracking
 from lib.opticalflowprocessor import OpticalFlowProcessor
 
+def find_annotations_file(data_dir: str, project_id: str, dataset_id: str) -> str:
+    """
+    Find the most recent annotations JSON file for the given project and dataset.
+
+    Args:
+        data_dir: Directory containing MD.ai data
+        project_id: MD.ai project ID
+        dataset_id: MD.ai dataset ID
+
+    Returns:
+        Path to the annotations JSON file
+
+    Raises:
+        FileNotFoundError: If no matching annotations file is found
+    """
+    import glob
+
+    # Pattern: mdai_{domain}_project_{project_id}_annotations_dataset_{dataset_id}_*.json
+    pattern = os.path.join(data_dir, f"mdai_*_project_{project_id}_annotations_dataset_{dataset_id}_*.json")
+    matches = glob.glob(pattern)
+
+    if not matches:
+        raise FileNotFoundError(
+            f"No annotations file found for project {project_id}, dataset {dataset_id} in {data_dir}. "
+            f"Expected pattern: mdai_*_project_{project_id}_annotations_dataset_{dataset_id}_*.json"
+        )
+
+    # Return the most recent file (sorted by filename which includes timestamp)
+    return sorted(matches)[-1]
+
+def find_images_dir(data_dir: str, project_id: str, dataset_id: str) -> str:
+    """
+    Find the most recent images directory for the given project and dataset.
+
+    Args:
+        data_dir: Directory containing MD.ai data
+        project_id: MD.ai project ID
+        dataset_id: MD.ai dataset ID
+
+    Returns:
+        Path to the images directory
+
+    Raises:
+        FileNotFoundError: If no matching images directory is found
+    """
+    import glob
+
+    # Pattern: mdai_{domain}_project_{project_id}_images_dataset_{dataset_id}_*
+    pattern = os.path.join(data_dir, f"mdai_*_project_{project_id}_images_dataset_{dataset_id}_*")
+    matches = [d for d in glob.glob(pattern) if os.path.isdir(d)]
+
+    if not matches:
+        raise FileNotFoundError(
+            f"No images directory found for project {project_id}, dataset {dataset_id} in {data_dir}. "
+            f"Expected pattern: mdai_*_project_{project_id}_images_dataset_{dataset_id}_*"
+        )
+
+    # Return the most recent directory (sorted by dirname which includes timestamp)
+    return sorted(matches)[-1]
+
 def main():
     """Main execution function for the tracking pipeline."""
     load_dotenv('dot.env')
@@ -52,7 +112,6 @@ def main():
     DOMAIN = os.getenv('DOMAIN')
     PROJECT_ID = os.getenv('PROJECT_ID')
     DATASET_ID = os.getenv('DATASET_ID')
-    ANNOTATIONS = os.path.join(DATA_DIR, os.getenv('ANNOTATIONS'))
     LABEL_ID = os.getenv('LABEL_ID')
     
     if ACCESS_TOKEN is None:
@@ -69,13 +128,16 @@ def main():
     
     # Download the dataset from MD.ai (or use cached version)
     if mdai_client:
-        project = mdai_client.project(project_id=PROJECT_ID, path=DATA_DIR)
-        dataset = project.get_dataset_by_id(DATASET_ID)
-        BASE = dataset.images_dir
+        project = mdai_client.project(project_id=PROJECT_ID, dataset_id=DATASET_ID, path=DATA_DIR)
+        BASE = project.images_dir
     else:
-        # Use cached data directly
-        BASE = os.path.join(DATA_DIR, 'mdai_ucsf_project_x9N2LJBZ_images_2025-09-18-050340')
-    
+        # Use cached data - auto-detect images directory
+        BASE = find_images_dir(DATA_DIR, PROJECT_ID, DATASET_ID)
+
+    # After download, automatically find the annotations file
+    ANNOTATIONS = find_annotations_file(DATA_DIR, PROJECT_ID, DATASET_ID)
+    print(f"Using annotations file: {os.path.basename(ANNOTATIONS)}")
+
     # Load the annotations
     annotations_data = mdai.common_utils.json_to_dataframe(ANNOTATIONS)
     annotations_df = pd.DataFrame(annotations_data['annotations'])
@@ -85,7 +147,6 @@ def main():
     labels_dict = {LABEL_ID: 1}
     if mdai_client:
         project.set_labels_dict(labels_dict)
-        dataset.classes_dict = project.classes_dict
     
     # Filter annotations for the free fluid label
     free_fluid_annotations = annotations_df[annotations_df['labelId'] == LABEL_ID].copy()
@@ -177,11 +238,16 @@ def main():
                     project_id=PROJECT_ID,
                     dataset_id=DATASET_ID
                 )
-                
+
+                # Clean up GPU memory after processing
+                flow_processor.cleanup_memory()
+
             except Exception as e:
                 print(f"Error processing video {study_uid}/{series_uid} with {method}: {str(e)}")
                 import traceback
                 traceback.print_exc()
+                # Clean up GPU memory even on error
+                flow_processor.cleanup_memory()
                 continue
     
     print("\n" + "="*60)
