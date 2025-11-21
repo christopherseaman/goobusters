@@ -92,50 +92,6 @@ class OpticalFlowProcessor:
         flow = flow.squeeze().permute(1, 2, 0).cpu().numpy()
         return flow
 
-    def apply_optical_flow(self, prev_frame, curr_frame, prev_mask):
-        # Ensure input frames are grayscale
-        if len(prev_frame.shape) == 3:
-            prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-        if len(curr_frame.shape) == 3:
-            curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)
-        
-        if self.method == 'farneback':
-            flow = cv2.calcOpticalFlowFarneback(prev_frame, curr_frame, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        elif self.method == 'dis':
-            dis = cv2.DISOpticalFlow_create(self.dis_preset)
-            flow = dis.calc(prev_frame, curr_frame, None)
-        elif self.method == 'raft':
-            prev_frame = torch.from_numpy(prev_frame).unsqueeze(0).unsqueeze(0).float() / 255.0
-            curr_frame = torch.from_numpy(curr_frame).unsqueeze(0).unsqueeze(0).float() / 255.0
-            flow = self.raft_optical_flow(prev_frame, curr_frame)
-        else:
-            raise ValueError(f"Unknown optical flow method: {self.method}")
-        
-        # Use the flow to warp the previous mask
-        h, w = prev_frame.shape[:2]
-        flow_x, flow_y = flow[..., 0], flow[..., 1]
-        
-        # Create meshgrid
-        y, x = np.mgrid[0:h, 0:w].reshape(2, -1).astype(int)
-        
-        # Apply the flow to the coordinates
-        coords = np.vstack([x + flow_x.flatten(), y + flow_y.flatten()]).round().astype(int)
-        
-        # Clip the coordinates to stay within the image
-        coords[0] = np.clip(coords[0], 0, w - 1)
-        coords[1] = np.clip(coords[1], 0, h - 1)
-        
-        # Create the new mask
-        new_mask = np.zeros_like(prev_mask, dtype=float)
-        new_mask[coords[1], coords[0]] = prev_mask[y, x]
-        
-        # Apply some morphological operations to clean up the mask
-        kernel = np.ones((5,5), np.uint8)
-        new_mask = cv2.morphologyEx(new_mask, cv2.MORPH_CLOSE, kernel)
-        new_mask = cv2.morphologyEx(new_mask, cv2.MORPH_OPEN, kernel)
-        
-        return new_mask
-    
     def calculate_flow(self, prev_frame, curr_frame, method=None):
         """
         Calculate optical flow between two frames with temporal smoothing.
