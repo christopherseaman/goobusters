@@ -894,33 +894,30 @@ class MultiFrameTracker:
                 # Only write first 1000 frames for long videos
                 max_frames = min(total_frames, 1000)
 
-                # Add progress bar for video writing
-                with tqdm(total=max_frames, desc="Writing video", leave=False, position=1) as pbar:
-                    while frame_num < max_frames:
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
+                while frame_num < max_frames:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
 
-                        if frame_num in all_masks:
-                            mask_info = all_masks[frame_num]
-                            mask = mask_info['mask']
+                    if frame_num in all_masks:
+                        mask_info = all_masks[frame_num]
+                        mask = mask_info['mask']
 
-                            # Create colored overlay with different colors for tracked vs annotated
-                            overlay = np.zeros_like(frame)
-                            if mask_info.get('is_annotation', False):
-                                # Green for original annotations (label_id)
-                                overlay[mask > 0] = [0, 255, 0]  # Green
-                            else:
-                                # Orange for tracked masks (track_id)
-                                overlay[mask > 0] = [0, 165, 255]  # Orange
+                        # Create colored overlay with different colors for tracked vs annotated
+                        overlay = np.zeros_like(frame)
+                        if mask_info.get('is_annotation', False):
+                            # Green for original annotations (label_id)
+                            overlay[mask > 0] = [0, 255, 0]  # Green
+                        else:
+                            # Orange for tracked masks (track_id)
+                            overlay[mask > 0] = [0, 165, 255]  # Orange
 
-                            # Blend with original frame
-                            alpha = 0.3
-                            frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+                        # Blend with original frame
+                        alpha = 0.3
+                        frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
 
-                        out.write(frame)
-                        frame_num += 1
-                        pbar.update(1)
+                    out.write(frame)
+                    frame_num += 1
             finally:
                 # Ensure video writer is always released
                 out.release()

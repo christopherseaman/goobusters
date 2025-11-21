@@ -190,10 +190,6 @@ def main():
     total_methods = len(FLOW_METHOD)
     print(f"\nFound {total_videos} videos with {total_methods} optical flow method(s): {', '.join(FLOW_METHOD)}")
 
-    if total_videos > 10:
-        estimated_time = total_videos * total_methods * 60  # ~60 seconds per video per method
-        print(f"Estimated total time: ~{estimated_time // 60} minutes ({estimated_time // 3600} hours)")
-
     for method in FLOW_METHOD:
         print(f"\n{'='*60}")
         print(f"Running {method} optical flow method")
