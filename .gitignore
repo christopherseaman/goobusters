@@ -6,7 +6,7 @@ tracked_*/
 optical_flow/
 output/
 __pycache__/
-
+__init__.py
 
 # Removed Windows wrapper files per user request
 hive-mind-prompt-*.txt
