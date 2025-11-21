@@ -3,9 +3,18 @@
 ## To Do
 
 - [ ] Local annotaion feedback loop? See references/teef for simpler example app with single annotation type
-    - [ ] Server for reviewing/modifying annotations (LABEL_ID, EMPTY_ID, and TRACK_ID)
-    - [ ] Save human reviewed/modified free fluid (LABEL_ID), no fluid (EMPTY_ID) annotations outside data/ bc data reflects mdai truth (maybe local db? duckdb with file?); may be better to store as masks (grayscale images) for local iterations, update annotation from masks on tracking runs (think this happens already but may need fixing)
-    - [ ] Re-run tracking with locally updated annotations (LABEL_ID & EMPTY_ID annotations, no TRACK_ID; if in local db then don't source mdai annotations json)
+    - Server for reviewing/modifying annotations (LABEL_ID, EMPTY_ID, and TRACK_ID)
+    - Save human reviewed/modified free fluid (LABEL_ID), no fluid (EMPTY_ID) annotations outside data/ bc data reflects mdai truth (maybe local db? duckdb with file?); may be better to store as masks (grayscale images) for local iterations, update annotation from masks on tracking runs (think this happens already but may need fixing)
+    - Re-run tracking with locally updated annotations (LABEL_ID & EMPTY_ID annotations, no TRACK_ID; if in local db then don't source mdai annotations json)
+    - Select model output if multiple subdirs exist in output/ ; if only one, select that one 
+    - Need to be able to scrub forward/backward by frame as well as "play" forward and backward
+    - Need to be able to edit masks
+    - Need to be able to "no fluid" a frame (remove TRACK_ID and LABEL_ID masks from frame, apply frame-level EMPTY_ID annotation)
+    - Need to be able to switch to next/prev video
+    - Need to be able to open list of videos to select from
+    - New entrypoint, app.py, with separate library subdir for utility functions if needed. 
+    - Okay to rely on track.py lib/ functions; additional tracking functions should be made in lib/ (keep app and tracking in clear separation of concerns)
+    - May need track.py to run before app can function (to fill in the tracking and make it available)
 
 ## Blocked
 

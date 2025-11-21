@@ -1,0 +1,589 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #000;
+    color: #fff;
+    touch-action: none;
+}
+
+/* Full-screen canvas */
+#canvas {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    cursor: crosshair;
+}
+
+/* Brush size preview */
+.brush-preview {
+    position: fixed;
+    border: 2px solid rgba(76, 175, 80, 0.8);
+    border-radius: 50%;
+    pointer-events: none;
+    z-index: 150;
+    display: none;
+    background: rgba(76, 175, 80, 0.1);
+    box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+    transition: width 0.1s ease, height 0.1s ease;
+}
+
+/* Floating buttons */
+.tool-buttons, .control-buttons, .save-button {
+    position: fixed;
+    display: flex;
+    gap: 8px;
+    z-index: 100;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    transition: all 0.3s ease;
+}
+
+.top-left {
+    top: 12px;
+    left: 12px;
+    flex-direction: column;
+    align-items: center;
+}
+
+.bottom-left {
+    bottom: 100px;
+    left: 12px;
+}
+
+.top-right {
+    top: 12px;
+    right: 12px;
+    flex-direction: column;
+}
+
+.top-center {
+    top: 12px;
+    left: 66%;
+    transform: translateX(-50%);
+    flex-direction: row;
+}
+
+.tool-buttons.hidden, .control-buttons.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Tool and control buttons */
+.tool-btn, .control-btn {
+    width: 56px;
+    height: 56px;
+    border: none;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 28px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tool-btn:active, .control-btn:active {
+    transform: scale(0.95);
+}
+
+.tool-btn.active {
+    background: rgba(76, 175, 80, 0.8);
+    box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+}
+
+.tool-btn.warning {
+    background: rgba(244, 67, 54, 0.8);
+}
+
+.tool-btn.success {
+    background: rgba(33, 150, 243, 0.8);
+}
+
+.tool-btn:hover, .control-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.tool-btn.active:hover {
+    background: rgba(76, 175, 80, 0.9);
+}
+
+/* Playback buttons */
+.playback-buttons {
+    position: fixed;
+    display: flex;
+    gap: 8px;
+    z-index: 100;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    transition: all 0.3s ease;
+}
+
+.playback-btn {
+    width: 56px;
+    height: 56px;
+    border: none;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 28px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.playback-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.playback-btn:active {
+    transform: scale(0.95);
+}
+
+.playback-btn#playPause {
+    background: rgba(76, 175, 80, 0.3);
+}
+
+.playback-btn#playPause:hover {
+    background: rgba(76, 175, 80, 0.4);
+}
+
+/* Frame slider */
+.slider-container {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 20px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+    z-index: 100;
+}
+
+.slider-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.slider-label {
+    font-size: 18px;
+    font-weight: bold;
+    color: #4CAF50;
+    font-variant-numeric: tabular-nums;
+    min-width: 40px;
+    text-align: center;
+}
+
+#frameSlider {
+    width: 100%;
+    height: 8px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    border-radius: 0;
+    outline: none;
+}
+
+/* The actual 1px track line */
+#frameSlider::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.6);
+    border: none;
+    box-shadow: 0 0 3px rgba(255, 255, 255, 0.5);
+}
+
+#frameSlider::-moz-range-track {
+    width: 100%;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.6);
+    border: none;
+    box-shadow: 0 0 3px rgba(255, 255, 255, 0.5);
+}
+
+#frameSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 24px;
+    height: 24px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    margin-top: -11.5px; /* Center on 1px track: (24px - 1px) / 2 */
+}
+
+#frameSlider::-moz-range-thumb {
+    width: 24px;
+    height: 24px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.frame-info {
+    text-align: center;
+    margin-top: 8px;
+    font-size: 18px;
+    font-weight: bold;
+    color: #4CAF50;
+    font-variant-numeric: tabular-nums;
+}
+
+.separator {
+    opacity: 0.5;
+    margin: 0 8px;
+}
+
+/* Modals */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+    backdrop-filter: blur(10px);
+    z-index: 200;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.modal.active {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 20px;
+}
+
+.modal-content {
+    background: #1a1a1a;
+    border-radius: 16px;
+    padding: 32px;
+    max-width: 600px;
+    width: 100%;
+    margin: 40px auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    position: relative;
+}
+
+.modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    border: none;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 24px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.modal h2 {
+    font-size: 28px;
+    margin-bottom: 24px;
+    color: #4CAF50;
+}
+
+.modal h3 {
+    font-size: 20px;
+    margin-top: 24px;
+    margin-bottom: 12px;
+    color: #4CAF50;
+}
+
+.info-section {
+    margin-bottom: 20px;
+}
+
+.info-section p {
+    margin-bottom: 12px;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+.monospace {
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 14px;
+    color: #4CAF50;
+    word-break: break-all;
+}
+
+.label-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    margin-bottom: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+}
+
+.label-badge {
+    padding: 4px 12px;
+    background: rgba(76, 175, 80, 0.3);
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 14px;
+}
+
+.color-box {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Navigation modal specific styles */
+.nav-section {
+    margin-bottom: 28px;
+}
+
+.video-select {
+    width: 100%;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    font-size: 16px;
+    margin-bottom: 12px;
+}
+
+.button-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.modal-btn {
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.modal-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.playback-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+}
+
+.playback-btn {
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.playback-btn.large {
+    grid-column: span 1;
+    background: rgba(76, 175, 80, 0.3);
+}
+
+.playback-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.slider-group {
+    margin-bottom: 16px;
+}
+
+.slider-group label {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 16px;
+}
+
+.slider-group input[type="range"] {
+    width: 100%;
+    height: 6px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+    outline: none;
+}
+
+.slider-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.slider-group input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+.shortcuts {
+    display: grid;
+    gap: 8px;
+}
+
+.shortcuts div {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+}
+
+kbd {
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 14px;
+}
+
+/* Spacer between tools and slider */
+.slider-spacer {
+    height: 12px;
+    width: 100%;
+}
+
+/* Vertical slider for brush size in toolbar */
+.slider-group-vertical {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 140px;
+    width: 56px;
+    gap: 4px;
+}
+
+.slider-indicator-top {
+    font-size: 24px;
+    line-height: 1;
+    color: rgba(255, 255, 255, 0.7);
+    user-select: none;
+}
+
+.slider-indicator-bottom {
+    font-size: 12px;
+    line-height: 1;
+    color: rgba(255, 255, 255, 0.7);
+    user-select: none;
+}
+
+.slider-group-vertical input[type="range"] {
+    -webkit-appearance: slider-vertical;
+    writing-mode: bt-lr;
+    width: 6px;
+    height: 100px;
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+    outline: none;
+}
+
+.slider-group-vertical input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.slider-group-vertical input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #4CAF50;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+/* iPad-specific optimizations */
+@media (min-width: 768px) {
+    .tool-btn, .control-btn {
+        width: 64px;
+        height: 64px;
+        font-size: 32px;
+    }
+
+    .modal-content {
+        max-width: 700px;
+        padding: 40px;
+    }
+}
+
+/* Landscape orientation */
+@media (orientation: landscape) {
+    .slider-container {
+        left: 80px;
+        right: 80px;
+    }
+}
+
+/* Dark mode scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}

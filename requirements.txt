@@ -18,3 +18,5 @@ torchvision>=0.15.0  # Compatible with newer PyTorch
 tqdm
 pyyaml
 psutil  # For performance monitoring
+flask  # For annotation review web app
+duckdb  # For local annotation storage
