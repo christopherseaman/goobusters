@@ -8,8 +8,10 @@
     <link rel="stylesheet" href="/static/css/viewer.css">
 </head>
 <body>
-    <!-- Full-screen canvas for video + mask -->
+    <!-- Full-screen canvas for video -->
     <canvas id="canvas"></canvas>
+    <!-- Overlay canvas for mask (stacked on top) -->
+    <canvas id="overlayCanvas"></canvas>
 
     <!-- Brush size preview circle -->
     <div id="brushPreview" class="brush-preview"></div>
@@ -133,8 +135,8 @@
             <div class="nav-section">
                 <h3>Mask Settings</h3>
                 <div class="slider-group">
-                    <label>Opacity: <span id="maskOpacityValue">50</span>%</label>
-                    <input type="range" id="maskOpacity" min="0" max="100" value="50">
+                    <label>Opacity: <span id="maskOpacityValue">30</span>%</label>
+                    <input type="range" id="maskOpacity" min="0" max="100" value="30">
                 </div>
                 <div class="slider-group">
                     <label>Brush Size: <span id="brushSizeValue">15</span>px</label>

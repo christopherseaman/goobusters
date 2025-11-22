@@ -3,15 +3,19 @@
 class AnnotationViewer {
     constructor() {
         this.canvas = document.getElementById('canvas');
-        this.ctx = this.canvas.getContext('2d');
+        this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
 
-        // Set canvas to full viewport size
+        // Overlay canvas for mask (like teef)
+        this.overlayCanvas = document.getElementById('overlayCanvas');
+        this.overlayCtx = this.overlayCanvas.getContext('2d', { willReadFrequently: true });
+
+        // Set canvases to full viewport size
         this.resizeCanvas();
         window.addEventListener('resize', () => this.resizeCanvas());
 
         // Create hidden canvas for mask manipulation (like teef's maskCanvas)
         this.maskCanvas = document.createElement('canvas');
-        this.maskCtx = this.maskCanvas.getContext('2d');
+        this.maskCtx = this.maskCanvas.getContext('2d', { willReadFrequently: true });
 
         // State
         this.currentVideo = INITIAL_VIDEO;
@@ -29,7 +33,7 @@ class AnnotationViewer {
 
         this.drawMode = 'draw';
         this.brushSize = 15;
-        this.maskOpacity = 0.5;
+        this.maskOpacity = 0.3;
 
         this.isDrawing = false;
         this.lastX = 0;
@@ -45,8 +49,10 @@ class AnnotationViewer {
     }
 
     resizeCanvas() {
+        // Main canvas sized to viewport for rendering
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
+        // Overlay canvas will be sized to image dimensions in goToFrame()
         if (this.frameImage) {
             this.render();
         }
@@ -55,7 +61,7 @@ class AnnotationViewer {
     async init() {
         this.setupEventListeners();
         await this.loadVideoData();
-        this.goToFrame(1); // Start from frame 1 (frame 0 has no mask data)
+        this.goToFrame(0); // Start from frame 0
     }
 
     setupEventListeners() {
@@ -184,18 +190,25 @@ class AnnotationViewer {
 
     updateBrushPreview(e) {
         const preview = document.getElementById('brushPreview');
+
+        // Calculate display scale (mask pixels to screen pixels)
+        const scale = this.renderRect ? (this.renderRect.width / this.maskCanvas.width) : 1;
+        const displayRadius = this.brushSize * scale;
+        const displayDiameter = displayRadius * 2;
+
         if (e) {
             const rect = this.canvas.getBoundingClientRect();
             const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
             const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-            preview.style.left = `${x}px`;
-            preview.style.top = `${y}px`;
-            preview.style.width = `${this.brushSize * 2}px`;
-            preview.style.height = `${this.brushSize * 2}px`;
+            // Center the preview on cursor by offsetting by scaled brush radius
+            preview.style.left = `${x - displayRadius}px`;
+            preview.style.top = `${y - displayRadius}px`;
+            preview.style.width = `${displayDiameter}px`;
+            preview.style.height = `${displayDiameter}px`;
             preview.style.display = 'block';
         } else {
-            preview.style.width = `${this.brushSize * 2}px`;
-            preview.style.height = `${this.brushSize * 2}px`;
+            preview.style.width = `${displayDiameter}px`;
+            preview.style.height = `${displayDiameter}px`;
             preview.style.display = 'block';
             setTimeout(() => preview.style.display = 'none', 1000);
         }
@@ -211,16 +224,16 @@ class AnnotationViewer {
         this.videoData = await response.json();
         this.totalFrames = this.videoData.total_frames;
 
-        // Frame 0 has no mask data, start from frame 1
-        document.getElementById('sliderMin').textContent = '1';
+        // Set slider range from 0 to totalFrames - 1
+        document.getElementById('sliderMin').textContent = '0';
         document.getElementById('sliderMax').textContent = this.totalFrames - 1;
-        document.getElementById('frameSlider').min = 1;
+        document.getElementById('frameSlider').min = 0;
         document.getElementById('frameSlider').max = this.totalFrames - 1;
     }
 
     async goToFrame(frameNum) {
-        // Frame 0 has no mask data, enforce minimum of 1
-        this.currentFrame = Math.max(1, Math.min(frameNum, this.totalFrames - 1));
+        // Clamp frame number to valid range [0, totalFrames - 1]
+        this.currentFrame = Math.max(0, Math.min(frameNum, this.totalFrames - 1));
         document.getElementById('frameSlider').value = this.currentFrame;
 
         const { method, studyUid, seriesUid } = this.currentVideo;
@@ -230,15 +243,19 @@ class AnnotationViewer {
         // Load frame image
         this.frameImage = await this.loadImage(`data:image/jpeg;base64,${data.frame}`);
 
-        // Set mask canvas size to match frame
+        // Set both mask and overlay canvas to match image dimensions (like teef)
         this.maskCanvas.width = this.frameImage.width;
         this.maskCanvas.height = this.frameImage.height;
+        this.overlayCanvas.width = this.frameImage.width;
+        this.overlayCanvas.height = this.frameImage.height;
 
         // Load mask if exists
         if (data.mask) {
             const maskImg = await this.loadImage(`data:image/png;base64,${data.mask}`);
+            console.log('Mask dimensions:', maskImg.width, 'x', maskImg.height, 'Canvas:', this.maskCanvas.width, 'x', this.maskCanvas.height);
             this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
-            this.maskCtx.drawImage(maskImg, 0, 0);
+
+            this.maskCtx.drawImage(maskImg, 0, 0, this.maskCanvas.width, this.maskCanvas.height);
 
             // Server returns grayscale PNG (cv2.IMREAD_GRAYSCALE)
             // Extract R channel as grayscale value (R=G=B in grayscale)
@@ -289,72 +306,60 @@ class AnnotationViewer {
     }
 
     render() {
-        // Clear canvas
+        // Clear both canvases
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        this.overlayCtx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
 
         if (!this.frameImage) return;
 
         // Calculate aspect-fit dimensions
-        const canvasAspect = this.canvas.width / this.canvas.height;
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
         const imageAspect = this.frameImage.width / this.frameImage.height;
+        const viewportAspect = viewportWidth / viewportHeight;
 
-        let drawWidth, drawHeight, drawX, drawY;
-
-        if (imageAspect > canvasAspect) {
-            drawWidth = this.canvas.width;
-            drawHeight = this.canvas.width / imageAspect;
-            drawX = 0;
-            drawY = (this.canvas.height - drawHeight) / 2;
+        let displayWidth, displayHeight;
+        if (imageAspect > viewportAspect) {
+            displayWidth = viewportWidth;
+            displayHeight = viewportWidth / imageAspect;
         } else {
-            drawHeight = this.canvas.height;
-            drawWidth = this.canvas.height * imageAspect;
-            drawX = (this.canvas.width - drawWidth) / 2;
-            drawY = 0;
+            displayHeight = viewportHeight;
+            displayWidth = viewportHeight * imageAspect;
         }
 
+        const displayX = (viewportWidth - displayWidth) / 2;
+        const displayY = (viewportHeight - displayHeight) / 2;
+
         // Store dimensions for coordinate conversion
-        this.renderRect = { x: drawX, y: drawY, width: drawWidth, height: drawHeight };
+        this.renderRect = { x: displayX, y: displayY, width: displayWidth, height: displayHeight };
 
-        // Draw frame
-        this.ctx.drawImage(this.frameImage, drawX, drawY, drawWidth, drawHeight);
+        // Draw frame on main canvas (scaled to viewport)
+        this.ctx.drawImage(this.frameImage, displayX, displayY, displayWidth, displayHeight);
 
-        // Draw mask overlay (like applyMaskToOverlay in teef)
+        // Position and size overlay canvas to match display dimensions (like teef adjustCanvasSize)
+        this.overlayCanvas.style.width = `${displayWidth}px`;
+        this.overlayCanvas.style.height = `${displayHeight}px`;
+        this.overlayCanvas.style.left = `${displayX}px`;
+        this.overlayCanvas.style.top = `${displayY}px`;
+
+        // Draw mask overlay directly at image resolution (like teef applyMaskToOverlay)
         if (this.maskImageData) {
-            const overlayImageData = this.ctx.createImageData(this.maskImageData.width, this.maskImageData.height);
-
-            // Determine color based on mask type
-            // Human annotations are green, tracked predictions (fluid_*) are orange
             const isHuman = this.maskType === 'human' || this.maskType === 'empty';
             const maskColor = isHuman ? { r: 0, g: 255, b: 0 } : { r: 255, g: 165, b: 0 };
-            console.log('Rendering mask - Type:', this.maskType, 'Human:', isHuman, 'Color:', maskColor);
 
-            // Convert grayscale mask to colored overlay
+            // Create overlay imageData at image resolution
+            const overlayImageData = this.overlayCtx.createImageData(this.overlayCanvas.width, this.overlayCanvas.height);
+
             for (let i = 0; i < this.maskImageData.data.length; i += 4) {
-                const gray = this.maskImageData.data[i]; // Grayscale value (0 = no mask, 255 = mask)
-
-                if (gray > 0) {
-                    // Mask exists - show colored overlay at 50% opacity
-                    overlayImageData.data[i] = maskColor.r;
-                    overlayImageData.data[i + 1] = maskColor.g;
-                    overlayImageData.data[i + 2] = maskColor.b;
-                    overlayImageData.data[i + 3] = 128; // 50% opacity (128/255)
-                } else {
-                    // No mask - fully transparent
-                    overlayImageData.data[i] = 0;
-                    overlayImageData.data[i + 1] = 0;
-                    overlayImageData.data[i + 2] = 0;
-                    overlayImageData.data[i + 3] = 0;
-                }
+                const gray = this.maskImageData.data[i];
+                overlayImageData.data[i] = maskColor.r;
+                overlayImageData.data[i + 1] = maskColor.g;
+                overlayImageData.data[i + 2] = maskColor.b;
+                overlayImageData.data[i + 3] = gray > 0 ? Math.round(gray * this.maskOpacity) : 0;
             }
 
-            // Draw overlay on temp canvas then to main canvas
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = this.maskImageData.width;
-            tempCanvas.height = this.maskImageData.height;
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCtx.putImageData(overlayImageData, 0, 0);
-
-            this.ctx.drawImage(tempCanvas, drawX, drawY, drawWidth, drawHeight);
+            // Put directly on overlay canvas (no scaling, CSS handles that)
+            this.overlayCtx.putImageData(overlayImageData, 0, 0);
         }
     }
 
@@ -379,12 +384,19 @@ class AnnotationViewer {
         this.lastY = coords.y;
 
         // Convert tracked masks to human annotation on first edit
-        // Tracked types: fluid_forward, fluid_backward, fluid_bidirectional
-        if (this.maskType && this.maskType.startsWith('fluid_')) {
-            console.log('CONVERTING', this.maskType, 'to human!');
+        if (this.maskType === 'tracked') {
+            console.log('CONVERTING tracked to human on edit');
             this.maskType = 'human';
             this.render(); // Show color change immediately
         }
+
+        // Remove empty marker when drawing
+        if (this.maskType === 'empty') {
+            console.log('REMOVING empty marker on draw');
+            this.maskType = 'human';
+            this.render(); // Show color change immediately
+        }
+
         console.log('Start drawing - Mode:', this.drawMode, 'Type:', this.maskType);
 
         this.draw(e);
@@ -489,6 +501,7 @@ class AnnotationViewer {
     }
 
     resetMask() {
+        // Reset to the mask that was loaded when frame first opened
         this.maskImageData = this.cloneImageData(this.originalMaskImageData);
         this.maskType = this.originalMaskType;
         this.hasUnsavedChanges = false;
@@ -496,22 +509,18 @@ class AnnotationViewer {
     }
 
     async markEmpty() {
-        const { method, studyUid, seriesUid } = this.currentVideo;
-        const response = await fetch('/api/mark_empty', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                method,
-                study_uid: studyUid,
-                series_uid: seriesUid,
-                frame_number: this.currentFrame
-            })
-        });
-
-        if (response.ok) {
-            // Clear mask and reload frame
-            await this.goToFrame(this.currentFrame);
+        // Clear the mask (set all pixels to black)
+        for (let i = 0; i < this.maskImageData.data.length; i += 4) {
+            this.maskImageData.data[i] = 0;
+            this.maskImageData.data[i + 1] = 0;
+            this.maskImageData.data[i + 2] = 0;
+            this.maskImageData.data[i + 3] = 255;
         }
+
+        // Mark as empty type
+        this.maskType = 'empty';
+        this.hasUnsavedChanges = true;
+        this.render();
     }
 
     navigateFrame(delta) {

@@ -72,19 +72,34 @@ def retrack_video(method, study_uid, series_uid):
 - Show progress/status during re-tracking
 - Reload video data after completion
 
-### 3. Implementation Strategy
+### 3. Implementation Strategy (Updated)
 
 **Phase 1: Data Layer** (lib/annotation_db.py)
-- Create functions to read from DuckDB
-- Convert masks back to annotation format
-- Merge logic with MD.ai annotations
+
+- ✅ Skip polygon conversion entirely
+- Return pre-converted annotation dicts with masks
+- Merge with MD.ai annotations **after** `_classify_annotations()` runs
 
 **Phase 2: Track Integration**
-- Modify track.py to check local DB before MD.ai
-- Test with single video
-- Validate output format matches
+
+Modify [lib/multi_frame_tracker.py:202-210](lib/multi_frame_tracker.py#L202-L210):
+
+```python
+# Classify MD.ai annotations as 'fluid' or 'clear'
+annotations = self._classify_annotations(annotations_df, frame_height, frame_width)
+
+# Merge with local modifications
+local_annotations = get_local_annotations(study_uid, series_uid, frame_width, frame_height)
+annotations = merge_annotations(annotations, local_annotations)  # List merge, not DataFrame
+
+if not annotations:
+    return {}
+```
+
+This is **much simpler** than converting masks back to polygons.
 
 **Phase 3: UI/API Layer**
+
 - Add re-track endpoint to app.py
 - Add button to viewer
 - Handle async/progress feedback
@@ -92,13 +107,13 @@ def retrack_video(method, study_uid, series_uid):
 ### 4. Key Considerations
 
 **Annotation Format Consistency:**
-- Local DB stores: base64 PNG masks + frame metadata
+- Local DB stores: PNG mask bytes (BLOB) + frame metadata
 - MD.ai format: polygon coordinates in `data.foreground`
-- Need conversion: mask → polygon or track.py handles masks directly?
+- Tracking internally uses: mask arrays (post-polygon conversion)
 
-**Solution:** Check if `process_video_with_multi_frame_tracking` can accept mask images directly rather than requiring polygon data. Looking at [lib/multi_frame_tracker.py:194-268](lib/multi_frame_tracker.py#L194-L268), it calls `_classify_annotations()` which likely expects polygon data.
+**Solution:** Local annotations bypass polygon conversion entirely. DuckDB stores `mask_data` as BLOB, which gets converted directly to the post-`_classify_annotations()` format (annotation dicts with masks). This avoids mask → polygon → mask round-tripping.
 
-**Alternative approach:** Store modified masks as PNG files in output directory, have tracking read from there instead of converting back to annotations.
+**Key insight:** `_classify_annotations()` converts polygons → masks. Local modifications are already masks, so we inject them AFTER `_classify_annotations()` runs, not before.
 
 **Performance:**
 - Re-tracking single video should be fast (seconds to minutes)

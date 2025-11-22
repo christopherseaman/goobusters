@@ -15,21 +15,28 @@ html, body {
     touch-action: none;
 }
 
-/* Full-screen canvas */
+/* Full-screen canvases (stacked like teef) */
 #canvas {
     position: fixed;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
     cursor: crosshair;
+    z-index: 1;
+}
+
+#overlayCanvas {
+    position: fixed;
+    /* Positioned/sized by JS to match scaled image */
+    pointer-events: none; /* Let clicks pass through to main canvas */
+    z-index: 2;
 }
 
 /* Brush size preview */
 .brush-preview {
     position: fixed;
-    border: 2px solid rgba(76, 175, 80, 0.8);
+    border: 1px solid rgba(76, 175, 80, 0.8);
     border-radius: 50%;
     pointer-events: none;
     z-index: 150;
@@ -37,6 +44,7 @@ html, body {
     background: rgba(76, 175, 80, 0.1);
     box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
     transition: width 0.1s ease, height 0.1s ease;
+    box-sizing: border-box; /* Include border in size calculation */
 }
 
 /* Floating buttons */
@@ -44,7 +52,7 @@ html, body {
     position: fixed;
     display: flex;
     gap: 8px;
-    z-index: 100;
+    z-index: 99;  /* Below slider */
     padding: 12px;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(10px);
@@ -103,12 +111,28 @@ html, body {
 }
 
 .tool-btn.active {
-    background: rgba(76, 175, 80, 0.8);
+    background: rgba(255, 255, 255, 0.1);
+    border: 3px solid rgba(76, 175, 80, 0.9);
     box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
 }
 
 .tool-btn.warning {
     background: rgba(244, 67, 54, 0.8);
+}
+
+.tool-btn.warning:hover {
+    animation: pulse-warning 0.8s ease-in-out infinite;
+}
+
+@keyframes pulse-warning {
+    0%, 100% {
+        background: rgba(244, 67, 54, 0.8);
+        box-shadow: 0 0 20px rgba(244, 67, 54, 0.5);
+    }
+    50% {
+        background: rgba(244, 67, 54, 1);
+        box-shadow: 0 0 40px rgba(244, 67, 54, 0.9);
+    }
 }
 
 .tool-btn.success {
@@ -120,7 +144,7 @@ html, body {
 }
 
 .tool-btn.active:hover {
-    background: rgba(76, 175, 80, 0.9);
+    background: rgba(255, 255, 255, 0.2);
 }
 
 /* Playback buttons */
@@ -128,7 +152,7 @@ html, body {
     position: fixed;
     display: flex;
     gap: 8px;
-    z-index: 100;
+    z-index: 99;  /* Below slider */
     padding: 12px;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(10px);
@@ -175,7 +199,7 @@ html, body {
     right: 0;
     padding: 20px;
     background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-    z-index: 100;
+    z-index: 101;  /* Above overlay canvas */
 }
 
 .slider-wrapper {
@@ -195,29 +219,30 @@ html, body {
 
 #frameSlider {
     width: 100%;
-    height: 8px;
+    height: 3px;  /* Match track height */
     -webkit-appearance: none;
     appearance: none;
-    background: transparent;
-    border-radius: 0;
+    background: #4CAF50;  /* Fallback green */
+    border-radius: 2px;
     outline: none;
+    box-shadow: 0 0 10px rgba(76, 175, 80, 0.8), 0 0 20px rgba(76, 175, 80, 0.4);
 }
 
-/* The actual 1px track line */
+/* The actual track line */
 #frameSlider::-webkit-slider-runnable-track {
     width: 100%;
-    height: 1px;
-    background: rgba(255, 255, 255, 0.6);
+    height: 3px;
+    background: #4CAF50;  /* Solid green */
     border: none;
-    box-shadow: 0 0 3px rgba(255, 255, 255, 0.5);
+    border-radius: 2px;
 }
 
 #frameSlider::-moz-range-track {
     width: 100%;
-    height: 1px;
-    background: rgba(255, 255, 255, 0.6);
+    height: 3px;
+    background: #4CAF50;  /* Solid green */
     border: none;
-    box-shadow: 0 0 3px rgba(255, 255, 255, 0.5);
+    border-radius: 2px;
 }
 
 #frameSlider::-webkit-slider-thumb {
@@ -229,7 +254,7 @@ html, body {
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    margin-top: -11.5px; /* Center on 1px track: (24px - 1px) / 2 */
+    margin-top: -10.5px; /* Center on 3px track: (24px - 3px) / 2 */
 }
 
 #frameSlider::-moz-range-thumb {
