@@ -2,6 +2,10 @@
 
 ## To Do
 
+- [ ] Fix brush size preview location (shouldn't move during resize previews)
+- [ ] Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frame 1 & 42 of 144, 1-based counting)"
+    - StudyInstanceUID = "1.2.826.0.1.3680043.8 498. 21582572478922879563110991046360588727"
+    - SeriesInstranceUID = "1.2.826.0.1.3680043.8.498.88798124921994953570699988775039906436"
 - [ ] Local annotaion feedback loop? See references/teef for simpler example app with single annotation type
     - Server for reviewing/modifying annotations (LABEL_ID, EMPTY_ID, and TRACK_ID)
     - Save human reviewed/modified free fluid (LABEL_ID), no fluid (EMPTY_ID) annotations outside data/ bc data reflects mdai truth (maybe local db? duckdb with file?); may be better to store as masks (grayscale images) for local iterations, update annotation from masks on tracking runs (think this happens already but may need fixing)

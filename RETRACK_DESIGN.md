@@ -3,14 +3,15 @@
 ## Current State Analysis
 
 **What exists:**
-- [app.py](app.py) - Flask server with DuckDB storage for modified annotations
-- `/api/save_mask` - Saves modified masks to DuckDB
-- `/api/mark_empty` - Marks frames as EMPTY_ID in DuckDB
+- [app.py](app.py) - Flask server that saves modified annotations to JSON + PNG files
+- `/api/save_changes` - Saves all `label_id` and `empty_id` annotations to:
+  - `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json` (metadata)
+  - `annotations/{method}/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.png` (masks)
 - [track.py](track.py) - Reads annotations from MD.ai JSON, generates TRACK_ID predictions
 
 **What's missing:**
-- Integration layer to merge local DB annotations with MD.ai data
-- Re-tracking endpoint/mechanism
+- Function to convert local annotations (JSON + PNG) to MD.ai JSON format
+- Re-tracking endpoint/mechanism that uses local annotations only (no MD.ai data needed)
 - UI button to trigger re-tracking
 
 ## Architecture Design
@@ -22,49 +23,69 @@ Initial Run:
 MD.ai JSON → track.py → output/{method}/{study_uid}_{series_uid}/ → app.py displays
 
 Iteration Loop:
-app.py (user edits) → DuckDB (local storage)
+app.py (user edits) → annotations/{method}/{study_uid}_{series_uid}/
                     ↓
-              track.py reads:
-              1. Check DuckDB for (study, series, frame)
-              2. If found: use local LABEL_ID/EMPTY_ID
-              3. If not: fall back to MD.ai JSON
+              Convert to MD.ai JSON format:
+              1. Read modified_annotations.json
+              2. Load PNG masks from annotations/masks/
+              3. Convert masks to polygons (for fluid) or empty vertices (for empty)
+              4. Generate MD.ai-compliant JSON
                     ↓
-              New TRACK_ID predictions → output/ → app.py displays
+              Clear output/{method}/{study_uid}_{series_uid}/ (preserve annotations/)
+                    ↓
+              track.py with local JSON → output/ → app.py displays
 ```
 
 ### 2. Required Components
 
-**A. New lib module: `lib/annotation_db.py`**
-- `get_local_annotations(method, study_uid, series_uid)` → DataFrame
-- `merge_annotations(mdai_df, local_df)` → Combined DataFrame
-  - Prioritize local modifications over MD.ai data
-  - Maintain MD.ai structure (columns, data types)
-  - Include both LABEL_ID and EMPTY_ID annotations
+**A. New lib module: `lib/local_annotations.py`**
 
-**B. Modified track.py flow:**
-```python
-# Current (line 142-152):
-annotations_df = pd.DataFrame(annotations_data['annotations'])
-free_fluid_annotations = annotations_df[annotations_df['labelId'] == LABEL_ID]
+- `convert_local_to_mdai_json(method, study_uid, series_uid)` → MD.ai JSON file path
+  - Reads `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json`
+  - Loads PNG masks from `annotations/{method}/{study_uid}_{series_uid}/masks/`
+  - For `label_id` frames: Convert mask to polygons using `cv2.findContours()`
+  - For `empty_id` frames: Use `"data": null` (MD.ai format for empty/"No Fluid" frames)
+  - Generates MD.ai-compliant JSON with format:
+    ```json
+    {
+      "datasets": [{
+        "annotations": [
+          {
+            "labelId": "...",
+            "StudyInstanceUID": "...",
+            "SeriesInstanceUID": "...",
+            "SOPInstanceUID": "{series_uid}_{frame_num}",
+            "frameNumber": frame_num + 1,  // 1-based (MD.ai uses 1-based)
+            "data": {
+              "foreground": [[x1, y1, x2, y2, ...]]  // For fluid frames
+            },
+            // OR for empty frames:
+            "data": null  // MD.ai uses null, not empty array
+          }
+        ]
+      }]
+    }
+    ```
+  - Saves to temporary file, returns path
+  - **KISS/DRY:** Reuses existing mask→polygon conversion logic from tracking
 
-# New flow:
-from lib.annotation_db import merge_annotations, get_local_annotations
+**B. Modified [track.py](track.py) flow:**
 
-annotations_df = pd.DataFrame(annotations_data['annotations'])
-# For each video being tracked, merge with local DB
-for (study_uid, series_uid), video_annotations in video_groups:
-    local_annotations = get_local_annotations(method, study_uid, series_uid)
-    merged = merge_annotations(video_annotations, local_annotations)
-    # Use merged for tracking
-```
+- Add option to use local JSON file instead of MD.ai data
+- If local JSON provided, skip MD.ai download and use local file
+- No changes needed to [lib/multi_frame_tracker.py](lib/multi_frame_tracker.py) - it already handles MD.ai JSON format
 
 **C. New app.py endpoint: `/api/retrack`**
 ```python
 @app.route('/api/retrack/<method>/<study_uid>/<series_uid>', methods=['POST'])
 def retrack_video(method, study_uid, series_uid):
-    # Run track.py in subprocess for specific video
-    # Set environment variables: TEST_STUDY_UID, TEST_SERIES_UID, FLOW_METHOD
-    # Return status/progress
+    # 1. Convert local annotations to MD.ai JSON format
+    # 2. Clear output/{method}/{study_uid}_{series_uid}/ (preserve annotations/)
+    # 3. Run track.py in subprocess with:
+    #    - Local JSON file (not MD.ai data)
+    #    - TEST_STUDY_UID, TEST_SERIES_UID, FLOW_METHOD env vars
+    # 4. Return status/progress
+    # 5. On completion, reload video data in frontend
 ```
 
 **D. UI Changes:**
@@ -72,31 +93,23 @@ def retrack_video(method, study_uid, series_uid):
 - Show progress/status during re-tracking
 - Reload video data after completion
 
-### 3. Implementation Strategy (Updated)
+### 3. Implementation Strategy
 
-**Phase 1: Data Layer** (lib/annotation_db.py)
+**Phase 1: Data Conversion** (lib/local_annotations.py)
 
-- ✅ Skip polygon conversion entirely
-- Return pre-converted annotation dicts with masks
-- Merge with MD.ai annotations **after** `_classify_annotations()` runs
+- Read `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json`
+- For each frame with annotation:
+  - Load mask PNG
+  - If `is_empty: true`: Use empty polygon `{'vertices': []}`
+  - If `is_empty: false`: Convert mask to polygons using `cv2.findContours()`
+- Generate MD.ai-compliant JSON
+- Save to temp file, return path
 
 **Phase 2: Track Integration**
 
-Modify [lib/multi_frame_tracker.py:202-210](lib/multi_frame_tracker.py#L202-L210):
-
-```python
-# Classify MD.ai annotations as 'fluid' or 'clear'
-annotations = self._classify_annotations(annotations_df, frame_height, frame_width)
-
-# Merge with local modifications
-local_annotations = get_local_annotations(study_uid, series_uid, frame_width, frame_height)
-annotations = merge_annotations(annotations, local_annotations)  # List merge, not DataFrame
-
-if not annotations:
-    return {}
-```
-
-This is **much simpler** than converting masks back to polygons.
+- Modify [track.py](track.py) to accept optional local JSON file path
+- If provided, use local JSON instead of MD.ai data
+- No changes needed to [lib/multi_frame_tracker.py](lib/multi_frame_tracker.py) - it already handles MD.ai format
 
 **Phase 3: UI/API Layer**
 
@@ -107,13 +120,21 @@ This is **much simpler** than converting masks back to polygons.
 ### 4. Key Considerations
 
 **Annotation Format Consistency:**
-- Local DB stores: PNG mask bytes (BLOB) + frame metadata
-- MD.ai format: polygon coordinates in `data.foreground`
-- Tracking internally uses: mask arrays (post-polygon conversion)
 
-**Solution:** Local annotations bypass polygon conversion entirely. DuckDB stores `mask_data` as BLOB, which gets converted directly to the post-`_classify_annotations()` format (annotation dicts with masks). This avoids mask → polygon → mask round-tripping.
+- **Local storage (app.py):**
+  - `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json` - Metadata: `{frame_key: {label_id, is_empty, modified_at}}`
+  - `annotations/{method}/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.png` - PNG masks
+- **MD.ai format (for track.py):**
+  - JSON with `annotations` array
+  - Each annotation: `{labelId, frameNumber, data: {foreground: polygons}, type: 'polygon'}`
+  - Empty frames: `data: {foreground: []}` (empty vertices array)
 
-**Key insight:** `_classify_annotations()` converts polygons → masks. Local modifications are already masks, so we inject them AFTER `_classify_annotations()` runs, not before.
+**Solution:** Convert local annotations (JSON + PNG) to MD.ai JSON format before retracking. This allows track.py to work without MD.ai data directory. The conversion happens once per retrack, then track.py processes it normally.
+
+**Empty ID Compliance:**
+- Empty frames must use `"data": null` (not `{"foreground": []}`) for MD.ai compatibility
+- Verified in actual MD.ai annotation files: empty/"No Fluid" frames have `"data": null`
+- See TODO.md item 6-8 for validation requirements
 
 **Performance:**
 - Re-tracking single video should be fast (seconds to minutes)
@@ -121,35 +142,59 @@ This is **much simpler** than converting masks back to polygons.
 - Return immediately with task ID, poll for status
 
 **Data Integrity:**
-- Local DB modifications should not affect MD.ai source
-- Clear distinction between LABEL_ID (human), EMPTY_ID (human), TRACK_ID (machine)
-- Version tracking of iterations
+
+- `annotations/` directory is preserved during retrack (never cleared)
+- `output/{method}/{study_uid}_{series_uid}/` is cleared before retrack (except annotations/)
+- Clear distinction: LABEL_ID (human), EMPTY_ID (human), TRACK_ID (machine)
+- Version tracking: `modified_at` timestamps in JSON metadata
 
 ## Questions for User:
 
-1. **Annotation format:** Should we convert stored masks back to MD.ai polygon format, or have tracking read masks directly?
+1. ~~**Annotation format:** Should we convert stored masks back to MD.ai polygon format, or have tracking read masks directly?~~ ✅ **RESOLVED:** Convert local annotations to MD.ai JSON format for retrack
 
-2. **Re-tracking scope:** Re-track single video only, or batch re-track all videos with local modifications?
+2. **Re-tracking scope:** Re-track single video only, or batch re-track all videos with local modifications? ✅ **RESOLVED:** Single video only (KISS)
 
 3. **Progress feedback:** Simple spinner, or detailed progress (frame N of M)?
 
-4. **Method selection:** Re-track with same method, or allow choosing different method (e.g., switch from farneback to raft)?
+4. **Method selection:** Re-track with same method, or allow choosing different method (e.g., switch from farneback to raft)? ✅ **RESOLVED:** Use same method (simpler)
 
 ## Implementation Phases
 
-### Phase 1: Data Layer
-- [ ] Create `lib/annotation_db.py` module
-- [ ] Implement `get_local_annotations()` function
-- [ ] Implement `merge_annotations()` function
-- [ ] Test data merging with sample annotations
+### Phase 1: Data Conversion (lib/local_annotations.py)
+
+- [ ] Create `lib/local_annotations.py` module
+- [ ] Implement `convert_local_to_mdai_json(method, study_uid, series_uid)`:
+  - Load `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json`
+  - For each frame with annotation:
+    - Load mask PNG from `annotations/{method}/{study_uid}_{series_uid}/masks/`
+    - If `is_empty: true`: Use `"data": null` (MD.ai format for empty frames)
+    - If `is_empty: false`: Convert mask to polygons using `cv2.findContours()`
+  - Generate MD.ai-compliant JSON structure
+  - Save to temp file, return path
+- [ ] Validate empty_id format matches MD.ai requirements: `"data": null` (verified in actual MD.ai files, TODO.md item 6-8)
+- [ ] Test conversion with existing modified annotations
 
 ### Phase 2: Track Integration
-- [ ] Modify track.py to use annotation_db
-- [ ] Test single video re-tracking
-- [ ] Validate output format
+
+- [ ] Modify [track.py](track.py) to accept optional local JSON file path
+- [ ] If local JSON provided, skip MD.ai download and use local file
+- [ ] Test single video re-tracking with local annotations only
+- [ ] Validate output format (masks, video, metadata)
 
 ### Phase 3: UI/API Layer
-- [ ] Add `/api/retrack` endpoint to app.py
-- [ ] Add re-track button to viewer UI
-- [ ] Implement progress feedback
-- [ ] Test end-to-end flow
+
+- [ ] Add `/api/retrack` endpoint to app.py:
+  - Convert local annotations to MD.ai JSON
+  - Clear `output/{method}/{study_uid}_{series_uid}/` (preserve `annotations/`)
+  - Run track.py subprocess with local JSON
+  - Return status/progress
+- [ ] Add re-track button (⚡) to viewer UI top-right controls
+- [ ] Implement progress feedback (simple spinner or status polling)
+- [ ] Reload video data after retrack completion
+- [ ] Test end-to-end flow: modify mask → save → re-track → view updated results
+
+### Phase 4: Validation
+
+- [ ] Validate empty_id annotations are MD.ai compliant (TODO.md item 6-8)
+- [ ] Ensure annotations/ directory is never cleared during retrack
+- [ ] Test that retrack works without MD.ai data directory
