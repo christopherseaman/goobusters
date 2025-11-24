@@ -15,7 +15,7 @@ from pathlib import Path
 import base64
 import io
 from PIL import Image
-import duckdb
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -36,29 +36,31 @@ def add_header(response):
 # Configuration
 OUTPUT_DIR = Path('output')
 DATA_DIR = Path('data')
-DB_PATH = Path('annotations.duckdb')
+ANNOTATIONS_DIR = Path('annotations')  # Store modified annotations outside output/
 
-# Initialize DuckDB for local annotation storage
-def init_db():
-    """Initialize DuckDB database for storing modified annotations."""
-    conn = duckdb.connect(str(DB_PATH))
+def get_annotations_file(method, study_uid, series_uid):
+    """Get path to modified annotations JSON file."""
+    return ANNOTATIONS_DIR / method / f"{study_uid}_{series_uid}" / "modified_annotations.json"
 
-    # Create table for modified annotations if it doesn't exist
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS modified_annotations (
-            id VARCHAR PRIMARY KEY,
-            study_uid VARCHAR NOT NULL,
-            series_uid VARCHAR NOT NULL,
-            frame_number INTEGER NOT NULL,
-            label_id VARCHAR NOT NULL,
-            mask_data BLOB,
-            is_empty BOOLEAN DEFAULT FALSE,
-            modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(study_uid, series_uid, frame_number)
-        )
-    """)
+def get_annotations_dir(method, study_uid, series_uid):
+    """Get directory for storing modified annotations."""
+    return ANNOTATIONS_DIR / method / f"{study_uid}_{series_uid}"
 
-    conn.close()
+def load_modified_annotations(method, study_uid, series_uid):
+    """Load modified annotations from JSON file."""
+    annotations_file = get_annotations_file(method, study_uid, series_uid)
+    if annotations_file.exists():
+        with open(annotations_file) as f:
+            return json.load(f)
+    return {}
+
+def save_modified_annotations(method, study_uid, series_uid, annotations):
+    """Save modified annotations to JSON file."""
+    annotations_dir = get_annotations_dir(method, study_uid, series_uid)
+    annotations_dir.mkdir(parents=True, exist_ok=True)
+    annotations_file = get_annotations_file(method, study_uid, series_uid)
+    with open(annotations_file, 'w') as f:
+        json.dump(annotations, f, indent=2)
 
 def get_available_videos():
     """
@@ -181,17 +183,16 @@ def api_video_data(method, study_uid, series_uid):
     with open(tracked_annotations_path) as f:
         tracked_annotations = json.load(f)
 
-    # Check for local modifications in DuckDB
-    conn = duckdb.connect(str(DB_PATH))
-    modifications = conn.execute("""
-        SELECT frame_number, label_id, is_empty, modified_at
-        FROM modified_annotations
-        WHERE study_uid = ? AND series_uid = ?
-    """, [study_uid, series_uid]).fetchall()
-    conn.close()
-
-    modified_frames = {row[0]: {'label_id': row[1], 'is_empty': row[2], 'modified_at': str(row[3])}
-                      for row in modifications}
+    # Check for local modifications in JSON
+    modified_annotations = load_modified_annotations(method, study_uid, series_uid)
+    modified_frames = {}
+    for frame_key, frame_data in modified_annotations.items():
+        frame_num = int(frame_key.replace('frame_', ''))
+        modified_frames[frame_num] = {
+            'label_id': frame_data.get('label_id', ''),
+            'is_empty': frame_data.get('is_empty', False),
+            'modified_at': frame_data.get('modified_at', '')
+        }
 
     return jsonify({
         'mask_data': mask_data,
@@ -237,13 +238,23 @@ def api_frame(method, study_uid, series_uid, frame_num):
     _, buffer = cv2.imencode('.jpg', frame)
     frame_b64 = base64.b64encode(buffer).decode('utf-8')
 
-    # Get mask if it exists
-    mask_path = video_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+    # Get mask - check annotations directory first for modified annotations, then filesystem
     mask_b64 = None
-    if mask_path.exists():
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    annotations_dir = get_annotations_dir(method, study_uid, series_uid)
+    modified_mask_path = annotations_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+    
+    if modified_mask_path.exists():
+        # Use modified mask from annotations directory
+        mask = cv2.imread(str(modified_mask_path), cv2.IMREAD_GRAYSCALE)
         _, buffer = cv2.imencode('.png', mask)
         mask_b64 = base64.b64encode(buffer).decode('utf-8')
+    else:
+        # Fall back to filesystem mask in output directory
+        mask_path = video_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+        if mask_path.exists():
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            _, buffer = cv2.imencode('.png', mask)
+            mask_b64 = base64.b64encode(buffer).decode('utf-8')
 
     return jsonify({
         'frame': frame_b64,
@@ -254,7 +265,9 @@ def api_frame(method, study_uid, series_uid, frame_num):
 @app.route('/api/save_mask', methods=['POST'])
 def api_save_mask():
     """
-    Save a modified mask to local database and update mask file.
+    Save a single modified mask to annotations directory (outside output/).
+    
+    NOTE: This is a legacy endpoint. Use /api/save_changes for saving all annotations.
 
     Expected JSON:
         {
@@ -279,33 +292,184 @@ def api_save_mask():
     mask_img = Image.open(io.BytesIO(mask_bytes)).convert('L')
     mask_array = np.array(mask_img)
 
-    # Save mask to file
-    video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
-    mask_path = video_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+    # Save mask to file in annotations directory (outside output/)
+    annotations_dir = get_annotations_dir(method, study_uid, series_uid)
+    masks_dir = annotations_dir / 'masks'
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    mask_path = masks_dir / f'frame_{frame_num:06d}_mask.png'
     cv2.imwrite(str(mask_path), mask_array)
 
-    # Save to DuckDB
-    conn = duckdb.connect(str(DB_PATH))
-    conn.execute("""
-        INSERT OR REPLACE INTO modified_annotations
-        (id, study_uid, series_uid, frame_number, label_id, mask_data, is_empty)
-        VALUES (?, ?, ?, ?, ?, ?, FALSE)
-    """, [
-        f"{study_uid}_{series_uid}_{frame_num}",
-        study_uid,
-        series_uid,
-        frame_num,
-        label_id,
-        mask_array.tobytes()
-    ])
-    conn.close()
+    # Save metadata to JSON
+    modified_annotations = load_modified_annotations(method, study_uid, series_uid)
+    frame_key = f'frame_{frame_num}'
+    modified_annotations[frame_key] = {
+        'label_id': label_id,
+        'is_empty': False,
+        'modified_at': datetime.now().isoformat()
+    }
+    save_modified_annotations(method, study_uid, series_uid, modified_annotations)
 
     return jsonify({'success': True})
+
+@app.route('/api/save_changes', methods=['POST'])
+def api_save_changes():
+    """
+    Save all label_id and empty_id annotations for a video.
+    
+    Expected JSON:
+        {
+            'method': str,
+            'study_uid': str,
+            'series_uid': str,
+            'modified_frames': optional dict of {frame_num: {mask_data: base64, is_empty: bool}}
+        }
+    """
+    data = request.json
+    method = data['method']
+    study_uid = data['study_uid']
+    series_uid = data['series_uid']
+    modified_frames_data = data.get('modified_frames', {})  # In-memory frames from frontend
+    label_id = os.getenv('LABEL_ID', '')
+    empty_id = os.getenv('EMPTY_ID', '')
+    
+    video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
+    annotations_dir = get_annotations_dir(method, study_uid, series_uid)
+    masks_dir = annotations_dir / 'masks'
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Load existing mask data to find all annotated frames
+    mask_data_path = video_dir / 'mask_data.json'
+    with open(mask_data_path) as f:
+        mask_data = json.load(f)
+    
+    # Load existing modified annotations
+    modified_annotations = load_modified_annotations(method, study_uid, series_uid)
+    
+    # Get video dimensions
+    video_path = video_dir / 'tracked_video.mp4'
+    cap = cv2.VideoCapture(str(video_path))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    ret, first_frame = cap.read()
+    if ret:
+        height, width = first_frame.shape[:2]
+    cap.release()
+    
+    saved_count = 0
+    
+    # First, save any in-memory modified frames from the frontend
+    for frame_num_str, frame_data in modified_frames_data.items():
+        frame_num = int(frame_num_str)
+        is_empty = frame_data.get('is_empty', False)
+        
+        # Decode and save mask
+        mask_b64 = frame_data.get('mask_data', '')
+        if mask_b64:
+            mask_bytes = base64.b64decode(mask_b64.split(',')[1] if ',' in mask_b64 else mask_b64)
+            mask_img = Image.open(io.BytesIO(mask_bytes)).convert('L')
+            mask_array = np.array(mask_img)
+            
+            # Save mask to annotations directory
+            mask_path = masks_dir / f'frame_{frame_num:06d}_mask.png'
+            cv2.imwrite(str(mask_path), mask_array)
+            
+            # Update metadata
+            frame_key = f'frame_{frame_num}'
+            modified_annotations[frame_key] = {
+                'label_id': empty_id if is_empty else label_id,
+                'is_empty': is_empty,
+                'modified_at': datetime.now().isoformat()
+            }
+    
+    # Process all frames (including ones just saved above)
+    for frame_num in range(total_frames):
+        frame_key = f'frame_{frame_num}'
+        frame_str = str(frame_num)
+        
+        # Check if frame has annotation (label_id or empty_id)
+        has_annotation = False
+        is_empty = False
+        frame_label_id = None
+        
+        # Check in modified_annotations first (takes precedence - these are definitely label_id or empty_id)
+        if frame_key in modified_annotations:
+            frame_data = modified_annotations[frame_key]
+            has_annotation = True
+            is_empty = frame_data.get('is_empty', False)
+            frame_label_id = frame_data.get('label_id', empty_id if is_empty else label_id)
+        # Check in mask_data for original annotations
+        elif frame_str in mask_data:
+            frame_info = mask_data[frame_str]
+            frame_label_id_val = frame_info.get('label_id', '')
+            frame_type = frame_info.get('type', '')
+            
+            # Check if it's a human annotation (label_id) - not a tracked annotation
+            if frame_info.get('is_annotation', False):
+                has_annotation = True
+                frame_label_id = frame_label_id_val if frame_label_id_val else label_id
+                # Check if mask is empty
+                mask_path = video_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+                if mask_path.exists():
+                    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                    if mask is not None and np.sum(mask) == 0:
+                        is_empty = True
+                        frame_label_id = empty_id
+            # Also check if label_id explicitly matches our label_id or empty_id
+            elif frame_label_id_val in [label_id, empty_id]:
+                has_annotation = True
+                is_empty = (frame_label_id_val == empty_id)
+                frame_label_id = frame_label_id_val
+        
+        if not has_annotation:
+            continue
+        
+        # Load or create mask
+        mask = None
+        
+        # Try annotations directory first
+        annotation_mask_path = masks_dir / f'frame_{frame_num:06d}_mask.png'
+        if annotation_mask_path.exists():
+            mask = cv2.imread(str(annotation_mask_path), cv2.IMREAD_GRAYSCALE)
+        else:
+            # Try output directory
+            output_mask_path = video_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+            if output_mask_path.exists():
+                mask = cv2.imread(str(output_mask_path), cv2.IMREAD_GRAYSCALE)
+            elif is_empty:
+                # Create empty mask
+                mask = np.zeros((height, width), dtype=np.uint8)
+        
+        if mask is None:
+            continue
+        
+        # Save mask to annotations directory
+        cv2.imwrite(str(annotation_mask_path), mask)
+        
+        # Update metadata
+        modified_annotations[frame_key] = {
+            'label_id': frame_label_id or (empty_id if is_empty else label_id),
+            'is_empty': is_empty,
+            'modified_at': datetime.now().isoformat()
+        }
+        
+        saved_count += 1
+    
+    # Save all metadata at once
+    save_modified_annotations(method, study_uid, series_uid, modified_annotations)
+    
+    return jsonify({
+        'success': True,
+        'saved_count': saved_count,
+        'total_frames': total_frames
+    })
 
 @app.route('/api/mark_empty', methods=['POST'])
 def api_mark_empty():
     """
-    Mark a frame as EMPTY_ID (no fluid).
+    Mark a single frame as EMPTY_ID (no fluid).
+    
+    NOTE: This endpoint is not currently used by the frontend.
+    The frontend marks frames as empty in memory, then saves all changes via /api/save_changes.
+    This endpoint is kept for potential future use (e.g., auto-save on mark).
 
     Expected JSON:
         {
@@ -338,25 +502,22 @@ def api_mark_empty():
     height, width = frame.shape[:2]
     empty_mask = np.zeros((height, width), dtype=np.uint8)
 
-    # Save empty mask
-    mask_path = video_dir / 'masks' / f'frame_{frame_num:06d}_mask.png'
+    # Save empty mask to file in annotations directory (outside output/)
+    annotations_dir = get_annotations_dir(method, study_uid, series_uid)
+    masks_dir = annotations_dir / 'masks'
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    mask_path = masks_dir / f'frame_{frame_num:06d}_mask.png'
     cv2.imwrite(str(mask_path), empty_mask)
 
-    # Save to DuckDB with EMPTY_ID
-    conn = duckdb.connect(str(DB_PATH))
-    conn.execute("""
-        INSERT OR REPLACE INTO modified_annotations
-        (id, study_uid, series_uid, frame_number, label_id, mask_data, is_empty)
-        VALUES (?, ?, ?, ?, ?, ?, TRUE)
-    """, [
-        f"{study_uid}_{series_uid}_{frame_num}",
-        study_uid,
-        series_uid,
-        frame_num,
-        empty_id,
-        empty_mask.tobytes()
-    ])
-    conn.close()
+    # Save metadata to JSON
+    modified_annotations = load_modified_annotations(method, study_uid, series_uid)
+    frame_key = f'frame_{frame_num}'
+    modified_annotations[frame_key] = {
+        'label_id': empty_id,
+        'is_empty': True,
+        'modified_at': datetime.now().isoformat()
+    }
+    save_modified_annotations(method, study_uid, series_uid, modified_annotations)
 
     return jsonify({'success': True})
 
@@ -366,9 +527,6 @@ def serve_output(filename):
     return send_file(OUTPUT_DIR / filename)
 
 if __name__ == '__main__':
-    # Initialize database
-    init_db()
-
     # Check if output directory exists
     if not OUTPUT_DIR.exists():
         print(f"⚠️  Output directory not found: {OUTPUT_DIR}")

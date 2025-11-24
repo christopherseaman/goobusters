@@ -92,13 +92,13 @@ html, body {
 
 /* Tool and control buttons */
 .tool-btn, .control-btn {
-    width: 56px;
-    height: 56px;
+    width: 64px;
+    height: 64px;
     border: none;
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.7); /* Black background for all buttons */
     color: #fff;
-    font-size: 28px;
+    font-size: 32px;
     cursor: pointer;
     transition: all 0.2s;
     display: flex;
@@ -111,16 +111,17 @@ html, body {
 }
 
 .tool-btn.active {
-    background: rgba(255, 255, 255, 0.1);
+    background: transparent; /* No background, just border for selected state */
     border: 3px solid rgba(76, 175, 80, 0.9);
     box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
 }
 
 .tool-btn.warning {
-    background: rgba(244, 67, 54, 0.8);
+    background: transparent; /* No background by default */
 }
 
 .tool-btn.warning:hover {
+    background: rgba(244, 67, 54, 0.8);
     animation: pulse-warning 0.8s ease-in-out infinite;
 }
 
@@ -139,12 +140,24 @@ html, body {
     background: rgba(33, 150, 243, 0.8);
 }
 
+.tool-btn.unsaved {
+    background: rgba(255, 193, 7, 0.9); /* Yellow fill for unsaved changes */
+    box-shadow: 0 0 20px rgba(255, 193, 7, 0.5);
+}
+
+.tool-btn.unsaved:hover {
+    background: rgba(255, 193, 7, 1);
+    box-shadow: 0 0 30px rgba(255, 193, 7, 0.7);
+}
+
 .tool-btn:hover, .control-btn:hover {
     background: rgba(255, 255, 255, 0.2);
 }
 
 .tool-btn.active:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: transparent; /* Keep transparent on hover, border shows selection */
+    border: 3px solid rgba(76, 175, 80, 0.9);
+    box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
 }
 
 /* Playback buttons */
@@ -161,13 +174,13 @@ html, body {
 }
 
 .playback-btn {
-    width: 56px;
-    height: 56px;
+    width: 64px;
+    height: 64px;
     border: none;
     border-radius: 12px;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.7); /* Black background for all buttons */
     color: #fff;
-    font-size: 28px;
+    font-size: 32px;
     cursor: pointer;
     transition: all 0.2s;
     display: flex;
@@ -576,6 +589,12 @@ kbd {
 /* iPad-specific optimizations */
 @media (min-width: 768px) {
     .tool-btn, .control-btn {
+        width: 64px;
+        height: 64px;
+        font-size: 32px;
+    }
+    
+    .playback-btn {
         width: 64px;
         height: 64px;
         font-size: 32px;

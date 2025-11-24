@@ -148,8 +148,13 @@ def main():
     if mdai_client:
         project.set_labels_dict(labels_dict)
     
-    # Filter annotations for the free fluid label
-    free_fluid_annotations = annotations_df[annotations_df['labelId'] == LABEL_ID].copy()
+    # Get EMPTY_ID from environment
+    EMPTY_ID = os.getenv('EMPTY_ID', '')
+    
+    # Filter annotations for the free fluid label AND empty frames (both needed for tracking)
+    free_fluid_annotations = annotations_df[
+        (annotations_df['labelId'] == LABEL_ID) | (annotations_df['labelId'] == EMPTY_ID)
+    ].copy()
     
     # Function to construct the video path
     def construct_video_path(base_dir, study_uid, series_uid):

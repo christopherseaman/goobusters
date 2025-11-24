@@ -34,6 +34,7 @@ class AnnotationViewer {
         this.drawMode = 'draw';
         this.brushSize = 15;
         this.maskOpacity = 0.3;
+        this.maskVisible = true; // Mask visibility toggle
 
         this.isDrawing = false;
         this.lastX = 0;
@@ -42,10 +43,30 @@ class AnnotationViewer {
         this.videoData = null;
         this.hasUnsavedChanges = false;
         this.renderRect = null; // For coordinate conversion
+        
+        // Track all modified frames across the session, per video
+        // Structure: Map<videoKey, Map<frame_num, { maskData, maskType, is_empty }>>
+        this.modifiedFrames = new Map(); // videoKey -> Map(frame_num -> data)
 
         this.toolsVisible = true;
 
         this.init();
+    }
+
+    hasUnsavedChangesForCurrentVideo() {
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        return videoModifiedFrames.size > 0 || this.hasUnsavedChanges;
+    }
+
+    updateSaveButtonState() {
+        const saveBtn = document.getElementById('saveChanges');
+        if (this.hasUnsavedChangesForCurrentVideo()) {
+            saveBtn.classList.add('unsaved');
+            saveBtn.classList.remove('success');
+        } else {
+            saveBtn.classList.remove('unsaved');
+            saveBtn.classList.remove('success');
+        }
     }
 
     resizeCanvas() {
@@ -91,6 +112,7 @@ class AnnotationViewer {
         document.getElementById('prevFrame').addEventListener('click', () => this.navigateFrame(-1));
         document.getElementById('playPause').addEventListener('click', () => this.togglePlayPause());
         document.getElementById('nextFrame').addEventListener('click', () => this.navigateFrame(1));
+        document.getElementById('toggleMask').addEventListener('click', () => this.toggleMaskVisibility());
 
         // Frame slider
         document.getElementById('frameSlider').addEventListener('input', (e) => {
@@ -214,6 +236,8 @@ class AnnotationViewer {
         }
     }
 
+
+
     hideBrushPreview() {
         document.getElementById('brushPreview').style.display = 'none';
     }
@@ -232,9 +256,24 @@ class AnnotationViewer {
     }
 
     async goToFrame(frameNum) {
+        // Preserve unsaved changes to current frame before navigating away (in memory only, no disk save)
+        if (this.hasUnsavedChanges && this.maskImageData) {
+            this.maskCtx.putImageData(this.maskImageData, 0, 0);
+            const maskData = this.maskCanvas.toDataURL('image/png');
+            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+            videoModifiedFrames.set(this.currentFrame, {
+                maskData: this.cloneImageData(this.maskImageData),
+                maskType: this.maskType,
+                is_empty: this.maskType === 'empty'
+            });
+        }
+        
         // Clamp frame number to valid range [0, totalFrames - 1]
         this.currentFrame = Math.max(0, Math.min(frameNum, this.totalFrames - 1));
         document.getElementById('frameSlider').value = this.currentFrame;
+        
+        // Update save button state (in case we're navigating to a frame with unsaved changes)
+        this.updateSaveButtonState();
 
         const { method, studyUid, seriesUid } = this.currentVideo;
         const response = await fetch(`/api/frame/${method}/${studyUid}/${seriesUid}/${this.currentFrame}`);
@@ -285,7 +324,18 @@ class AnnotationViewer {
         this.maskType = frameMetadata?.is_annotation ? 'human' : 'tracked';
         this.originalMaskType = this.maskType;
 
-        this.hasUnsavedChanges = false;
+        // Check if this frame was already modified in this session
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        if (videoModifiedFrames.has(this.currentFrame)) {
+            const saved = videoModifiedFrames.get(this.currentFrame);
+            this.maskImageData = saved.maskData; // Already cloned when stored
+            this.maskType = saved.maskType;
+            this.hasUnsavedChanges = true;
+        } else {
+            this.hasUnsavedChanges = false;
+        }
+
+        this.updateSaveButtonState();
         this.render();
         this.updateInfoPanel();
     }
@@ -343,7 +393,7 @@ class AnnotationViewer {
         this.overlayCanvas.style.top = `${displayY}px`;
 
         // Draw mask overlay directly at image resolution (like teef applyMaskToOverlay)
-        if (this.maskImageData) {
+        if (this.maskImageData && this.maskVisible) {
             const isHuman = this.maskType === 'human' || this.maskType === 'empty';
             const maskColor = isHuman ? { r: 0, g: 255, b: 0 } : { r: 255, g: 165, b: 0 };
 
@@ -411,6 +461,16 @@ class AnnotationViewer {
         this.lastY = coords.y;
 
         this.hasUnsavedChanges = true;
+        
+        // Store in modified frames map (in memory only, no disk save)
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        videoModifiedFrames.set(this.currentFrame, {
+            maskData: this.cloneImageData(this.maskImageData),
+            maskType: this.maskType,
+            is_empty: false
+        });
+        
+        this.updateSaveButtonState();
         this.render();
     }
 
@@ -463,37 +523,70 @@ class AnnotationViewer {
     }
 
     async saveChanges() {
-        if (!this.hasUnsavedChanges) {
-            console.log('No changes to save');
-            return;
-        }
-
-        try {
-            // Put mask data back to mask canvas and convert to base64
+        // Save current frame if it has unsaved changes
+        if (this.hasUnsavedChanges) {
+            // Store in modified frames map
             this.maskCtx.putImageData(this.maskImageData, 0, 0);
             const maskData = this.maskCanvas.toDataURL('image/png');
+            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+            videoModifiedFrames.set(this.currentFrame, {
+                maskData: this.cloneImageData(this.maskImageData),
+                maskType: this.maskType,
+                is_empty: this.maskType === 'empty'
+            });
+        }
 
-            const { method, studyUid, seriesUid } = this.currentVideo;
-            const response = await fetch('/api/save_mask', {
+        const { method, studyUid, seriesUid } = this.currentVideo;
+
+        try {
+            // Prepare modified frames data for the API (only for current video)
+            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+            const modifiedFramesData = {};
+            for (const [frameNum, frameData] of videoModifiedFrames.entries()) {
+                this.maskCtx.putImageData(frameData.maskData, 0, 0);
+                const maskData = this.maskCanvas.toDataURL('image/png');
+                modifiedFramesData[frameNum] = {
+                    mask_data: maskData,
+                    is_empty: frameData.is_empty
+                };
+            }
+
+            // Save ALL label_id and empty_id annotations for the entire video
+            // (including in-memory modified frames)
+            const allResponse = await fetch('/api/save_changes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     method,
                     study_uid: studyUid,
                     series_uid: seriesUid,
-                    frame_number: this.currentFrame,
-                    mask_data: maskData
+                    modified_frames: modifiedFramesData
                 })
             });
 
-            if (response.ok) {
+            if (allResponse.ok) {
+                const result = await allResponse.json();
+                console.log(`✅ Saved all annotations: ${result.saved_count} frame(s) total`);
+                
+                // Clear modified frames for current video and reset current frame state
+                const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+                videoModifiedFrames.clear();
                 this.hasUnsavedChanges = false;
                 this.originalMaskImageData = this.cloneImageData(this.maskImageData);
-                document.getElementById('saveChanges').classList.add('success');
-                setTimeout(() => document.getElementById('saveChanges').classList.remove('success'), 1000);
-                console.log('✅ Changes saved');
+                
+                // Show success state briefly, then return to default (no fill)
+                const saveBtn = document.getElementById('saveChanges');
+                saveBtn.classList.remove('unsaved');
+                saveBtn.classList.add('success');
+                setTimeout(() => {
+                    saveBtn.classList.remove('success');
+                    this.updateSaveButtonState(); // Ensure correct state after timeout
+                }, 2000);
+                
+                // Reload video data to get updated annotations
+                await this.loadVideoData();
             } else {
-                console.error('❌ Failed to save');
+                console.error('❌ Failed to save all annotations');
             }
         } catch (error) {
             console.error('Error saving:', error);
@@ -505,10 +598,16 @@ class AnnotationViewer {
         this.maskImageData = this.cloneImageData(this.originalMaskImageData);
         this.maskType = this.originalMaskType;
         this.hasUnsavedChanges = false;
+        
+        // Remove from modified frames if it was there
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        videoModifiedFrames.delete(this.currentFrame);
+        
+        this.updateSaveButtonState();
         this.render();
     }
 
-    async markEmpty() {
+    markEmpty() {
         // Clear the mask (set all pixels to black)
         for (let i = 0; i < this.maskImageData.data.length; i += 4) {
             this.maskImageData.data[i] = 0;
@@ -517,9 +616,19 @@ class AnnotationViewer {
             this.maskImageData.data[i + 3] = 255;
         }
 
-        // Mark as empty type
+        // Mark as empty type (clears label_id & track_id, adds empty_id annotation)
         this.maskType = 'empty';
         this.hasUnsavedChanges = true;
+        
+        // Store in modified frames map (in memory only, will be saved when user clicks Save)
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        videoModifiedFrames.set(this.currentFrame, {
+            maskData: this.cloneImageData(this.maskImageData),
+            maskType: 'empty',
+            is_empty: true
+        });
+        
+        this.updateSaveButtonState();
         this.render();
     }
 
@@ -548,6 +657,16 @@ class AnnotationViewer {
         }
     }
 
+    toggleMaskVisibility() {
+        this.maskVisible = !this.maskVisible;
+        const btn = document.getElementById('toggleMask');
+        // Toggle between disguised face (visible) and sunglasses (hidden) icons
+        btn.textContent = this.maskVisible ? '🥸' : '😎';
+        btn.classList.toggle('active', this.maskVisible);
+        btn.title = this.maskVisible ? 'Hide Mask' : 'Show Mask';
+        this.render(); // Re-render to show/hide mask
+    }
+
     navigateVideo(delta) {
         const select = document.getElementById('videoSelect');
         const newIndex = select.selectedIndex + delta;
@@ -558,10 +677,24 @@ class AnnotationViewer {
         }
     }
 
+    getVideoKey(method, studyUid, seriesUid) {
+        return `${method}|${studyUid}|${seriesUid}`;
+    }
+
+    getModifiedFramesForCurrentVideo() {
+        const videoKey = this.getVideoKey(this.currentVideo.method, this.currentVideo.studyUid, this.currentVideo.seriesUid);
+        if (!this.modifiedFrames.has(videoKey)) {
+            this.modifiedFrames.set(videoKey, new Map());
+        }
+        return this.modifiedFrames.get(videoKey);
+    }
+
     async loadVideo(method, studyUid, seriesUid) {
+        // Don't clear modified frames - they persist per video in memory
         this.currentVideo = { method, studyUid, seriesUid };
         await this.loadVideoData();
         this.goToFrame(0);
+        this.updateSaveButtonState(); // Update button state for new video
     }
 
     showModal(modalId) {

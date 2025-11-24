@@ -290,24 +290,6 @@ class MultiFrameTracker:
                                         current['mask'], None, all_masks, clear_frames, video_path)
                 # If last annotation is empty, no tracking needed (no fluid to propagate)
         
-        # Process clear frames
-        for clear_frame in clear_frames:
-            if clear_frame not in all_masks:
-                # Find the nearest fluid annotation to propagate from
-                nearest_fluid = self._find_nearest_fluid_annotation(clear_frame, annotations)
-                if nearest_fluid:
-                    propagated_mask = self._propagate_clear_frame(
-                        clear_frame, 
-                        nearest_fluid['frame'], 
-                        nearest_fluid['mask']
-                    )
-                    all_masks[clear_frame] = {
-                        'mask': propagated_mask,
-                        'type': 'clear',
-                        'is_annotation': False,
-                        'propagated_from': nearest_fluid['frame']
-                    }
-        
         # Save results
         self._save_results(all_masks, video_path, study_uid, series_uid)
         
@@ -316,7 +298,15 @@ class MultiFrameTracker:
         return all_masks
     
     def _classify_annotations(self, annotations_df, frame_height, frame_width):
-        """Classify annotations as fluid, clear, or empty based on label IDs."""
+        """
+        Classify annotations as fluid or verified empty based on labelId.
+        
+        Convention:
+        - Verified empty frames: labelId == EMPTY_ID (human-verified, confirmed no fluid)
+          - Should have data: null, but labelId is the authoritative indicator
+        - Fluid frames: labelId == LABEL_ID with data.foreground containing polygon coordinates
+        - Frames with no annotation: unreviewed (not verified empty, not verified fluid) - ignored
+        """
         annotations = []
         
         # Get label IDs from environment
@@ -326,34 +316,14 @@ class MultiFrameTracker:
         for _, row in annotations_df.iterrows():
             frame_num = int(row['frameNumber'])
             label_id = row.get('labelId', '')
+            data = row.get('data', None)
             
-            # Check if this is the expected free fluid label
-            if label_id == label_id_fluid:
-                # Look for annotation data in the 'data' column
-                if 'data' not in row or row['data'] is None:
-                    continue
-                
-                data_dict = row['data']
-                
-                # Extract polygon data from the data dictionary
-                if isinstance(data_dict, dict) and 'foreground' in data_dict:
-                    polygons = data_dict['foreground']
-                    
-                    if len(polygons) > 0:
-                        # Convert polygon data to mask
-                        mask = self._polygons_to_mask(polygons, frame_height, frame_width)
-                        
-                        annotations.append({
-                            'frame': frame_num,
-                            'mask': mask,
-                            'type': 'fluid',
-                            'id': row.get('id', f'fluid_{frame_num}'),
-                            'labelId': label_id
-                        })
-            
-            # Check if this is an EMPTY_ID annotation (no fluid frame)
-            elif label_id == empty_id:
-                # Create empty mask for EMPTY_ID annotations
+            # Check if this is an EMPTY_ID annotation (verified empty frame)
+            # MD.ai uses labelId == EMPTY_ID to indicate verified empty/"No Fluid" frames
+            # Verified empty frames should have data: null or data: {"foreground": []} (no polygon data)
+            # Note: Some existing data may incorrectly have polygon data with EMPTY_ID, but we treat labelId as authoritative
+            if label_id == empty_id:
+                # Create empty mask for verified empty frames (regardless of data field content)
                 empty_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
                 
                 annotations.append({
@@ -361,8 +331,29 @@ class MultiFrameTracker:
                     'mask': empty_mask,
                     'type': 'empty',
                     'id': row.get('id', f'empty_{frame_num}'),
+                    'labelId': empty_id  # Always use EMPTY_ID for consistency
+                })
+                continue
+            
+            # Process fluid annotations (must have valid polygon data)
+            if label_id == label_id_fluid and isinstance(data, dict) and 'foreground' in data:
+                polygons = data['foreground']
+                
+                # Skip if foreground is empty (shouldn't happen for LABEL_ID, but handle gracefully)
+                if len(polygons) == 0:
+                    continue
+                
+                # Convert polygon data to mask
+                mask = self._polygons_to_mask(polygons, frame_height, frame_width)
+                
+                annotations.append({
+                    'frame': frame_num,
+                    'mask': mask,
+                    'type': 'fluid',
+                    'id': row.get('id', f'fluid_{frame_num}'),
                     'labelId': label_id
                 })
+            # Note: Frames with no annotation are ignored (unreviewed - not verified empty, not verified fluid)
         
         return annotations
     
@@ -402,19 +393,21 @@ class MultiFrameTracker:
         return mask
     
     def _identify_clear_frames(self, annotations, total_frames):
-        """Identify frames that should be marked as clear (no fluid)."""
+        """
+        Identify verified empty frames (from EMPTY_ID annotations only).
+        
+        NOTE: Only identifies frames with EMPTY_ID annotations (verified empty).
+        Does NOT infer empty frames from lack of annotations.
+        Unreviewed frames (no annotation) are NOT verified empty.
+        """
         clear_frames = []
         
-        # Find gaps between fluid annotations that should be clear
-        for i in range(len(annotations) - 1):
-            current_frame = annotations[i]['frame']
-            next_frame = annotations[i + 1]['frame']
-            
-            # If there's a gap and the next annotation is clear, mark intermediate frames
-            if next_frame - current_frame > 1:
-                if annotations[i + 1]['type'] == 'clear':
-                    for frame in range(current_frame + 1, next_frame):
-                        clear_frames.append(frame)
+        # Only use EMPTY_ID annotations to identify verified empty frames
+        # Do NOT infer verified empty from lack of annotations
+        for annotation in annotations:
+            if annotation['type'] == 'empty':
+                # This frame is explicitly verified empty via EMPTY_ID annotation
+                clear_frames.append(annotation['frame'])
         
         return clear_frames
 
@@ -637,21 +630,35 @@ class MultiFrameTracker:
             
             # Create tracked_annotations.json with all tracked annotations
             tracked_annotations = []
+            empty_id = os.getenv('EMPTY_ID', '')
+            label_id_fluid = os.getenv('LABEL_ID', '')
+            
             for frame_num, mask_info in all_masks.items():
-                if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
+                if isinstance(mask_info, dict):
+                    # Include both frames with masks and empty frames (empty masks are valid)
+                    label_id = mask_info.get('label_id', label_id_fluid)
+                    annotation_type = mask_info.get('type', 'tracked')
+                    
                     # Create annotation in MD.ai format
                     annotation = {
                         'id': mask_info.get('track_id', f"track_{frame_num}"),
-                        'labelId': mask_info.get('label_id', os.getenv('LABEL_ID', '')),
+                        'labelId': label_id,
                         'StudyInstanceUID': study_uid,
                         'SeriesInstanceUID': series_uid,
                         'frameNumber': frame_num,
-                        'type': mask_info.get('type', 'tracked'),
+                        'type': annotation_type,
                         'is_annotation': mask_info.get('is_annotation', False),
                         'track_id': mask_info.get('track_id', f"track_{frame_num}"),
-                        'label_id': mask_info.get('label_id', os.getenv('LABEL_ID', '')),
+                        'label_id': label_id,
                         'mask_file': f"frame_{frame_num:06d}_mask.png"
                     }
+                    
+                    # Add data field in MD.ai format
+                    # Verified empty frames: data: null (MD.ai convention for verified empty/"No Fluid" frames)
+                    # Fluid frames: omit data field (we have masks, not polygons)
+                    if label_id == empty_id or annotation_type == 'empty':
+                        annotation['data'] = None  # MD.ai format for verified empty frames
+                    
                     tracked_annotations.append(annotation)
             
             # Save tracked annotations

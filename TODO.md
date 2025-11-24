@@ -3,9 +3,11 @@
 ## To Do
 
 - [ ] Fix brush size preview location (shouldn't move during resize previews)
-- [ ] Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frame 1 & 42 of 144, 1-based counting)"
+    - [ ] Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frameNumber 0 (`"id": "A_gp58a1"`) & 41 (`"id": "A_AYxjY2"`) of 143, 0-based counting)"
     - StudyInstanceUID = "1.2.826.0.1.3680043.8 498. 21582572478922879563110991046360588727"
     - SeriesInstranceUID = "1.2.826.0.1.3680043.8.498.88798124921994953570699988775039906436"
+- [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
+- [ ] Ensure we are consistently using 0-based frame counting, to be consistent with mdai json
 - [ ] Local annotaion feedback loop? See references/teef for simpler example app with single annotation type
     - Server for reviewing/modifying annotations (LABEL_ID, EMPTY_ID, and TRACK_ID)
     - Save human reviewed/modified free fluid (LABEL_ID), no fluid (EMPTY_ID) annotations outside data/ bc data reflects mdai truth (maybe local db? duckdb with file?); may be better to store as masks (grayscale images) for local iterations, update annotation from masks on tracking runs (think this happens already but may need fixing)
@@ -36,7 +38,7 @@
         - combine with opticalflowprocessor
     - lib/multi_frame_tracker.py - 25% vestigial code (~250 lines)
         - 13+ instance variables initialized but never used (e.g., tracking_strategy_weight, feedback_loop_mode, tracks, track_id_counter)
-        - 4 unused methods: _track_forward, _track_backward, _get_previous_frame, _get_next_frame
+        - 4 unused methods: _track_forward, _track_backward, _get_previous_frame, `_get_next_frame`
         - Logger bugs: self.logger used but never initialized (will cause AttributeError)
     - lib/debug_visualization.py - 100% orphaned (242 lines)
         - Entire file unused, not imported anywhere
