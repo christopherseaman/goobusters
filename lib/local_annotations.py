@@ -63,8 +63,8 @@ def convert_local_to_annotations_df(
     """
     Convert local annotations to DataFrame format for retracking.
 
-    This function reads modified annotations from the local annotations directory
-    and converts them to the format expected by process_video_with_multi_frame_tracking().
+    This function reads saved annotations from masks.json and loads the mask
+    images directly (no polygon conversion needed for local files).
 
     Args:
         study_uid: Study Instance UID
@@ -72,96 +72,74 @@ def convert_local_to_annotations_df(
         annotations_dir: Base directory for annotations (default: "annotations")
 
     Returns:
-        pandas DataFrame with columns: frameNumber, labelId, data
+        pandas DataFrame with columns: frameNumber, labelId, data, mask
         - frameNumber: int, 0-based frame number
         - labelId: str, either LABEL_ID (fluid) or EMPTY_ID (empty)
-        - data: dict with foreground polygon or None for empty frames
+        - data: None (not used for local masks)
+        - mask: numpy array of the mask image
         Empty DataFrame if no annotations exist
 
     Note:
-        - ONLY processes frames with label_id or empty_id (human-verified annotations)
-        - Reads from: annotations/{study_uid}_{series_uid}/modified_annotations.json
-        - Loads masks from: annotations/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.webp
-        - For fluid frames (is_empty=false): Converts mask to polygon using cv2.findContours()
-        - For empty frames (is_empty=true): Uses "data": null (MD.ai format for verified empty)
-
-    Structure of modified_annotations.json:
-        {
-            "frame_N": {
-                "label_id": "L_xxxxx",  // LABEL_ID or EMPTY_ID
-                "is_empty": bool,       // true for empty frames, false for fluid
-                "modified_at": "ISO timestamp"
-            }
-        }
+        - ONLY processes frames marked as is_annotation=true
+        - Reads from: annotations/{study_uid}_{series_uid}/masks.json
+        - Loads masks directly from: annotations/{study_uid}_{series_uid}/masks/
     """
     # Construct paths
     annotation_path = Path(annotations_dir) / f"{study_uid}_{series_uid}"
-    annotations_file = annotation_path / "modified_annotations.json"
+    masks_json_file = annotation_path / "masks.json"
     masks_dir = annotation_path / "masks"
 
-    # Check if annotations exist
-    if not annotations_file.exists():
-        return pd.DataFrame(columns=['frameNumber', 'labelId', 'data'])
+    # Check if masks.json exists
+    if not masks_json_file.exists():
+        return pd.DataFrame(columns=['frameNumber', 'labelId', 'data', 'mask'])
 
-    # Load modified annotations
-    with open(annotations_file) as f:
-        modified_annotations = json.load(f)
+    # Load masks.json
+    with open(masks_json_file) as f:
+        masks_data = json.load(f)
 
-    # Process each annotation
+    # Process each annotation (only those marked is_annotation=true)
     annotations_list = []
 
-    for frame_key, frame_data in modified_annotations.items():
-        # Parse frame number from "frame_N" format
-        frame_num = int(frame_key.split('_')[1])
+    for entry in masks_data:
+        # Only include human-verified annotations
+        if not entry.get('is_annotation', False):
+            continue
 
-        # Get annotation metadata
-        label_id = frame_data.get('label_id', '')
-        is_empty = frame_data.get('is_empty', False)
+        frame_num = entry.get('frameNumber')
+        label_id = entry.get('labelId', entry.get('label_id', ''))
+        is_empty = entry.get('type') == 'empty'
 
-        # Skip if no label_id
-        if not label_id:
+        # Skip if no label_id or frame_num
+        if not label_id or frame_num is None:
             continue
 
         # Construct mask path
-        mask_path = masks_dir / f"frame_{frame_num:06d}_mask.webp"
+        mask_file = entry.get('mask_file', f"frame_{frame_num:06d}_mask.webp")
+        mask_path = masks_dir / mask_file
 
-        # Create annotation entry
+        # Load mask directly (no polygon conversion)
+        if not mask_path.exists():
+            print(f"Warning: Mask file not found for frame {frame_num}: {mask_path}")
+            continue
+
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            print(f"Warning: Failed to load mask for frame {frame_num}: {mask_path}")
+            continue
+
+        # Create annotation entry with mask directly
         annotation = {
             'frameNumber': frame_num,
-            'labelId': label_id
+            'labelId': label_id,
+            'data': None,  # Not used for local masks
+            'mask': mask   # Pass mask directly
         }
-
-        if is_empty:
-            # Empty frame: use None data (MD.ai format for verified empty frames)
-            annotation['data'] = None
-        else:
-            # Fluid frame: convert mask to polygon
-            if not mask_path.exists():
-                print(f"Warning: Mask file not found for frame {frame_num}: {mask_path}")
-                continue
-
-            # Load mask
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            if mask is None:
-                print(f"Warning: Failed to load mask for frame {frame_num}: {mask_path}")
-                continue
-
-            # Convert to polygon
-            polygon = mask_to_polygon(mask)
-            if polygon is None or len(polygon) < 3:
-                print(f"Warning: No valid polygon found for frame {frame_num}")
-                continue
-
-            # Create data structure matching MD.ai format
-            annotation['data'] = {
-                'foreground': polygon
-            }
 
         annotations_list.append(annotation)
 
     # Convert to DataFrame
     if not annotations_list:
-        return pd.DataFrame(columns=['frameNumber', 'labelId', 'data'])
+        return pd.DataFrame(columns=['frameNumber', 'labelId', 'data', 'mask'])
 
     df = pd.DataFrame(annotations_list)
 

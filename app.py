@@ -1,4 +1,24 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "flask",
+#     "opencv-contrib-python",
+#     "numpy>=1.21.0,<3.0.0",
+#     "pillow",
+#     "python-dotenv",
+#     "pyyaml",
+#     "torch>=2.0.0",
+#     "torchvision>=0.15.0",
+#     "mdai==0.16.0",
+#     "pandas",
+#     "tqdm",
+#     "scikit-image",
+#     "scipy",
+#     "psutil"
+# ]
+# ///
+
 """
 Goobusters Annotation Review App
 
@@ -14,13 +34,14 @@ import numpy as np
 from pathlib import Path
 import base64
 import io
+import shutil
 from PIL import Image
 from datetime import datetime
 from dotenv import load_dotenv
 import threading
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from dot.env (project uses dot.env, not .env)
+load_dotenv('dot.env')
 
 app = Flask(__name__)
 
@@ -172,23 +193,21 @@ def api_video_data(method, study_uid, series_uid):
     if not video_dir.exists():
         return jsonify({'error': 'Video not found'}), 404
 
-    # Load masks annotations
-    masks_annotations_path = video_dir / 'masks.json'
+    # Check for annotations/ masks.json first (from save or retrack), else use output/
+    annotations_dir = get_annotations_dir(study_uid, series_uid)
+    annotations_masks_path = annotations_dir / 'masks.json'
+    output_masks_path = video_dir / 'masks.json'
+
     masks_annotations = []
-    if masks_annotations_path.exists():
-        with open(masks_annotations_path) as f:
+    if annotations_masks_path.exists():
+        with open(annotations_masks_path) as f:
+            masks_annotations = json.load(f)
+    elif output_masks_path.exists():
+        with open(output_masks_path) as f:
             masks_annotations = json.load(f)
 
-    # Check for local modifications in JSON
-    modified_annotations = load_modified_annotations(study_uid, series_uid)
+    # modified_frames is now deprecated - we use masks.json directly
     modified_frames = {}
-    for frame_key, frame_data in modified_annotations.items():
-        frame_num = int(frame_key.replace('frame_', ''))
-        modified_frames[frame_num] = {
-            'label_id': frame_data.get('label_id', ''),
-            'is_empty': frame_data.get('is_empty', False),
-            'modified_at': frame_data.get('modified_at', '')
-        }
 
     # Get total frames by counting frames in frames directory
     frames_dir = video_dir / 'frames'
@@ -264,19 +283,12 @@ def api_all_frames(method, study_uid, series_uid):
             return jsonify({'error': 'Frames and video not found'}), 404
     
     frames_archive_url = f'/api/frames_archive/{method}/{study_uid}/{series_uid}'
+    # masks_archive endpoint already serves from annotations/ when available
     masks_archive_url = f'/api/masks_archive/{method}/{study_uid}/{series_uid}'
-    
-    # Check if modified masks exist - we'll serve both, frontend will merge
-    annotations_dir = get_annotations_dir(study_uid, series_uid)
-    modified_masks_archive = annotations_dir / 'masks.tar.gz'
-    modified_masks_archive_url = None
-    if modified_masks_archive.exists():
-        modified_masks_archive_url = f'/api/masks_archive_modified/{study_uid}/{series_uid}'
-    
+
     return jsonify({
         'frames_archive_url': frames_archive_url,
         'masks_archive_url': masks_archive_url,
-        'modified_masks_archive_url': modified_masks_archive_url,  # Optional, for merging
         'total_frames': total_frames
     })
 
@@ -293,13 +305,21 @@ def api_frames_archive(method, study_uid, series_uid):
 
 @app.route('/api/masks_archive/<method>/<study_uid>/<series_uid>')
 def api_masks_archive(method, study_uid, series_uid):
-    """Serve masks archive from output/ (tar.gz)."""
+    """Serve masks archive - from annotations/ if exists, otherwise from output/."""
+    annotations_dir = get_annotations_dir(study_uid, series_uid)
+    annotations_masks_archive = annotations_dir / 'masks.tar.gz'
+
+    # Prefer annotations/ (from save or retrack)
+    if annotations_masks_archive.exists():
+        return send_file(str(annotations_masks_archive), mimetype='application/gzip', as_attachment=False)
+
+    # Fall back to output/
     video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
     masks_archive = video_dir / 'masks.tar.gz'
-    
+
     if not masks_archive.exists():
         return jsonify({'error': 'Masks archive not found'}), 404
-    
+
     return send_file(str(masks_archive), mimetype='application/gzip', as_attachment=False)
 
 @app.route('/api/masks_archive_modified/<study_uid>/<series_uid>')
@@ -368,96 +388,128 @@ def api_save_mask():
 @app.route('/api/save_changes', methods=['POST'])
 def api_save_changes():
     """
-    Save all label_id and empty_id annotations for a video.
-    
+    Save user modifications on top of existing tracking results.
+
+    Copies ALL frames from output/ (or existing annotations/), then overlays user modifications.
+    Outputs in same format as track.py: masks.json + masks/ + masks.tar.gz
+
     Expected JSON:
         {
             'method': str,
             'study_uid': str,
             'series_uid': str,
-            'modified_frames': optional dict of {frame_num: {mask_data: base64, is_empty: bool}}
+            'modified_frames': dict of {frame_num: {mask_data: base64, is_empty: bool}} - user-edited frames
         }
     """
+    import tarfile
+
     data = request.json
     method = data['method']
     study_uid = data['study_uid']
     series_uid = data['series_uid']
-    modified_frames_data = data.get('modified_frames', {})  # In-memory frames from frontend
+    modified_frames_data = data.get('modified_frames', {})
     label_id = os.getenv('LABEL_ID', '')
     empty_id = os.getenv('EMPTY_ID', '')
-    
+
     video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
     annotations_dir = get_annotations_dir(study_uid, series_uid)
     annotations_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Load existing modified annotations
-    modified_annotations = load_modified_annotations(study_uid, series_uid)
-    
+
     # Get video dimensions
     video_path = video_dir / 'tracked_video.mp4'
     cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     ret, first_frame = cap.read()
-    if ret:
-        height, width = first_frame.shape[:2]
+    height, width = (first_frame.shape[:2]) if ret else (0, 0)
     cap.release()
-    
-    saved_count = 0
-    
-    # Save masks directory
+
+    # Setup masks directory
     masks_dir = annotations_dir / 'masks'
     masks_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Only save modified frames from the frontend (user modifications)
-    # Do NOT copy all frames from masks.json - only save what the user actually modified
+
+    # Start with existing masks.json (from annotations/ if exists, else output/)
+    existing_masks_json = []
+    source_masks_dir = None
+
+    existing_annotations_masks = annotations_dir / 'masks.json'
+    output_masks_json = video_dir / 'masks.json'
+
+    if existing_annotations_masks.exists():
+        # Use existing annotations as base
+        with open(existing_annotations_masks) as f:
+            existing_masks_json = json.load(f)
+        source_masks_dir = annotations_dir / 'masks'
+    elif output_masks_json.exists():
+        # Use output as base
+        with open(output_masks_json) as f:
+            existing_masks_json = json.load(f)
+        source_masks_dir = video_dir / 'masks'
+
+    # Build lookup by frame number
+    masks_by_frame = {entry['frameNumber']: entry for entry in existing_masks_json}
+    modified_frame_nums = set(int(k) for k in modified_frames_data.keys())
+
+    # Copy all existing masks that aren't being modified
+    if source_masks_dir and source_masks_dir.exists():
+        for entry in existing_masks_json:
+            frame_num = entry['frameNumber']
+            if frame_num not in modified_frame_nums:
+                mask_file = entry.get('mask_file', f'frame_{frame_num:06d}_mask.webp')
+                src_mask = source_masks_dir / mask_file
+                dst_mask = masks_dir / mask_file
+                if src_mask.exists() and src_mask != dst_mask:
+                    shutil.copy2(src_mask, dst_mask)
+
+    # Apply user modifications
     for frame_num_str, frame_data in modified_frames_data.items():
         frame_num = int(frame_num_str)
         is_empty = frame_data.get('is_empty', False)
-        
-        # Decode and save mask as webp
+        frame_label_id = empty_id if is_empty else label_id
+        mask_file = f'frame_{frame_num:06d}_mask.webp'
+        mask_path = masks_dir / mask_file
+
+        # Decode and save mask
         mask_b64 = frame_data.get('mask_data', '')
         if mask_b64:
             mask_bytes = base64.b64decode(mask_b64.split(',')[1] if ',' in mask_b64 else mask_b64)
             mask_img = Image.open(io.BytesIO(mask_bytes)).convert('L')
             mask_array = np.array(mask_img)
-            
-            mask_path = masks_dir / f'frame_{frame_num:06d}_mask.webp'
             cv2.imwrite(str(mask_path), mask_array, [cv2.IMWRITE_WEBP_QUALITY, 85])
-            
-            # Update metadata
-            frame_key = f'frame_{frame_num}'
-            modified_annotations[frame_key] = {
-                'label_id': empty_id if is_empty else label_id,
-                'is_empty': is_empty,
-                'modified_at': datetime.now().isoformat()
-            }
-            saved_count += 1
         elif is_empty:
-            # Empty frame - create empty mask
             empty_mask = np.zeros((height, width), dtype=np.uint8)
-            mask_path = masks_dir / f'frame_{frame_num:06d}_mask.webp'
             cv2.imwrite(str(mask_path), empty_mask, [cv2.IMWRITE_WEBP_QUALITY, 85])
-            
-            frame_key = f'frame_{frame_num}'
-            modified_annotations[frame_key] = {
-                'label_id': empty_id,
-                'is_empty': True,
-                'modified_at': datetime.now().isoformat()
-            }
-            saved_count += 1
-    
+
+        # Update or create entry
+        masks_by_frame[frame_num] = {
+            'id': f'annotation_{frame_num}',
+            'labelId': frame_label_id,
+            'StudyInstanceUID': study_uid,
+            'SeriesInstanceUID': series_uid,
+            'frameNumber': frame_num,
+            'type': 'empty' if is_empty else 'fluid',
+            'is_annotation': True,
+            'track_id': f'annotation_{frame_num}',
+            'label_id': frame_label_id,
+            'mask_file': mask_file
+        }
+
+    # Build final masks_json sorted by frame
+    masks_json = [masks_by_frame[fn] for fn in sorted(masks_by_frame.keys())]
+
+    # Write masks.json
+    with open(annotations_dir / 'masks.json', 'w') as f:
+        json.dump(masks_json, f, indent=2)
+
     # Create masks.tar.gz archive
-    import tarfile
     masks_archive = annotations_dir / 'masks.tar.gz'
     with tarfile.open(masks_archive, 'w:gz') as tar:
         tar.add(masks_dir, arcname='masks')
-    
-    # Save all metadata at once
-    save_modified_annotations(study_uid, series_uid, modified_annotations)
-    
+
+    annotation_count = sum(1 for m in masks_json if m.get('is_annotation', False))
     return jsonify({
         'success': True,
-        'saved_count': saved_count,
+        'saved_count': len(masks_json),
+        'annotation_count': annotation_count,
         'total_frames': total_frames
     })
 
@@ -547,12 +599,13 @@ def api_retrack(study_uid, series_uid):
     # Generate task ID
     task_id = f"{study_uid}_{series_uid}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-    # Check if annotations exist
-    annotations_file = get_annotations_file(study_uid, series_uid)
-    if not annotations_file.exists():
+    # Check if annotations exist (masks.json from save_changes)
+    annotations_dir = get_annotations_dir(study_uid, series_uid)
+    masks_json_file = annotations_dir / 'masks.json'
+    if not masks_json_file.exists():
         return jsonify({
             'success': False,
-            'error': 'No modified annotations found. Edit some frames first.'
+            'error': 'No saved annotations found. Save your edits first.'
         }), 400
 
     # Check if video exists
@@ -590,10 +643,14 @@ def api_retrack(study_uid, series_uid):
         'error': None
     }
 
+    # Output to annotations/ directory (not output/)
+    annotations_output_dir = get_annotations_dir(study_uid, series_uid)
+    annotations_output_dir.mkdir(parents=True, exist_ok=True)
+
     # Run retracking in background thread
     thread = threading.Thread(
         target=run_retrack,
-        args=(task_id, study_uid, series_uid, method, str(video_path), str(video_dir))
+        args=(task_id, study_uid, series_uid, method, str(video_path), str(annotations_output_dir))
     )
     thread.daemon = True
     thread.start()
@@ -608,6 +665,7 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
     """
     Background task to run retracking.
 
+    Outputs in same format as track.py: masks.json + masks/ + masks.tar.gz
     Uses lib/ functions directly (not track.py) as per RETRACK_DESIGN.md.
     """
     try:
@@ -618,6 +676,7 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
         from lib.local_annotations import convert_local_to_annotations_df
         from lib.opticalflowprocessor import OpticalFlowProcessor
         from lib.multi_frame_tracker import process_video_with_multi_frame_tracking
+        import tarfile
 
         # Convert local annotations to DataFrame
         annotations_df = convert_local_to_annotations_df(study_uid, series_uid)
@@ -641,21 +700,89 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
 
         # Get label IDs from environment
         label_id_fluid = os.getenv('LABEL_ID', '')
-        label_id_machine = os.getenv('TRACK_ID', '')
+        label_id_empty = os.getenv('EMPTY_ID', '')
+        label_id_track = os.getenv('TRACK_ID', '')
 
-        # Run tracking
-        result = process_video_with_multi_frame_tracking(
-            video_path=video_path,
-            annotations_df=annotations_df,
-            study_uid=study_uid,
-            series_uid=series_uid,
-            flow_processor=flow_processor,
-            output_dir=output_dir,
-            mdai_client=None,
-            label_id_fluid=label_id_fluid,
-            label_id_machine=label_id_machine,
-            upload_to_mdai=False
-        )
+        # Run tracking - use a temp dir since we'll reformat the output
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = process_video_with_multi_frame_tracking(
+                video_path=video_path,
+                annotations_df=annotations_df,
+                study_uid=study_uid,
+                series_uid=series_uid,
+                flow_processor=flow_processor,
+                output_dir=temp_dir,
+                mdai_client=None,
+                label_id_fluid=label_id_fluid,
+                label_id_machine=label_id_track,
+                upload_to_mdai=False
+            )
+
+            retrack_status[task_id]['progress'] = 80
+            retrack_status[task_id]['message'] = 'Saving results...'
+
+            # Convert all_masks to masks.json format
+            all_masks = result.get('all_masks', {})
+            masks_json = []
+            masks_dir = Path(output_dir) / 'masks'
+            # Clear existing masks before writing new ones
+            if masks_dir.exists():
+                shutil.rmtree(masks_dir)
+            masks_dir.mkdir(parents=True, exist_ok=True)
+
+            for frame_num, frame_info in all_masks.items():
+                if not isinstance(frame_info, dict):
+                    continue
+
+                mask = frame_info.get('mask')
+                if mask is None:
+                    continue
+
+                is_annotation = frame_info.get('is_annotation', False)
+                frame_type = frame_info.get('type', 'unknown')
+                is_empty = frame_type == 'empty'
+
+                # Determine label_id based on type
+                if is_annotation:
+                    frame_label_id = label_id_empty if is_empty else label_id_fluid
+                else:
+                    frame_label_id = label_id_track
+
+                # Save mask
+                mask_file = f'frame_{frame_num:06d}_mask.webp'
+                mask_path = masks_dir / mask_file
+                cv2.imwrite(str(mask_path), mask, [cv2.IMWRITE_WEBP_QUALITY, 85])
+
+                # Build entry
+                entry = {
+                    'id': frame_info.get('track_id', f'track_{frame_num}'),
+                    'labelId': frame_label_id,
+                    'StudyInstanceUID': study_uid,
+                    'SeriesInstanceUID': series_uid,
+                    'frameNumber': frame_num,
+                    'type': frame_type,
+                    'is_annotation': is_annotation,
+                    'track_id': frame_info.get('track_id', f'track_{frame_num}'),
+                    'label_id': frame_label_id,
+                    'mask_file': mask_file
+                }
+                if is_empty:
+                    entry['data'] = None
+
+                masks_json.append(entry)
+
+            # Sort by frame number
+            masks_json.sort(key=lambda x: x['frameNumber'])
+
+            # Write masks.json
+            with open(Path(output_dir) / 'masks.json', 'w') as f:
+                json.dump(masks_json, f, indent=2)
+
+            # Create masks.tar.gz archive
+            masks_archive = Path(output_dir) / 'masks.tar.gz'
+            with tarfile.open(masks_archive, 'w:gz') as tar:
+                tar.add(masks_dir, arcname='masks')
 
         retrack_status[task_id]['progress'] = 90
         retrack_status[task_id]['message'] = 'Finalizing...'
@@ -663,13 +790,16 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
         # Clean up flow processor memory
         flow_processor.cleanup_memory()
 
+        annotated_count = sum(1 for m in masks_json if m.get('is_annotation', False))
+        predicted_count = len(masks_json) - annotated_count
+
         retrack_status[task_id]['status'] = 'complete'
         retrack_status[task_id]['progress'] = 100
-        retrack_status[task_id]['message'] = f"Retrack complete: {result.get('annotated_frames', 0)} annotations, {result.get('predicted_frames', 0)} predictions"
+        retrack_status[task_id]['message'] = f"Retrack complete: {annotated_count} annotations, {predicted_count} predictions"
         retrack_status[task_id]['result'] = {
-            'annotated_frames': result.get('annotated_frames', 0),
-            'predicted_frames': result.get('predicted_frames', 0),
-            'output_video': result.get('output_video', '')
+            'annotated_frames': annotated_count,
+            'predicted_frames': predicted_count,
+            'total_frames': len(masks_json)
         }
 
     except Exception as e:

@@ -343,24 +343,34 @@ class MultiFrameTracker:
                 })
                 continue
             
-            # Process fluid annotations (must have valid polygon data)
-            if label_id == label_id_fluid and isinstance(data, dict) and 'foreground' in data:
-                polygons = data['foreground']
-                
-                # Skip if foreground is empty (shouldn't happen for LABEL_ID, but handle gracefully)
-                if len(polygons) == 0:
-                    continue
-                
-                # Convert polygon data to mask
-                mask = self._polygons_to_mask(polygons, frame_height, frame_width)
-                
-                annotations.append({
-                    'frame': frame_num,
-                    'mask': mask,
-                    'type': 'fluid',
-                    'id': row.get('id', f'fluid_{frame_num}'),
-                    'labelId': label_id
-                })
+            # Process fluid annotations
+            if label_id == label_id_fluid:
+                mask = None
+
+                # Check if mask is provided directly (from local annotations with webp files)
+                if 'mask' in row and row['mask'] is not None:
+                    mask = row['mask']
+                    # Ensure mask is correct size
+                    if mask.shape != (frame_height, frame_width):
+                        mask = cv2.resize(mask, (frame_width, frame_height), interpolation=cv2.INTER_NEAREST)
+                # Fall back to polygon conversion for MD.ai data
+                elif isinstance(data, dict) and 'foreground' in data:
+                    polygons = data['foreground']
+
+                    # Skip if foreground is empty
+                    if len(polygons) == 0:
+                        continue
+
+                    mask = self._polygons_to_mask(polygons, frame_height, frame_width)
+
+                if mask is not None:
+                    annotations.append({
+                        'frame': frame_num,
+                        'mask': mask,
+                        'type': 'fluid',
+                        'id': row.get('id', f'fluid_{frame_num}'),
+                        'labelId': label_id
+                    })
             # Note: Frames with no annotation are ignored (unreviewed - not verified empty, not verified fluid)
         
         return annotations

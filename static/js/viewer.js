@@ -281,7 +281,7 @@ class AnnotationViewer {
         }
         
         // Override with modified_frames (user modifications take precedence)
-        // Modified masks are always human-verified annotations (green), unless they're empty
+        // Modified masks are always human-verified annotations (both fluid AND empty)
         if (data.modified_frames) {
             for (const [frameNum, frameData] of Object.entries(data.modified_frames)) {
                 const num = parseInt(frameNum);
@@ -289,14 +289,14 @@ class AnnotationViewer {
                     // Modified frames are always annotations (human-verified)
                     this.videoData.mask_data[num].label_id = frameData.label_id;
                     this.videoData.mask_data[num].modified = true;
-                    // Mark as annotation unless it's an empty frame
-                    this.videoData.mask_data[num].is_annotation = !frameData.is_empty;
+                    this.videoData.mask_data[num].is_annotation = true;  // All user edits are annotations
+                    this.videoData.mask_data[num].type = frameData.is_empty ? 'empty' : 'fluid';
                 } else {
                     // New frame (not in original annotations) - mark as annotation since user created it
                     this.videoData.mask_data[num] = {
                         type: frameData.is_empty ? 'empty' : 'fluid',
                         label_id: frameData.label_id,
-                        is_annotation: !frameData.is_empty, // User-created frames are annotations (unless empty)
+                        is_annotation: true,  // All user edits are annotations
                         modified: true
                     };
                 }
@@ -658,8 +658,7 @@ class AnnotationViewer {
                 };
             }
 
-            // Save ALL label_id and empty_id annotations for the entire video
-            // (including in-memory modified frames)
+            // Save user modifications - backend copies all existing frames and overlays modifications
             const allResponse = await fetch('/api/save_changes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -753,19 +752,10 @@ class AnnotationViewer {
         const { method, studyUid, seriesUid } = this.currentVideo;
         const retrackBtn = document.getElementById('retrackBtn');
 
-        // Check for unsaved changes
+        // Check for unsaved changes - auto-save them
         if (this.hasUnsavedChangesForCurrentVideo()) {
-            const confirmSave = confirm('You have unsaved changes. Save them before retracking?');
-            if (confirmSave) {
-                await this.saveChanges();
-            } else {
-                return; // Cancel retrack
-            }
-        }
-
-        // Confirm retrack
-        if (!confirm('Re-run optical flow tracking with your edited annotations?\n\nThis will regenerate all tracked predictions based on your human-verified annotations.')) {
-            return;
+            console.log('Auto-saving changes before retrack...');
+            await this.saveChanges();
         }
 
         // Show loading state
@@ -854,7 +844,7 @@ class AnnotationViewer {
     }
 
     resetMask() {
-        // Reset to the original unmodified mask from output/ (not the saved modified mask)
+        // Reset to the last saved state (from annotations/ if exists, else output/)
         this.maskImageData = this.cloneImageData(this.originalMaskImageData);
         this.maskType = this.originalMaskType;
         
@@ -994,112 +984,64 @@ class AnnotationViewer {
             return d;
         })();
         loadingDiv.style.display = 'flex';
-        
+
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
             const response = await fetch(`/api/frames/${method}/${studyUid}/${seriesUid}`);
-            const { frames_archive_url, masks_archive_url, modified_masks_archive_url } = await response.json();
-            
+            const { frames_archive_url, masks_archive_url } = await response.json();
+
             // Load frames archive
             const framesArchiveResponse = await fetch(frames_archive_url);
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesDecompressed = fflate.gunzipSync(new Uint8Array(framesArrayBuffer));
-            
+
             // Parse tar and extract frames
             this.framesArchive = {};
             let offset = 0;
             while (offset < framesDecompressed.length) {
                 if (offset + 512 > framesDecompressed.length) break;
-                
+
                 const name = new TextDecoder().decode(framesDecompressed.slice(offset, offset + 100)).replace(/\0/g, '');
                 if (!name) break;
-                
+
                 const size = parseInt(new TextDecoder().decode(framesDecompressed.slice(offset + 124, offset + 136)), 8);
                 offset += 512;
-                
+
                 // Skip directory entries (size == 0) and only process frame files
                 if (name.endsWith('.webp') && name.includes('frame_') && !name.includes('_mask') && size > 0) {
                     const data = framesDecompressed.slice(offset, offset + size);
                     // Store with full path from tar (e.g., "frames/frame_000000.webp")
                     this.framesArchive[name] = data;
                 }
-                
+
                 offset += Math.ceil(size / 512) * 512;
             }
-            
-            // Load masks archive from output/ (all frames - original unmodified masks)
-            this.masksArchive = {}; // Current masks (may include modified)
-            this.originalMasksArchive = {}; // Original unmodified masks from output/
+
+            // Load masks archive (backend serves from annotations/ if exists, else output/)
+            this.masksArchive = {};
             if (masks_archive_url) {
                 const masksArchiveResponse = await fetch(masks_archive_url);
                 const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
                 const masksDecompressed = fflate.gunzipSync(new Uint8Array(masksArrayBuffer));
-                
+
                 // Parse tar and extract masks
                 offset = 0;
                 while (offset < masksDecompressed.length) {
                     if (offset + 512 > masksDecompressed.length) break;
-                    
+
                     const name = new TextDecoder().decode(masksDecompressed.slice(offset, offset + 100)).replace(/\0/g, '');
                     if (!name) break;
-                    
+
                     const size = parseInt(new TextDecoder().decode(masksDecompressed.slice(offset + 124, offset + 136)), 8);
                     offset += 512;
-                    
+
                     // Skip directory entries (size == 0) and only process mask files
                     if (name.endsWith('.webp') && name.includes('_mask') && size > 0) {
                         const data = masksDecompressed.slice(offset, offset + size);
-                        // Store original unmodified masks
-                        this.originalMasksArchive[name] = data;
-                        // Also store in current masks (will be overridden by modified if exists)
                         this.masksArchive[name] = data;
                     }
-                    
+
                     offset += Math.ceil(size / 512) * 512;
-                }
-            }
-            
-            // Load modified masks archive from annotations/ and override only modified frames
-            // Use modified_frames from videoData to know which frames to override
-            if (modified_masks_archive_url && this.videoData && this.videoData.mask_data) {
-                // Find which frames are modified
-                const modifiedFrameNumbers = [];
-                for (const [frameNum, frameData] of Object.entries(this.videoData.mask_data)) {
-                    if (frameData.modified) {
-                        modifiedFrameNumbers.push(parseInt(frameNum));
-                    }
-                }
-                
-                if (modifiedFrameNumbers.length > 0) {
-                    const modifiedMasksArchiveResponse = await fetch(modified_masks_archive_url);
-                    const modifiedMasksArrayBuffer = await modifiedMasksArchiveResponse.arrayBuffer();
-                    const modifiedMasksDecompressed = fflate.gunzipSync(new Uint8Array(modifiedMasksArrayBuffer));
-                    
-                    // Parse tar and extract only modified frame masks (frame-level override)
-                    offset = 0;
-                    while (offset < modifiedMasksDecompressed.length) {
-                        if (offset + 512 > modifiedMasksDecompressed.length) break;
-                        
-                        const name = new TextDecoder().decode(modifiedMasksDecompressed.slice(offset, offset + 100)).replace(/\0/g, '');
-                        if (!name) break;
-                        
-                        const size = parseInt(new TextDecoder().decode(modifiedMasksDecompressed.slice(offset + 124, offset + 136)), 8);
-                        offset += 512;
-                        
-                        // Extract frame number from filename (e.g., "masks/frame_000002_mask.webp" -> 2)
-                        const frameMatch = name.match(/frame_(\d+)_mask\.webp/);
-                        if (frameMatch) {
-                            const frameNum = parseInt(frameMatch[1]);
-                            // Only override if this frame is in the modified frames list
-                            if (modifiedFrameNumbers.includes(frameNum) && size > 0) {
-                                const data = modifiedMasksDecompressed.slice(offset, offset + size);
-                                // Override this specific frame's mask
-                                this.masksArchive[name] = data;
-                            }
-                        }
-                        
-                        offset += Math.ceil(size / 512) * 512;
-                    }
                 }
             }
         } finally {
