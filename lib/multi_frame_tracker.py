@@ -244,10 +244,15 @@ class MultiFrameTracker:
             current = all_annotations[i]
 
             # Process segment from start of video to first annotation
+            # Track backward from annotation frame to start
             if i == 0 and current['frame'] > 0:
                 # Only process if the first annotation is fluid (has content to track)
                 if current['type'] == 'fluid':
-                    self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
+                    # Track backward from annotation frame to frame 0
+                    # Include annotation frame in range for proper backward tracking reference
+                    # The annotation frame itself won't be overwritten due to the is_annotation check
+                    if current['frame'] > 0:
+                        self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
                 # If first annotation is empty, no tracking needed (no fluid to propagate)
 
             # Process segment between consecutive annotations
@@ -283,11 +288,14 @@ class MultiFrameTracker:
                                             current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
 
             # Process segment from last annotation to end of video
+            # Exclude the annotation frame itself (it's already stored)
             if i == len(all_annotations) - 1 and current['frame'] < total_frames - 1:
                 # Only process if the last annotation is fluid (has content to track)
                 if current['type'] == 'fluid':
-                    self._process_segment(current['frame'], total_frames - 1,
-                                        current['mask'], None, all_masks, clear_frames, video_path)
+                    # Process from after the annotation frame to end
+                    if current['frame'] + 1 < total_frames:
+                        self._process_segment(current['frame'] + 1, total_frames - 1,
+                                            current['mask'], None, all_masks, clear_frames, video_path)
                 # If last annotation is empty, no tracking needed (no fluid to propagate)
         
         # Save results
@@ -424,8 +432,10 @@ class MultiFrameTracker:
             clear_frames: Set of frames marked as clear
             video_path: Path to video file
         """
-        if end_frame - start_frame <= 1:
-            return  # No frames to interpolate
+        if end_frame < start_frame:
+            return  # Invalid range
+        if end_frame == start_frame:
+            return  # No frames to interpolate (only one frame)
 
         # Use context manager to ensure video capture is always released
         with video_capture(video_path) as cap:
@@ -490,6 +500,11 @@ class MultiFrameTracker:
         for frame_idx in range(start_frame, end_frame + 1):
             if frame_idx in clear_frames:
                 continue  # Skip clear frames
+            
+            # Preserve original annotations - don't overwrite them with tracked masks
+            if frame_idx in all_masks and isinstance(all_masks[frame_idx], dict):
+                if all_masks[frame_idx].get('is_annotation', False):
+                    continue  # Skip annotation frames - preserve original annotation
 
             if frame_idx in forward_masks and frame_idx in backward_masks:
                 # Calculate distance-based weights
@@ -601,23 +616,12 @@ class MultiFrameTracker:
     def _save_results(self, all_masks, video_path, study_uid, series_uid):
         """Save the tracking results with individual frame masks and comprehensive data."""
         try:
-            # Create masks directory for individual frame outputs
-            masks_dir = os.path.join(self.output_dir, "masks")
-            os.makedirs(masks_dir, exist_ok=True)
-            
-            # Save individual frame masks
-            for frame_num, mask_info in all_masks.items():
-                if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
-                    mask = mask_info['mask']
-                    mask_file = os.path.join(masks_dir, f"frame_{frame_num:06d}_mask.png")
-                    cv2.imwrite(mask_file, mask)
-            
             # Save enhanced mask data with track_id and label_id
-            mask_data_path = os.path.join(self.output_dir, "mask_data.json")
-            mask_summary = {}
+            frametype_path = os.path.join(self.output_dir, "frametype.json")
+            frametype_summary = {}
             for frame_num, mask_info in all_masks.items():
                 if isinstance(mask_info, dict):
-                    mask_summary[str(frame_num)] = {
+                    frametype_summary[str(frame_num)] = {
                         'type': mask_info.get('type', 'unknown'),
                         'is_annotation': mask_info.get('is_annotation', False),
                         'has_mask': mask_info.get('mask') is not None,
@@ -625,11 +629,11 @@ class MultiFrameTracker:
                         'label_id': mask_info.get('label_id', 'unknown')
                     }
 
-            with open(mask_data_path, 'w') as f:
-                json.dump(mask_summary, f, indent=2)
+            with open(frametype_path, 'w') as f:
+                json.dump(frametype_summary, f, indent=2)
             
-            # Create tracked_annotations.json with all tracked annotations
-            tracked_annotations = []
+            # Create masks.json with all tracked annotations
+            masks_annotations = []
             empty_id = os.getenv('EMPTY_ID', '')
             label_id_fluid = os.getenv('LABEL_ID', '')
             
@@ -650,7 +654,7 @@ class MultiFrameTracker:
                         'is_annotation': mask_info.get('is_annotation', False),
                         'track_id': mask_info.get('track_id', f"track_{frame_num}"),
                         'label_id': label_id,
-                        'mask_file': f"frame_{frame_num:06d}_mask.png"
+                        'mask_file': f"frame_{frame_num:06d}_mask.webp"
                     }
                     
                     # Add data field in MD.ai format
@@ -659,16 +663,30 @@ class MultiFrameTracker:
                     if label_id == empty_id or annotation_type == 'empty':
                         annotation['data'] = None  # MD.ai format for verified empty frames
                     
-                    tracked_annotations.append(annotation)
+                    masks_annotations.append(annotation)
             
-            # Save tracked annotations
-            tracked_file = os.path.join(self.output_dir, "tracked_annotations.json")
-            with open(tracked_file, 'w') as f:
-                json.dump(tracked_annotations, f, indent=2)
+            # Save masks annotations
+            masks_file = os.path.join(self.output_dir, "masks.json")
+            with open(masks_file, 'w') as f:
+                json.dump(masks_annotations, f, indent=2)
             
         except Exception as e:
             pass  # Silent failure for background task
+        
+        # Save masks as webp files
+        masks_dir = os.path.join(self.output_dir, "masks")
+        os.makedirs(masks_dir, exist_ok=True)
+        
+        for frame_num, mask_info in all_masks.items():
+            if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
+                mask = mask_info['mask']
+                mask_path = os.path.join(masks_dir, f"frame_{frame_num:06d}_mask.webp")
+                cv2.imwrite(mask_path, mask, [cv2.IMWRITE_WEBP_QUALITY, 99])
 
+        # Create frames directory and extract frames as webp
+        frames_dir = os.path.join(self.output_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
+        
         # Create output video with overlayed masks
         output_video_path = os.path.join(self.output_dir, "tracked_video.mp4")
 
@@ -684,38 +702,70 @@ class MultiFrameTracker:
             try:
                 frame_num = 0
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                prev_frame_hash = None
 
-                # Skip video writing for very long videos to prevent hanging
-                # Only write first 1000 frames for long videos
-                max_frames = min(total_frames, 1000)
-
-                while frame_num < max_frames:
+                # Extract ALL frames from video sequentially
+                # IMPORTANT: Extract every frame in order, even if duplicates exist.
+                # MD.ai's frameNumber corresponds to sequential position in the video file,
+                # not unique frames. So frameNumber: 2 means the 3rd frame (0-based index 2)
+                # in the video file, even if it's identical to frame 1.
+                # We must match MD.ai's frame numbering exactly.
+                while frame_num < total_frames:
                     ret, frame = cap.read()
                     if not ret:
                         break
 
-                    if frame_num in all_masks:
-                        mask_info = all_masks[frame_num]
-                        mask = mask_info['mask']
+                    # Verify we're actually advancing through frames
+                    actual_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    if actual_pos <= frame_num:
+                        # OpenCV didn't advance - this shouldn't happen with sequential reads
+                        # but if it does, we need to break to avoid infinite loop
+                        break
 
-                        # Create colored overlay with different colors for tracked vs annotated
-                        overlay = np.zeros_like(frame)
-                        if mask_info.get('is_annotation', False):
-                            # Green for original annotations (label_id)
-                            overlay[mask > 0] = [0, 255, 0]  # Green
-                        else:
-                            # Orange for tracked masks (track_id)
-                            overlay[mask > 0] = [0, 165, 255]  # Orange
+                    # Save frame as webp (smaller than jpg/png)
+                    # Note: Duplicate frames are expected and preserved to match MD.ai frame numbering
+                    frame_file = os.path.join(frames_dir, f"frame_{frame_num:06d}.webp")
+                    cv2.imwrite(frame_file, frame, [cv2.IMWRITE_WEBP_QUALITY, 85])
 
-                        # Blend with original frame
-                        alpha = 0.3
-                        frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+                    # Only write to output video if frame has mask (for visualization)
+                    # Skip video writing for very long videos to prevent hanging
+                    # Only write first 1000 frames for long videos
+                    max_video_frames = min(total_frames, 1000)
+                    if frame_num < max_video_frames:
+                        if frame_num in all_masks:
+                            mask_info = all_masks[frame_num]
+                            mask = mask_info['mask']
 
-                    out.write(frame)
+                            # Create colored overlay with different colors for tracked vs annotated
+                            overlay = np.zeros_like(frame)
+                            if mask_info.get('is_annotation', False):
+                                # Green for original annotations (label_id)
+                                overlay[mask > 0] = [0, 255, 0]  # Green
+                            else:
+                                # Orange for tracked masks (track_id)
+                                overlay[mask > 0] = [0, 165, 255]  # Orange
+
+                            # Blend with original frame
+                            alpha = 0.3
+                            frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
+
+                        out.write(frame)
+                    
                     frame_num += 1
             finally:
                 # Ensure video writer is always released
                 out.release()
+        
+        # Create tar.gz archive of frames
+        import tarfile
+        frames_archive = os.path.join(self.output_dir, "frames.tar.gz")
+        with tarfile.open(frames_archive, 'w:gz') as tar:
+            tar.add(frames_dir, arcname='frames')
+        
+        # Create tar.gz archive of masks
+        masks_archive = os.path.join(self.output_dir, "masks.tar.gz")
+        with tarfile.open(masks_archive, 'w:gz') as tar:
+            tar.add(masks_dir, arcname='masks')
         
         if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
             pass  # print(f"Results saved to: {output_video_path}")

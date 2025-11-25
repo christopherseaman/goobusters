@@ -1,352 +1,495 @@
-# Claude Code Configuration - SPARC Development Environment
+# CLAUDE.md
 
-## 🚨 CRITICAL: CONCURRENT EXECUTION & FILE MANAGEMENT
-
-**ABSOLUTE RULES**:
-1. ALL operations MUST be concurrent/parallel in a single message
-2. **NEVER save working files, text/mds and tests to the root folder**
-3. ALWAYS organize files in appropriate subdirectories
-4. **USE CLAUDE CODE'S TASK TOOL** for spawning agents concurrently, not just MCP
-
-### ⚡ GOLDEN RULE: "1 MESSAGE = ALL RELATED OPERATIONS"
-
-**MANDATORY PATTERNS:**
-- **TodoWrite**: ALWAYS batch ALL todos in ONE call (5-10+ todos minimum)
-- **Task tool (Claude Code)**: ALWAYS spawn ALL agents in ONE message with full instructions
-- **File operations**: ALWAYS batch ALL reads/writes/edits in ONE message
-- **Bash commands**: ALWAYS batch ALL terminal operations in ONE message
-- **Memory operations**: ALWAYS batch ALL memory store/retrieve in ONE message
-
-### 🎯 CRITICAL: Claude Code Task Tool for Agent Execution
-
-**Claude Code's Task tool is the PRIMARY way to spawn agents:**
-```javascript
-// ✅ CORRECT: Use Claude Code's Task tool for parallel agent execution
-[Single Message]:
-  Task("Research agent", "Analyze requirements and patterns...", "researcher")
-  Task("Coder agent", "Implement core features...", "coder")
-  Task("Tester agent", "Create comprehensive tests...", "tester")
-  Task("Reviewer agent", "Review code quality...", "reviewer")
-  Task("Architect agent", "Design system architecture...", "system-architect")
-```
-
-**MCP tools are ONLY for coordination setup:**
-- `mcp__claude-flow__swarm_init` - Initialize coordination topology
-- `mcp__claude-flow__agent_spawn` - Define agent types for coordination
-- `mcp__claude-flow__task_orchestrate` - Orchestrate high-level workflows
-
-### 📁 File Organization Rules
-
-**NEVER save to root folder. Use these directories:**
-- `/src` - Source code files
-- `/tests` - Test files
-- `/docs` - Documentation and markdown files
-- `/config` - Configuration files
-- `/scripts` - Utility scripts
-- `/examples` - Example code
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-This project uses SPARC (Specification, Pseudocode, Architecture, Refinement, Completion) methodology with Claude-Flow orchestration for systematic Test-Driven Development.
+Goobusters is an optical flow tracking system for free fluid detection in ultrasound videos. The name comes from tracking ("busting") free fluid ("goo") in medical imaging. Free fluid is particularly challenging to track because it often appears as featureless dark space in ultrasounds.
 
-## SPARC Commands
+**Key Challenge**: Tracking amorphous, featureless regions across frames where traditional feature-based tracking fails.
 
-### Core Commands
-- `npx claude-flow sparc modes` - List available modes
-- `npx claude-flow sparc run <mode> "<task>"` - Execute specific mode
-- `npx claude-flow sparc tdd "<feature>"` - Run complete TDD workflow
-- `npx claude-flow sparc info <mode>` - Get mode details
+**Approach**: Dense optical flow algorithms (Farneback, DIS, RAFT) applied to mask propagation with bidirectional temporal weighting.
 
-### Batchtools Commands
-- `npx claude-flow sparc batch <modes> "<task>"` - Parallel execution
-- `npx claude-flow sparc pipeline "<task>"` - Full pipeline processing
-- `npx claude-flow sparc concurrent <mode> "<tasks-file>"` - Multi-task processing
+**Current Work**: See `TODO.md` for active issues and improvements. When encountering unused or overly complex code, simplify/remove it, but ALWAYS validate that changes don't break `track.py` by running it on real videos.
 
-### Build Commands
-- `npm run build` - Build project
-- `npm run test` - Run tests
-- `npm run lint` - Linting
-- `npm run typecheck` - Type checking
+## Core Development Principles
 
-## SPARC Workflow Phases
+### Configuration-Driven Development
+- **NEVER hardcode variables** - use `dot.env` for all parameters
+- Store thresholds, settings, and constants in configuration files
+- Scripts read from config, not embedded data definitions
+- Magic numbers become named configuration values
 
-1. **Specification** - Requirements analysis (`sparc run spec-pseudocode`)
-2. **Pseudocode** - Algorithm design (`sparc run spec-pseudocode`)
-3. **Architecture** - System design (`sparc run architect`)
-4. **Refinement** - TDD implementation (`sparc tdd`)
-5. **Completion** - Integration (`sparc run integration`)
+### DRY (Don't Repeat Yourself)
+- **Single source of truth** for each piece of knowledge
+- **Reuse shared functions** from `lib/` modules before writing new code
+- Extract common operations into centralized utilities
+- Never duplicate functionality across scripts
+- Organize shared code logically in `lib/` directory
 
-## Code Style & Best Practices
+### Separation of Concerns
+- **One responsibility per module** - focused, clear purpose
+- Keep business logic separate from orchestration
+- Maintain distinct layers: data processing, analysis, presentation
+- Coordinators orchestrate; they don't perform business logic
 
-- **Modular Design**: Files under 500 lines
-- **Environment Safety**: Never hardcode secrets
-- **Test-First**: Write tests before implementation
-- **Clean Architecture**: Separate concerns
-- **Documentation**: Keep updated
+### Simplicity Over Complexity (KISS)
+- **Clear, concise code** beats defensive programming
+- Choose simplest solution that works
+- Avoid unnecessary abstraction layers
+- Prefer explicit over implicit behavior
+- Minimize boilerplate code
+- **As simple as possible, and no simpler**
 
-## 🚀 Available Agents (54 Total)
+### Continuous Simplification
+- **Remove complexity as encountered** during normal work
+- Refactor overly complex code when touching it
+- Delete unused code, vestigial variables, dead branches
+- Question whether each layer of abstraction earns its keep
+- **Always validate** simplifications don't break `track.py`
 
-### Core Development
-`coder`, `reviewer`, `tester`, `planner`, `researcher`
+### Test Before Success
+- **NEVER declare completion without validation**
+- Run actual code in target environment with real data
+- Avoid mocks or simulated outputs for validation
+- User confirmation required for output quality
+- This is non-negotiable
 
-### Swarm Coordination
-`hierarchical-coordinator`, `mesh-coordinator`, `adaptive-coordinator`, `collective-intelligence-coordinator`, `swarm-memory-manager`
+## Critical Testing Rules
 
-### Consensus & Distributed
-`byzantine-coordinator`, `raft-manager`, `gossip-coordinator`, `consensus-builder`, `crdt-synchronizer`, `quorum-manager`, `security-manager`
+### NO MOCKS OR FAKE FUNCTIONS
 
-### Performance & Optimization
-`perf-analyzer`, `performance-benchmarker`, `task-orchestrator`, `memory-coordinator`, `smart-agent`
+**This cannot be emphasized enough**: NEVER utilize mocks or fake functions. ALWAYS test with real data and run the actual `track.py` on at least a single video. Validate the outputs and check with user for output quality.
 
-### GitHub & Repository
-`github-modes`, `pr-manager`, `code-review-swarm`, `issue-tracker`, `release-manager`, `workflow-automation`, `project-board-sync`, `repo-architect`, `multi-repo-swarm`
+### Validation Protocol
 
-### SPARC Methodology
-`sparc-coord`, `sparc-coder`, `specification`, `pseudocode`, `architecture`, `refinement`
+1. **Run with real data**: Execute `track.py` on actual videos
+2. **Inspect outputs**: Check generated masks, videos, metadata
+3. **Validate quality**: Review tracking accuracy visually
+4. **User confirmation**: Get explicit approval before declaring success
 
-### Specialized Development
-`backend-dev`, `mobile-dev`, `ml-developer`, `cicd-engineer`, `api-docs`, `system-architect`, `code-analyzer`, `base-template-generator`
+### Pre-Commit Checklist
 
-### Testing & Validation
-`tdd-london-swarm`, `production-validator`
+- [ ] Code runs without errors on real video
+- [ ] Test suite passes: `uv run python3 test_implementation.py`
+- [ ] Output quality validated visually
+- [ ] User has confirmed results are acceptable
+- [ ] No hardcoded values introduced
+- [ ] No code duplication introduced
 
-### Migration & Planning
-`migration-planner`, `swarm-init`
+## Core Commands
 
-## 🎯 Claude Code vs MCP Tools
-
-### Claude Code Handles ALL EXECUTION:
-- **Task tool**: Spawn and run agents concurrently for actual work
-- File operations (Read, Write, Edit, MultiEdit, Glob, Grep)
-- Code generation and programming
-- Bash commands and system operations
-- Implementation work
-- Project navigation and analysis
-- TodoWrite and task management
-- Git operations
-- Package management
-- Testing and debugging
-
-### MCP Tools ONLY COORDINATE:
-- Swarm initialization (topology setup)
-- Agent type definitions (coordination patterns)
-- Task orchestration (high-level planning)
-- Memory management
-- Neural features
-- Performance tracking
-- GitHub integration
-
-**KEY**: MCP coordinates the strategy, Claude Code's Task tool executes with real agents.
-
-## 🚀 Quick Setup
+### Running Tracking
 
 ```bash
-# Add MCP servers (Claude Flow required, others optional)
-claude mcp add claude-flow npx claude-flow@alpha mcp start
-claude mcp add ruv-swarm npx ruv-swarm mcp start  # Optional: Enhanced coordination
-claude mcp add flow-nexus npx flow-nexus@latest mcp start  # Optional: Cloud features
+# Main entrypoint - Run tracking on videos
+uv run python3 track.py
+
+# Debug mode - Process only 5 random videos
+DEBUG=True uv run python3 track.py
+
+# Test specific video (set TEST_STUDY_UID and TEST_SERIES_UID in dot.env first)
+uv run python3 track.py
 ```
 
-## MCP Tool Categories
+### Testing
 
-### Coordination
-`swarm_init`, `agent_spawn`, `task_orchestrate`
-
-### Monitoring
-`swarm_status`, `agent_list`, `agent_metrics`, `task_status`, `task_results`
-
-### Memory & Neural
-`memory_usage`, `neural_status`, `neural_train`, `neural_patterns`
-
-### GitHub Integration
-`github_swarm`, `repo_analyze`, `pr_enhance`, `issue_triage`, `code_review`
-
-### System
-`benchmark_run`, `features_detect`, `swarm_monitor`
-
-### Flow-Nexus MCP Tools (Optional Advanced Features)
-Flow-Nexus extends MCP capabilities with 70+ cloud-based orchestration tools:
-
-**Key MCP Tool Categories:**
-- **Swarm & Agents**: `swarm_init`, `swarm_scale`, `agent_spawn`, `task_orchestrate`
-- **Sandboxes**: `sandbox_create`, `sandbox_execute`, `sandbox_upload` (cloud execution)
-- **Templates**: `template_list`, `template_deploy` (pre-built project templates)
-- **Neural AI**: `neural_train`, `neural_patterns`, `seraphina_chat` (AI assistant)
-- **GitHub**: `github_repo_analyze`, `github_pr_manage` (repository management)
-- **Real-time**: `execution_stream_subscribe`, `realtime_subscribe` (live monitoring)
-- **Storage**: `storage_upload`, `storage_list` (cloud file management)
-
-**Authentication Required:**
-- Register: `mcp__flow-nexus__user_register` or `npx flow-nexus@latest register`
-- Login: `mcp__flow-nexus__user_login` or `npx flow-nexus@latest login`
-- Access 70+ specialized MCP tools for advanced orchestration
-
-## 🚀 Agent Execution Flow with Claude Code
-
-### The Correct Pattern:
-
-1. **Optional**: Use MCP tools to set up coordination topology
-2. **REQUIRED**: Use Claude Code's Task tool to spawn agents that do actual work
-3. **REQUIRED**: Each agent runs hooks for coordination
-4. **REQUIRED**: Batch all operations in single messages
-
-### Example Full-Stack Development:
-
-```javascript
-// Single message with all agent spawning via Claude Code's Task tool
-[Parallel Agent Execution]:
-  Task("Backend Developer", "Build REST API with Express. Use hooks for coordination.", "backend-dev")
-  Task("Frontend Developer", "Create React UI. Coordinate with backend via memory.", "coder")
-  Task("Database Architect", "Design PostgreSQL schema. Store schema in memory.", "code-analyzer")
-  Task("Test Engineer", "Write Jest tests. Check memory for API contracts.", "tester")
-  Task("DevOps Engineer", "Setup Docker and CI/CD. Document in memory.", "cicd-engineer")
-  Task("Security Auditor", "Review authentication. Report findings via hooks.", "reviewer")
-  
-  // All todos batched together
-  TodoWrite { todos: [...8-10 todos...] }
-  
-  // All file operations together
-  Write "backend/server.js"
-  Write "frontend/App.jsx"
-  Write "database/schema.sql"
-```
-
-## 📋 Agent Coordination Protocol
-
-### Every Agent Spawned via Task Tool MUST:
-
-**1️⃣ BEFORE Work:**
 ```bash
-npx claude-flow@alpha hooks pre-task --description "[task]"
-npx claude-flow@alpha hooks session-restore --session-id "swarm-[id]"
+# Validation test suite (must pass 5/5 tests)
+uv run python3 test_implementation.py
 ```
 
-**2️⃣ DURING Work:**
+### Configuration
+
+All configuration is in `dot.env` (copy from `dot.env.example`). Critical variables:
+- `MDAI_TOKEN`: MD.ai API access token
+- `PROJECT_ID`, `DATASET_ID`: MD.ai project identifiers
+- `LABEL_ID`: Free fluid label identifier
+- `EMPTY_ID`: No-fluid frame label identifier
+- `FLOW_METHOD`: Comma-separated optical flow methods (e.g., "farneback,dis,raft")
+- `DEBUG`: Set to "True" to process subset of videos
+- `TEST_STUDY_UID`, `TEST_SERIES_UID`: Specific video to debug
+
+## Architecture
+
+### Data Flow
+
+```
+MD.ai Annotations → track.py → MultiFrameTracker → OpticalFlowProcessor → Output
+                                      ↓
+                              Video + Annotations
+                                      ↓
+                         Bidirectional Tracking Strategy
+                                      ↓
+                    Forward + Backward + Temporal Weighting
+                                      ↓
+                         Per-frame masks + metadata
+```
+
+### Key Components
+
+#### 1. **track.py** (Entrypoint)
+- Loads configuration from `dot.env`
+- Downloads/caches MD.ai dataset
+- Groups annotations by video
+- Orchestrates multi-method optical flow tracking
+- Creates output directories per method and video
+
+#### 2. **lib/multi_frame_tracker.py** (Core Tracking Logic)
+- `MultiFrameTracker`: Main tracking class
+- Implements bidirectional tracking strategy from `multiple_annotation_strategy.md`
+- Handles four annotation scenarios:
+  - **F→F**: Bidirectional tracking with temporal weighting
+  - **F→C**: Forward-only tracking (fluid to clear)
+  - **C→F**: Backward-only tracking (clear to fluid)
+  - **C→C**: No tracking (maintain clear state)
+- `SharedParams`: Adaptive parameter management
+- Processes video segments between annotations
+
+#### 3. **lib/opticalflowprocessor.py** (Flow Algorithms)
+- `OpticalFlowProcessor`: Unified interface for multiple flow methods
+- Supports: Farneback (OpenCV), DIS (OpenCV), DeepFlow (OpenCV contrib), RAFT (PyTorch)
+- `calculate_flow()`: Main method to compute optical flow
+- Device management (CPU/MPS/CUDA) via `performance_config.py`
+
+#### 4. **lib/optical.py** (Utilities)
+- `create_identity_file()`: Generate YAML metadata for each video
+- `copy_annotations_to_output()`: Save input annotations (excluding track_id)
+- Helper functions for MD.ai integration
+
+#### 5. **lib/performance_config.py** (Hardware Optimization)
+- `PerformanceOptimizer`: Auto-detects hardware capabilities
+- Configures OpenCV, PyTorch, and multiprocessing settings
+- Apple Silicon (MPS) acceleration support
+- Memory and thread management scaled to available resources
+
+### Output Structure
+
+Each video/method combination produces:
+
+```
+output/{method}/{study_uid}_{series_uid}/
+├── identity.yaml                    # Video metadata
+├── input_annotations.json           # Original annotations (no track_id)
+├── tracked_annotations.json         # Generated annotations (with track_id)
+├── mask_data.json                   # Frame-by-frame metadata
+├── tracked_video.mp4                # Visualization (green=annotation, orange=tracked)
+└── masks/                           # Individual frame masks
+    ├── frame_000001_mask.png
+    └── ...
+```
+
+## Bidirectional Tracking Strategy
+
+See `multiple_annotation_strategy.md` for complete specification.
+
+### Key Concepts
+
+- **Annotations**: Human-verified masks at specific frames
+  - `LABEL_ID`: Frames with free fluid
+  - `EMPTY_ID`: Frames explicitly marked as clear
+- **Predictions**: Tracked masks generated between annotations
+- **Temporal Weighting**: Combine forward/backward predictions based on distance from annotations
+  - Weight = distance from opposite annotation / total distance
+  - Closer to annotation A → higher weight from A→B tracking
+
+### Implementation Notes
+
+The current implementation in `lib/multi_frame_tracker.py`:
+1. Classifies annotations as 'fluid' or 'empty' based on label IDs
+2. Identifies segments between consecutive annotations
+3. Determines tracking strategy per segment (bidirectional/forward/backward/none)
+4. Applies optical flow in appropriate direction(s)
+5. Combines predictions using distance-weighted averaging
+6. Applies morphological operations to clean masks
+
+**Note**: The implementation may contain over-engineering (e.g., temporal weighting AND temporal smoothing, vestigial variables). When working in this code, simplify complexity that doesn't provide proven value, but always validate changes don't break tracking.
+
+## Reference Implementation
+
+The `references/shreyasreeram/` directory contains a student implementation with known issues:
+- **Delayed change tracking**: Masks lag behind actual fluid movement
+- **Over-complex code**: Multiple abstraction layers that obscure logic
+- **Bugs in multi-frame tracking**: Temporal consistency issues
+
+**Do NOT copy patterns from reference implementation**. Use as cautionary examples only.
+
+## Code Quality Standards
+
+### Naming Conventions
+- Use descriptive names: `calculate_optical_flow()`, `save_tracking_results()`
+- Avoid generic names: `process()`, `do_stuff()`, `handle()`
+- Variables: `video_annotations`, `study_instance_uid`
+- Not: `data`, `stuff`, `temp`
+
+### Commenting Strategy
+- Focus on **context, purpose, and interpretation** when logic isn't self-evident
+- Never reference previous implementations or changes
+- Describe current state only, avoiding change logs
+- No "Fixed bug", "Updated logic", "Replaced X with Y"
+
+### Error Handling
+- Implement simple try/except with clear error messages
+- Avoid complex error hierarchies
+- Log failures loudly, successes quietly
+
+### External Mappings
+- Use lookup tables and dictionaries
+- No hardcoded mappings or transformations
+
+## Development Workflow
+
+### Before Making Changes
+
+1. **Read the code**: Use `Read` tool to examine files before modification
+2. **Understand the architecture**: Review this file and `multiple_annotation_strategy.md`
+3. **Check configuration**: Ensure parameters are in `dot.env`, not hardcoded
+4. **Check existing utilities**: Review `lib/` for reusable functions
+
+### When Making Changes
+
+1. **Maintain simplicity**: Remove complexity, don't add it
+2. **Reuse functions**: Check `lib/` for existing functionality before writing new
+3. **Configuration driven**: All magic numbers must become config values
+4. **No optimizations without measurement**: Profile before optimizing
+5. **Remove as you go**: Delete unused code, simplify complex sections
+6. **Preserve functionality**: Keep changes focused, avoid side effects
+
+### After Making Changes
+
+1. **Test with real data**: Run `track.py` on at least one video
+2. **Validate output**: Check generated masks and videos for quality
+3. **User confirmation**: Show results to user for quality assessment
+4. **Never declare success without testing**: This is absolutely non-negotiable
+
+## Session Work Tracking
+
+### Purpose of WORK_SUMMARY.md
+
+Track high-level work progress during development sessions between major commits and functionality releases. This provides a running log of what's being worked on, decisions made, and incremental progress.
+
+### When to Log
+
+- **Start of session**: Note what you're working on from TODO.md
+- **After significant changes**: Document what was modified and why
+- **Before major commits**: Summarize completed work
+- **When switching tasks**: Record current state before pivoting
+- **End of session**: Final summary of progress and next steps
+
+### What to Log
+
+Keep entries high-level and concise:
+
+```markdown
+## [Date] - [Brief Description]
+
+**Working On**: [TODO.md item or task description]
+
+**Changes Made**:
+- [File/module]: [What changed and why]
+- [File/module]: [What changed and why]
+
+**Testing**: [Results from track.py validation]
+
+**Status**: [Complete/In Progress/Blocked]
+
+**Next Steps**: [What needs to happen next]
+```
+
+### Example Entry
+
+```markdown
+## 2025-01-15 - Simplify Multi-Frame Tracker
+
+**Working On**: TODO.md #1 - Remove complexity from multi_frame_tracker.py
+
+**Changes Made**:
+- lib/multi_frame_tracker.py: Removed redundant temporal_smoothing (already have temporal_weighting)
+- lib/multi_frame_tracker.py: Deleted unused SharedParams fields (window_size, distance_decay_factor)
+
+**Testing**: Ran track.py on test video 1.2.840.113... - tracking quality unchanged, masks identical
+
+**Status**: In Progress
+
+**Next Steps**: Review opticalflowprocessor.py for similar complexity
+```
+
+### Guidelines
+
+- **Be factual**: Document what happened, not opinions
+- **Be concise**: High-level only, not line-by-line changes
+- **Link to validation**: Reference test results
+- **Note blockers**: If stuck, document why
+- **Don't duplicate git**: This is working notes, not commit messages
+
+## Environment & Dependency Management
+
+### Package Management
+- Use `uv` for dependency management
+- Prefer direct execution: `uv run python3 track.py`
+- Keep dependencies minimal and well-documented
+- Use inline dependency definitions for one-off scripts when supported
+
+### Working Directory Practices
+- Maintain consistent working directory (project root)
+- Use relative paths consistently
+- Avoid changing directories mid-script
+- Organize temporary files in dedicated subdirectories (`tmp/`, `temp/`)
+- Create temporary test scripts instead of complex one-liners
+
+### Sensible Defaults
+- Scripts should run without arguments when possible
+- Use conventional paths (`data/`, `config/`, `output/`)
+- Allow overrides via command line or environment variables
+
+## Long-Running Script Protocol
+
+### Duration Guidelines
+- Scripts under 30 seconds: run directly with normal output
+- Scripts over 30 seconds: implement logging and completion hooks
+
+### Implementation for Extended Processes
+- Redirect output to execution logs (stdout and stderr)
+- Add completion markers with timestamps
+- Monitor with `tail -f` or grep for completion/error patterns
+- Verify script status before proceeding
+
+## Git Commit Standards
+
+### Required Format
+- Use conventional commit format: `feat:`, `fix:`, `docs:`, `refactor:`
+- Focus on technical changes and measurable impact
+- Maintain professional, technical tone
+- Keep subject line under 72 characters
+
+### Prohibited Practices
+- No "Co-Authored-By: Claude" or similar attribution
+- No "via Happy" or credit references
+- No casual or cutesy language
+- Focus on what changed, not who changed it
+
+## Common Tasks
+
+### Debugging Tracking Issues
+
+1. Set `TEST_STUDY_UID` and `TEST_SERIES_UID` in `dot.env` for specific video
+2. Run `track.py` to process that video only
+3. Examine output in `output/{method}/{study_uid}_{series_uid}/`
+4. Check `tracked_video.mp4` for visual quality
+5. Review `mask_data.json` for per-frame metadata
+
+### Testing Changes
+
 ```bash
-npx claude-flow@alpha hooks post-edit --file "[file]" --memory-key "swarm/[agent]/[step]"
-npx claude-flow@alpha hooks notify --message "[what was done]"
+# Always test on real video after code changes
+uv run python3 track.py
+
+# Run validation suite
+uv run python3 test_implementation.py
 ```
 
-**3️⃣ AFTER Work:**
-```bash
-npx claude-flow@alpha hooks post-task --task-id "[task]"
-npx claude-flow@alpha hooks session-end --export-metrics true
-```
+### Simplifying Complex Code
 
-## 🎯 Concurrent Execution Examples
+When encountering overly complex code:
+1. Understand what it does (read thoroughly)
+2. Identify unnecessary abstractions or steps
+3. Simplify while preserving functionality
+4. **Test immediately** on real video to validate
+5. Document what was simplified and why
+6. Get user confirmation on results
 
-### ✅ CORRECT WORKFLOW: MCP Coordinates, Claude Code Executes
+### Understanding Optical Flow Methods
 
-```javascript
-// Step 1: MCP tools set up coordination (optional, for complex tasks)
-[Single Message - Coordination Setup]:
-  mcp__claude-flow__swarm_init { topology: "mesh", maxAgents: 6 }
-  mcp__claude-flow__agent_spawn { type: "researcher" }
-  mcp__claude-flow__agent_spawn { type: "coder" }
-  mcp__claude-flow__agent_spawn { type: "tester" }
+- **Farneback**: Fast, CPU-based, good baseline (OpenCV)
+- **DIS**: Dense inverse search, faster than Farneback (OpenCV)
+- **DeepFlow**: Slower, being removed from main pipeline (TODO.md #1)
+- **RAFT**: Deep learning, most accurate but slowest (PyTorch)
 
-// Step 2: Claude Code Task tool spawns ACTUAL agents that do the work
-[Single Message - Parallel Agent Execution]:
-  // Claude Code's Task tool spawns real agents concurrently
-  Task("Research agent", "Analyze API requirements and best practices. Check memory for prior decisions.", "researcher")
-  Task("Coder agent", "Implement REST endpoints with authentication. Coordinate via hooks.", "coder")
-  Task("Database agent", "Design and implement database schema. Store decisions in memory.", "code-analyzer")
-  Task("Tester agent", "Create comprehensive test suite with 90% coverage.", "tester")
-  Task("Reviewer agent", "Review code quality and security. Document findings.", "reviewer")
-  
-  // Batch ALL todos in ONE call
-  TodoWrite { todos: [
-    {id: "1", content: "Research API patterns", status: "in_progress", priority: "high"},
-    {id: "2", content: "Design database schema", status: "in_progress", priority: "high"},
-    {id: "3", content: "Implement authentication", status: "pending", priority: "high"},
-    {id: "4", content: "Build REST endpoints", status: "pending", priority: "high"},
-    {id: "5", content: "Write unit tests", status: "pending", priority: "medium"},
-    {id: "6", content: "Integration tests", status: "pending", priority: "medium"},
-    {id: "7", content: "API documentation", status: "pending", priority: "low"},
-    {id: "8", content: "Performance optimization", status: "pending", priority: "low"}
-  ]}
-  
-  // Parallel file operations
-  Bash "mkdir -p app/{src,tests,docs,config}"
-  Write "app/package.json"
-  Write "app/src/server.js"
-  Write "app/tests/server.test.js"
-  Write "app/docs/API.md"
-```
+Configure via `FLOW_METHOD` in `dot.env` (comma-separated for multiple methods).
 
-### ❌ WRONG (Multiple Messages):
-```javascript
-Message 1: mcp__claude-flow__swarm_init
-Message 2: Task("agent 1")
-Message 3: TodoWrite { todos: [single todo] }
-Message 4: Write "file.js"
-// This breaks parallel coordination!
-```
+## MD.ai Integration
 
-## Performance Benefits
+### Annotation Format
 
-- **84.8% SWE-Bench solve rate**
-- **32.3% token reduction**
-- **2.8-4.4x speed improvement**
-- **27+ neural models**
+MD.ai annotations have:
+- `StudyInstanceUID`: Identifies patient study
+- `SeriesInstanceUID`: Identifies video sequence
+- `frameNumber`: 0-indexed frame number
+- `labelId`: Matches `LABEL_ID` (fluid) or `EMPTY_ID` (clear)
+- `data.foreground`: Polygon coordinates for mask
 
-## Hooks Integration
+## Performance Considerations
 
-### Pre-Operation
-- Auto-assign agents by file type
-- Validate commands for safety
-- Prepare resources automatically
-- Optimize topology by complexity
-- Cache searches
+The `lib/performance_config.py` module handles:
+- Automatic hardware detection (Apple Silicon, Intel, NVIDIA)
+- OpenCV thread optimization
+- PyTorch device selection (CPU/MPS/CUDA)
+- Memory management based on available RAM
 
-### Post-Operation
-- Auto-format code
-- Train neural patterns
-- Update memory
-- Analyze performance
-- Track token usage
+Profile before making performance claims. Measure, don't assume.
 
-### Session Management
-- Generate summaries
-- Persist state
-- Track metrics
-- Restore context
-- Export workflows
+## Anti-Patterns to Avoid
 
-## Advanced Features (v2.0.0)
+### Code Smells
+- ❌ Hardcoding parameters in code
+- ❌ Using mocks or fake data in tests
+- ❌ Declaring success without running real tests
+- ❌ Adding complexity without proven value
+- ❌ Duplicating code instead of creating shared functions
+- ❌ Changing working directory mid-script
+- ❌ Testing on cached/old output
+- ❌ Magic numbers instead of named constants
+- ❌ Functions over 50 lines (consider breaking down)
+- ❌ Deep nesting (more than 3 levels)
+- ❌ Silent failures (catching exceptions without handling)
 
-- 🚀 Automatic Topology Selection
-- ⚡ Parallel Execution (2.8-4.4x speed)
-- 🧠 Neural Training
-- 📊 Bottleneck Analysis
-- 🤖 Smart Auto-Spawning
-- 🛡️ Self-Healing Workflows
-- 💾 Cross-Session Memory
-- 🔗 GitHub Integration
+### Testing Anti-Patterns
+- ❌ Testing old output instead of fresh generation
+- ❌ Declaring success without validation
+- ❌ Ignoring test failures
+- ❌ Relying only on automated tests (need visual validation too)
 
-## Integration Tips
+### Performance Anti-Patterns
+- ❌ Premature optimization (optimize before measuring)
+- ❌ Optimization without testing (adding complexity without validation)
+- ❌ Ignoring overhead (not measuring cost of "optimizations")
 
-1. Start with basic swarm init
-2. Scale agents gradually
-3. Use memory for context
-4. Monitor progress regularly
-5. Train patterns from success
-6. Enable hooks automation
-7. Use GitHub tools first
+## Output & Communication Standards
 
-## Support
+### Quality Requirements
+- Present factual, measurable information and numerical results
+- Avoid subjective interpretation; stick to observable outcomes
+- Use neutral, objective language when describing patterns
+- Clearly document methodology, tests, and assumptions
+- Limit conclusions to what data directly supports
+- Maintain standardized formatting and terminology
 
-- Documentation: https://github.com/ruvnet/claude-flow
-- Issues: https://github.com/ruvnet/claude-flow/issues
-- Flow-Nexus Platform: https://flow-nexus.ruv.io (registration required for cloud features)
+### What to Include
+- What's being tested
+- Why it matters
+- What results mean
+- Methodology used
+- Underlying assumptions
 
----
+## Key Files Reference
 
-Remember: **Claude Flow coordinates, Claude Code creates!**
+- `track.py`: Main entrypoint (196 lines)
+- `lib/multi_frame_tracker.py`: Core tracking logic (993 lines)
+- `lib/opticalflowprocessor.py`: Flow algorithm wrapper (155 lines)
+- `lib/optical.py`: MD.ai utilities (1999 lines)
+- `lib/performance_config.py`: Hardware optimization (476 lines)
+- `dot.env`: Configuration (all runtime parameters)
+- **`TODO.md`**: Current work items and known issues
+- **`WORK_SUMMARY.md`**: Session work log (high-level progress tracking)
+- `multiple_annotation_strategy.md`: Bidirectional tracking specification
+- `.cursor/rules/goobusters.mdc`: Detailed development rules
 
-# important-instruction-reminders
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-Never save working files, text/mds and tests to the root folder.
+## Questions or Uncertainties?
+
+When in doubt:
+1. Check `TODO.md` for known issues and current work
+2. Check `multiple_annotation_strategy.md` for tracking behavior
+3. Check `.cursor/rules/goobusters.mdc` for development practices
+4. Ask user for clarification rather than making assumptions
+5. Test with real data to validate behavior
+6. Review reference implementation as anti-pattern examples

@@ -41,6 +41,7 @@
     <!-- Save button (bottom-left) -->
     <div class="save-button bottom-left">
         <button class="tool-btn" id="saveChanges" title="Save">💾</button>
+        <div class="frame-counter" id="frameCounter">0 / 0</div>
     </div>
 
     <!-- Playback controls (top-center) -->
@@ -158,6 +159,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.min.js"></script>
     <script>
         const INITIAL_VIDEO = {
             method: '{{ selected_video.method }}',

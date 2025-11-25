@@ -27,7 +27,8 @@ class AnnotationViewer {
 
         this.frameImage = null;
         this.maskImageData = null; // Grayscale ImageData (like singleChannelMask in teef)
-        this.originalMaskImageData = null; // For reset
+        this.originalMaskImageData = null; // For reset (unmodified mask from output/)
+        this.savedMaskImageData = null; // Saved mask from annotations/ (if exists)
         this.maskType = null; // 'LABEL_ID' or 'TRACK_ID'
         this.originalMaskType = null;
 
@@ -47,6 +48,11 @@ class AnnotationViewer {
         // Track all modified frames across the session, per video
         // Structure: Map<videoKey, Map<frame_num, { maskData, maskType, is_empty }>>
         this.modifiedFrames = new Map(); // videoKey -> Map(frame_num -> data)
+        
+        
+        this.frameCache = new Map(); // frameNum -> {frameImage, maskImageData, maskType, originalMaskImageData, originalMaskType, canvasWidth, canvasHeight}
+        this.framesArchive = null; // Extracted frames from tar.gz
+        this.masksArchive = {}; // Masks from tar.gz archive (webp images)
 
         this.toolsVisible = true;
 
@@ -82,7 +88,8 @@ class AnnotationViewer {
     async init() {
         this.setupEventListeners();
         await this.loadVideoData();
-        this.goToFrame(0); // Start from frame 0
+        await this.loadFramesArchive();
+        await this.goToFrame(0);
     }
 
     setupEventListeners() {
@@ -245,21 +252,71 @@ class AnnotationViewer {
     async loadVideoData() {
         const { method, studyUid, seriesUid } = this.currentVideo;
         const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
-        this.videoData = await response.json();
-        this.totalFrames = this.videoData.total_frames;
+        const data = await response.json();
+        this.totalFrames = data.total_frames;
+        
+        // Build mask_data structure from masks_annotations and modified_frames
+        this.videoData = {
+            total_frames: data.total_frames,
+            mask_data: {},
+            method: data.method || method,
+            study_uid: data.study_uid || studyUid,
+            series_uid: data.series_uid || seriesUid,
+            exam_number: data.exam_number || 'Unknown',
+            labels: data.labels || []
+        };
+        
+        // Add annotations from masks_annotations
+        if (data.masks_annotations) {
+            for (const ann of data.masks_annotations) {
+                const frameNum = ann.frameNumber;
+                this.videoData.mask_data[frameNum] = {
+                    type: ann.type || 'unknown',
+                    label_id: ann.labelId || ann.label_id || '',
+                    is_annotation: ann.is_annotation || false,
+                    modified: false
+                };
+            }
+        }
+        
+        // Override with modified_frames (user modifications take precedence)
+        // Modified masks are always human-verified annotations (green), unless they're empty
+        if (data.modified_frames) {
+            for (const [frameNum, frameData] of Object.entries(data.modified_frames)) {
+                const num = parseInt(frameNum);
+                if (this.videoData.mask_data[num]) {
+                    // Modified frames are always annotations (human-verified)
+                    this.videoData.mask_data[num].label_id = frameData.label_id;
+                    this.videoData.mask_data[num].modified = true;
+                    // Mark as annotation unless it's an empty frame
+                    this.videoData.mask_data[num].is_annotation = !frameData.is_empty;
+                } else {
+                    // New frame (not in original annotations) - mark as annotation since user created it
+                    this.videoData.mask_data[num] = {
+                        type: frameData.is_empty ? 'empty' : 'fluid',
+                        label_id: frameData.label_id,
+                        is_annotation: !frameData.is_empty, // User-created frames are annotations (unless empty)
+                        modified: true
+                    };
+                }
+            }
+        }
 
         // Set slider range from 0 to totalFrames - 1
         document.getElementById('sliderMin').textContent = '0';
         document.getElementById('sliderMax').textContent = this.totalFrames - 1;
         document.getElementById('frameSlider').min = 0;
         document.getElementById('frameSlider').max = this.totalFrames - 1;
+        this.updateFrameCounter();
     }
 
+
     async goToFrame(frameNum) {
-        // Preserve unsaved changes to current frame before navigating away (in memory only, no disk save)
-        if (this.hasUnsavedChanges && this.maskImageData) {
-            this.maskCtx.putImageData(this.maskImageData, 0, 0);
-            const maskData = this.maskCanvas.toDataURL('image/png');
+        const targetFrame = Math.max(0, Math.min(frameNum, this.totalFrames - 1));
+        if (targetFrame === this.currentFrame && this.frameImage) return;
+        
+        // Preserve unsaved changes
+        if (this.hasUnsavedChanges && this.maskImageData && this.currentFrame !== targetFrame) {
             const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
             videoModifiedFrames.set(this.currentFrame, {
                 maskData: this.cloneImageData(this.maskImageData),
@@ -268,67 +325,116 @@ class AnnotationViewer {
             });
         }
         
-        // Clamp frame number to valid range [0, totalFrames - 1]
-        this.currentFrame = Math.max(0, Math.min(frameNum, this.totalFrames - 1));
+        this.currentFrame = targetFrame;
         document.getElementById('frameSlider').value = this.currentFrame;
-        
-        // Update save button state (in case we're navigating to a frame with unsaved changes)
+        this.updateFrameCounter();
         this.updateSaveButtonState();
 
-        const { method, studyUid, seriesUid } = this.currentVideo;
-        const response = await fetch(`/api/frame/${method}/${studyUid}/${seriesUid}/${this.currentFrame}`);
-        const data = await response.json();
-
-        // Load frame image
-        this.frameImage = await this.loadImage(`data:image/jpeg;base64,${data.frame}`);
-
-        // Set both mask and overlay canvas to match image dimensions (like teef)
-        this.maskCanvas.width = this.frameImage.width;
-        this.maskCanvas.height = this.frameImage.height;
-        this.overlayCanvas.width = this.frameImage.width;
-        this.overlayCanvas.height = this.frameImage.height;
-
-        // Load mask if exists
-        if (data.mask) {
-            const maskImg = await this.loadImage(`data:image/png;base64,${data.mask}`);
-            console.log('Mask dimensions:', maskImg.width, 'x', maskImg.height, 'Canvas:', this.maskCanvas.width, 'x', this.maskCanvas.height);
-            this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
-
-            this.maskCtx.drawImage(maskImg, 0, 0, this.maskCanvas.width, this.maskCanvas.height);
-
-            // Server returns grayscale PNG (cv2.IMREAD_GRAYSCALE)
-            // Extract R channel as grayscale value (R=G=B in grayscale)
-            const rawImageData = this.maskCtx.getImageData(0, 0, this.maskCanvas.width, this.maskCanvas.height);
-            this.maskImageData = this.maskCtx.createImageData(this.maskCanvas.width, this.maskCanvas.height);
-
-            for (let i = 0; i < rawImageData.data.length; i += 4) {
-                // Grayscale PNG has R=G=B, use R channel
-                const gray = rawImageData.data[i];
-                this.maskImageData.data[i] = gray;
-                this.maskImageData.data[i + 1] = gray;
-                this.maskImageData.data[i + 2] = gray;
-                this.maskImageData.data[i + 3] = 255;
+        // Get from cache or load from archive
+        let cached = this.frameCache.get(targetFrame);
+        if (!cached) {
+            const frameData = this.framesArchive[`frames/frame_${targetFrame.toString().padStart(6, '0')}.webp`];
+            if (!frameData) {
+                console.error(`Frame ${targetFrame} not found in archive`);
+                return;
             }
-        } else {
-            // No mask - create empty
-            this.maskCtx.fillStyle = 'black';
-            this.maskCtx.fillRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
-            this.maskImageData = this.maskCtx.getImageData(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+            const blob = new Blob([frameData], { type: 'image/webp' });
+            const frameUrl = URL.createObjectURL(blob);
+            const frameImage = await this.loadImage(frameUrl);
+            
+            // Load mask from JSON (RLE encoded)
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = frameImage.width;
+            tempCanvas.height = frameImage.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // Load current mask (may be modified or original)
+            let maskImageData;
+            const maskFileName = `masks/frame_${String(targetFrame).padStart(6, '0')}_mask.webp`;
+            if (this.masksArchive && this.masksArchive[maskFileName]) {
+                // Load mask from archive (webp image) - may be modified or original
+                const maskData = this.masksArchive[maskFileName];
+                const blob = new Blob([maskData], { type: 'image/webp' });
+                const maskUrl = URL.createObjectURL(blob);
+                const maskImg = new Image();
+                await new Promise((resolve, reject) => {
+                    maskImg.onload = () => {
+                        tempCtx.drawImage(maskImg, 0, 0);
+                        maskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                        URL.revokeObjectURL(maskUrl);
+                        resolve();
+                    };
+                    maskImg.onerror = reject;
+                    maskImg.src = maskUrl;
+                });
+            } else {
+                // No mask - create empty
+                tempCtx.fillStyle = 'black';
+                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+                maskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+            }
+            
+            // Load original unmodified mask from output/ (for reset functionality)
+            let originalMaskImageData;
+            if (this.originalMasksArchive && this.originalMasksArchive[maskFileName]) {
+                const originalMaskData = this.originalMasksArchive[maskFileName];
+                const blob = new Blob([originalMaskData], { type: 'image/webp' });
+                const maskUrl = URL.createObjectURL(blob);
+                const maskImg = new Image();
+                await new Promise((resolve, reject) => {
+                    maskImg.onload = () => {
+                        tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+                        tempCtx.drawImage(maskImg, 0, 0);
+                        originalMaskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                        URL.revokeObjectURL(maskUrl);
+                        resolve();
+                    };
+                    maskImg.onerror = reject;
+                    maskImg.src = maskUrl;
+                });
+            } else {
+                // No original mask - use empty
+                tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+                tempCtx.fillStyle = 'black';
+                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+                originalMaskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+            }
+            
+            const maskType = this.videoData.mask_data[targetFrame]?.is_annotation ? 'human' : 'tracked';
+            // Original mask type is always 'tracked' (from output/) unless it was an annotation
+            const originalMaskType = 'tracked';
+            
+            cached = {
+                frameImage,
+                maskImageData: this.cloneImageData(maskImageData),
+                originalMaskImageData: this.cloneImageData(originalMaskImageData), // Original unmodified mask from output/
+                maskType,
+                originalMaskType: originalMaskType,
+                canvasWidth: frameImage.width,
+                canvasHeight: frameImage.height
+            };
+            this.frameCache.set(targetFrame, cached);
         }
 
-        // Store original for reset
-        this.originalMaskImageData = this.cloneImageData(this.maskImageData);
-
-        // Determine mask type based on is_annotation flag
-        const frameMetadata = this.videoData.mask_data[this.currentFrame];
-        this.maskType = frameMetadata?.is_annotation ? 'human' : 'tracked';
-        this.originalMaskType = this.maskType;
-
+        // Use preprocessed data (instant)
+        this.frameImage = cached.frameImage;
+        this.maskCanvas.width = cached.canvasWidth;
+        this.maskCanvas.height = cached.canvasHeight;
+        this.overlayCanvas.width = cached.canvasWidth;
+        this.overlayCanvas.height = cached.canvasHeight;
+        
+        this.maskImageData = this.cloneImageData(cached.maskImageData);
+        this.originalMaskImageData = this.cloneImageData(cached.originalMaskImageData);
+        this.maskType = cached.maskType;
+        this.originalMaskType = cached.originalMaskType;
+        
+        this.maskCtx.putImageData(this.maskImageData, 0, 0);
+        
         // Check if this frame was already modified in this session
         const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
         if (videoModifiedFrames.has(this.currentFrame)) {
             const saved = videoModifiedFrames.get(this.currentFrame);
-            this.maskImageData = saved.maskData; // Already cloned when stored
+            this.maskImageData = saved.maskData;
             this.maskType = saved.maskType;
             this.hasUnsavedChanges = true;
         } else {
@@ -585,6 +691,55 @@ class AnnotationViewer {
                 
                 // Reload video data to get updated annotations
                 await this.loadVideoData();
+                
+                // Reload masks archive to get updated saved masks
+                await this.loadFramesArchive();
+                
+                // Update cache for saved frames with the newly saved masks
+                for (const frameNumStr of Object.keys(modifiedFramesData)) {
+                    const frameNum = parseInt(frameNumStr);
+                    const cached = this.frameCache.get(frameNum);
+                    if (cached) {
+                        // Update cache with saved mask from archive
+                        const maskFileName = `masks/frame_${String(frameNum).padStart(6, '0')}_mask.webp`;
+                        if (this.masksArchive && this.masksArchive[maskFileName]) {
+                            const tempCanvas = document.createElement('canvas');
+                            tempCanvas.width = cached.canvasWidth;
+                            tempCanvas.height = cached.canvasHeight;
+                            const tempCtx = tempCanvas.getContext('2d');
+                            
+                            const maskData = this.masksArchive[maskFileName];
+                            const blob = new Blob([maskData], { type: 'image/webp' });
+                            const maskUrl = URL.createObjectURL(blob);
+                            const maskImg = new Image();
+                            await new Promise((resolve, reject) => {
+                                maskImg.onload = () => {
+                                    tempCtx.drawImage(maskImg, 0, 0);
+                                    const savedMaskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                                    URL.revokeObjectURL(maskUrl);
+                                    
+                                    // Update cache with saved mask
+                                    cached.maskImageData = this.cloneImageData(savedMaskImageData);
+                                    cached.maskType = this.videoData.mask_data[frameNum]?.is_annotation ? 'human' : 'tracked';
+                                    
+                                    resolve();
+                                };
+                                maskImg.onerror = reject;
+                                maskImg.src = maskUrl;
+                            });
+                        }
+                    }
+                }
+                
+                // Update current frame display if it was saved
+                if (modifiedFramesData[this.currentFrame.toString()]) {
+                    const cached = this.frameCache.get(this.currentFrame);
+                    if (cached) {
+                        this.maskImageData = this.cloneImageData(cached.maskImageData);
+                        this.maskType = cached.maskType;
+                        this.render();
+                    }
+                }
             } else {
                 console.error('❌ Failed to save all annotations');
             }
@@ -594,14 +749,33 @@ class AnnotationViewer {
     }
 
     resetMask() {
-        // Reset to the mask that was loaded when frame first opened
+        // Reset to the original unmodified mask from output/ (not the saved modified mask)
         this.maskImageData = this.cloneImageData(this.originalMaskImageData);
         this.maskType = this.originalMaskType;
-        this.hasUnsavedChanges = false;
         
-        // Remove from modified frames if it was there
-        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        videoModifiedFrames.delete(this.currentFrame);
+        // Check if there was a saved modified mask for this frame
+        const frameData = this.videoData?.mask_data?.[this.currentFrame];
+        const hadSavedModification = frameData?.modified === true;
+        
+        // If there was a saved modification, resetting is a new modification (unsaved)
+        // If there was no saved modification, resetting clears any unsaved changes
+        if (hadSavedModification) {
+            // Resetting to original is a new modification (different from saved state)
+            this.hasUnsavedChanges = true;
+            // Store in modified frames so it will be saved
+            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+            videoModifiedFrames.set(this.currentFrame, {
+                maskData: this.cloneImageData(this.maskImageData),
+                maskType: this.maskType,
+                is_empty: this.maskType === 'empty'
+            });
+        } else {
+            // No saved modification, so resetting clears unsaved changes
+            this.hasUnsavedChanges = false;
+            // Remove from modified frames if it was there
+            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+            videoModifiedFrames.delete(this.currentFrame);
+        }
         
         this.updateSaveButtonState();
         this.render();
@@ -641,9 +815,7 @@ class AnnotationViewer {
 
     togglePlayPause() {
         this.isPlaying = !this.isPlaying;
-        const btn = document.getElementById('playPause');
-        btn.textContent = this.isPlaying ? '⏸️' : '▶️';
-
+        document.getElementById('playPause').textContent = this.isPlaying ? '⏸️' : '▶️';
         if (this.isPlaying) {
             this.playInterval = setInterval(() => {
                 if (this.currentFrame < this.totalFrames - 1) {
@@ -653,7 +825,10 @@ class AnnotationViewer {
                 }
             }, 1000 / this.playbackSpeed);
         } else {
-            clearInterval(this.playInterval);
+            if (this.playInterval) {
+                clearInterval(this.playInterval);
+                this.playInterval = null;
+            }
         }
     }
 
@@ -690,11 +865,141 @@ class AnnotationViewer {
     }
 
     async loadVideo(method, studyUid, seriesUid) {
-        // Don't clear modified frames - they persist per video in memory
+        this.frameImage = null;
+        this.frameCache.clear();
+        this.framesArchive = null;
+        this.masksArchive = {};
         this.currentVideo = { method, studyUid, seriesUid };
+        // Load video data first so we know which frames are modified
         await this.loadVideoData();
-        this.goToFrame(0);
-        this.updateSaveButtonState(); // Update button state for new video
+        await this.loadFramesArchive();
+        this.currentFrame = -1;
+        await this.goToFrame(0);
+        this.updateSaveButtonState();
+        this.updateVideoInfo();
+    }
+    
+    async loadFramesArchive() {
+        const loadingDiv = document.getElementById('loadingIndicator') || (() => {
+            const d = document.createElement('div');
+            d.id = 'loadingIndicator';
+            d.className = 'loading-indicator';
+            d.innerHTML = '<div class="loading-content"><div class="loading-spinner">⏳</div></div>';
+            document.body.appendChild(d);
+            return d;
+        })();
+        loadingDiv.style.display = 'flex';
+        
+        try {
+            const { method, studyUid, seriesUid } = this.currentVideo;
+            const response = await fetch(`/api/frames/${method}/${studyUid}/${seriesUid}`);
+            const { frames_archive_url, masks_archive_url, modified_masks_archive_url } = await response.json();
+            
+            // Load frames archive
+            const framesArchiveResponse = await fetch(frames_archive_url);
+            const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
+            const framesDecompressed = fflate.gunzipSync(new Uint8Array(framesArrayBuffer));
+            
+            // Parse tar and extract frames
+            this.framesArchive = {};
+            let offset = 0;
+            while (offset < framesDecompressed.length) {
+                if (offset + 512 > framesDecompressed.length) break;
+                
+                const name = new TextDecoder().decode(framesDecompressed.slice(offset, offset + 100)).replace(/\0/g, '');
+                if (!name) break;
+                
+                const size = parseInt(new TextDecoder().decode(framesDecompressed.slice(offset + 124, offset + 136)), 8);
+                offset += 512;
+                
+                // Skip directory entries (size == 0) and only process frame files
+                if (name.endsWith('.webp') && name.includes('frame_') && !name.includes('_mask') && size > 0) {
+                    const data = framesDecompressed.slice(offset, offset + size);
+                    // Store with full path from tar (e.g., "frames/frame_000000.webp")
+                    this.framesArchive[name] = data;
+                }
+                
+                offset += Math.ceil(size / 512) * 512;
+            }
+            
+            // Load masks archive from output/ (all frames - original unmodified masks)
+            this.masksArchive = {}; // Current masks (may include modified)
+            this.originalMasksArchive = {}; // Original unmodified masks from output/
+            if (masks_archive_url) {
+                const masksArchiveResponse = await fetch(masks_archive_url);
+                const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
+                const masksDecompressed = fflate.gunzipSync(new Uint8Array(masksArrayBuffer));
+                
+                // Parse tar and extract masks
+                offset = 0;
+                while (offset < masksDecompressed.length) {
+                    if (offset + 512 > masksDecompressed.length) break;
+                    
+                    const name = new TextDecoder().decode(masksDecompressed.slice(offset, offset + 100)).replace(/\0/g, '');
+                    if (!name) break;
+                    
+                    const size = parseInt(new TextDecoder().decode(masksDecompressed.slice(offset + 124, offset + 136)), 8);
+                    offset += 512;
+                    
+                    // Skip directory entries (size == 0) and only process mask files
+                    if (name.endsWith('.webp') && name.includes('_mask') && size > 0) {
+                        const data = masksDecompressed.slice(offset, offset + size);
+                        // Store original unmodified masks
+                        this.originalMasksArchive[name] = data;
+                        // Also store in current masks (will be overridden by modified if exists)
+                        this.masksArchive[name] = data;
+                    }
+                    
+                    offset += Math.ceil(size / 512) * 512;
+                }
+            }
+            
+            // Load modified masks archive from annotations/ and override only modified frames
+            // Use modified_frames from videoData to know which frames to override
+            if (modified_masks_archive_url && this.videoData && this.videoData.mask_data) {
+                // Find which frames are modified
+                const modifiedFrameNumbers = [];
+                for (const [frameNum, frameData] of Object.entries(this.videoData.mask_data)) {
+                    if (frameData.modified) {
+                        modifiedFrameNumbers.push(parseInt(frameNum));
+                    }
+                }
+                
+                if (modifiedFrameNumbers.length > 0) {
+                    const modifiedMasksArchiveResponse = await fetch(modified_masks_archive_url);
+                    const modifiedMasksArrayBuffer = await modifiedMasksArchiveResponse.arrayBuffer();
+                    const modifiedMasksDecompressed = fflate.gunzipSync(new Uint8Array(modifiedMasksArrayBuffer));
+                    
+                    // Parse tar and extract only modified frame masks (frame-level override)
+                    offset = 0;
+                    while (offset < modifiedMasksDecompressed.length) {
+                        if (offset + 512 > modifiedMasksDecompressed.length) break;
+                        
+                        const name = new TextDecoder().decode(modifiedMasksDecompressed.slice(offset, offset + 100)).replace(/\0/g, '');
+                        if (!name) break;
+                        
+                        const size = parseInt(new TextDecoder().decode(modifiedMasksDecompressed.slice(offset + 124, offset + 136)), 8);
+                        offset += 512;
+                        
+                        // Extract frame number from filename (e.g., "masks/frame_000002_mask.webp" -> 2)
+                        const frameMatch = name.match(/frame_(\d+)_mask\.webp/);
+                        if (frameMatch) {
+                            const frameNum = parseInt(frameMatch[1]);
+                            // Only override if this frame is in the modified frames list
+                            if (modifiedFrameNumbers.includes(frameNum) && size > 0) {
+                                const data = modifiedMasksDecompressed.slice(offset, offset + size);
+                                // Override this specific frame's mask
+                                this.masksArchive[name] = data;
+                            }
+                        }
+                        
+                        offset += Math.ceil(size / 512) * 512;
+                    }
+                }
+            }
+        } finally {
+            loadingDiv.style.display = 'none';
+        }
     }
 
     showModal(modalId) {
@@ -705,8 +1010,30 @@ class AnnotationViewer {
         document.getElementById(modalId).classList.remove('active');
     }
 
+    updateVideoInfo() {
+        // Update video-level info (study, series, method, exam)
+        if (this.videoData) {
+            const infoStudy = document.getElementById('infoStudy');
+            const infoSeries = document.getElementById('infoSeries');
+            const infoMethod = document.getElementById('infoMethod');
+            const infoExam = document.getElementById('infoExam');
+            
+            if (infoStudy) infoStudy.textContent = this.videoData.study_uid || this.currentVideo.studyUid;
+            if (infoSeries) infoSeries.textContent = this.videoData.series_uid || this.currentVideo.seriesUid;
+            if (infoMethod) infoMethod.textContent = this.videoData.method || this.currentVideo.method;
+            if (infoExam) infoExam.textContent = this.videoData.exam_number || 'Unknown';
+        }
+    }
+    
+    updateFrameCounter() {
+        const frameCounter = document.getElementById('frameCounter');
+        if (frameCounter && this.totalFrames) {
+            frameCounter.textContent = `${this.currentFrame} / ${this.totalFrames - 1}`;
+        }
+    }
+    
     updateInfoPanel() {
-        const frameMetadata = this.videoData.mask_data[this.currentFrame];
+        const frameMetadata = this.videoData?.mask_data?.[this.currentFrame];
         document.getElementById('frameInfo').textContent = `${this.currentFrame} / ${this.totalFrames - 1}`;
         document.getElementById('frameType').textContent = frameMetadata?.type || '-';
         document.getElementById('frameLabelId').textContent = frameMetadata?.label_id || '-';
