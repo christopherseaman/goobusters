@@ -17,6 +17,7 @@ import io
 from PIL import Image
 from datetime import datetime
 from dotenv import load_dotenv
+import threading
 
 # Load environment variables
 load_dotenv()
@@ -518,6 +519,173 @@ def api_mark_empty():
     save_modified_annotations(study_uid, series_uid, modified_annotations)
 
     return jsonify({'success': True})
+
+# Retrack status tracking (in-memory for simplicity)
+retrack_status = {}
+
+@app.route('/api/retrack/<study_uid>/<series_uid>', methods=['POST'])
+def api_retrack(study_uid, series_uid):
+    """
+    Re-run optical flow tracking using ONLY human-verified annotations (label_id and empty_id).
+
+    This endpoint triggers retracking for a single video using the modified annotations
+    stored in annotations/{study_uid}_{series_uid}/. It uses ONLY human-verified
+    annotations (label_id for fluid, empty_id for no fluid) as ground truth,
+    and regenerates track_id predictions for frames in between.
+
+    Expected JSON (optional):
+        {
+            'method': str (optional, defaults to current method from request)
+        }
+
+    Returns:
+        JSON with status and task_id for polling progress
+    """
+    data = request.json or {}
+    method = data.get('method', 'farneback')  # Default to farneback if not specified
+
+    # Generate task ID
+    task_id = f"{study_uid}_{series_uid}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    # Check if annotations exist
+    annotations_file = get_annotations_file(study_uid, series_uid)
+    if not annotations_file.exists():
+        return jsonify({
+            'success': False,
+            'error': 'No modified annotations found. Edit some frames first.'
+        }), 400
+
+    # Check if video exists
+    video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
+    if not video_dir.exists():
+        return jsonify({
+            'success': False,
+            'error': f'Video directory not found: {video_dir}'
+        }), 404
+
+    # Find the source video
+    video_path = None
+    # First try tracked_video.mp4 in output dir
+    tracked_video = video_dir / 'tracked_video.mp4'
+    if tracked_video.exists():
+        # We need the original video, not the tracked one
+        # Look in data directory
+        for images_dir in DATA_DIR.glob('mdai_*_images_dataset_*'):
+            candidate = images_dir / study_uid / f"{series_uid}.mp4"
+            if candidate.exists():
+                video_path = candidate
+                break
+
+    if not video_path:
+        return jsonify({
+            'success': False,
+            'error': 'Original video file not found'
+        }), 404
+
+    # Initialize status
+    retrack_status[task_id] = {
+        'status': 'starting',
+        'progress': 0,
+        'message': 'Initializing retrack...',
+        'error': None
+    }
+
+    # Run retracking in background thread
+    thread = threading.Thread(
+        target=run_retrack,
+        args=(task_id, study_uid, series_uid, method, str(video_path), str(video_dir))
+    )
+    thread.daemon = True
+    thread.start()
+
+    return jsonify({
+        'success': True,
+        'task_id': task_id,
+        'message': 'Retracking started'
+    })
+
+def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
+    """
+    Background task to run retracking.
+
+    Uses lib/ functions directly (not track.py) as per RETRACK_DESIGN.md.
+    """
+    try:
+        retrack_status[task_id]['status'] = 'loading'
+        retrack_status[task_id]['message'] = 'Loading annotations...'
+
+        # Import lib functions
+        from lib.local_annotations import convert_local_to_annotations_df
+        from lib.opticalflowprocessor import OpticalFlowProcessor
+        from lib.multi_frame_tracker import process_video_with_multi_frame_tracking
+
+        # Convert local annotations to DataFrame
+        annotations_df = convert_local_to_annotations_df(study_uid, series_uid)
+
+        if annotations_df.empty:
+            retrack_status[task_id]['status'] = 'error'
+            retrack_status[task_id]['error'] = 'No valid annotations found'
+            return
+
+        retrack_status[task_id]['message'] = f'Found {len(annotations_df)} annotations'
+        retrack_status[task_id]['progress'] = 10
+
+        # Create optical flow processor
+        retrack_status[task_id]['status'] = 'processing'
+        retrack_status[task_id]['message'] = f'Creating {method} optical flow processor...'
+
+        flow_processor = OpticalFlowProcessor(method)
+
+        retrack_status[task_id]['progress'] = 20
+        retrack_status[task_id]['message'] = 'Running optical flow tracking...'
+
+        # Get label IDs from environment
+        label_id_fluid = os.getenv('LABEL_ID', '')
+        label_id_machine = os.getenv('TRACK_ID', '')
+
+        # Run tracking
+        result = process_video_with_multi_frame_tracking(
+            video_path=video_path,
+            annotations_df=annotations_df,
+            study_uid=study_uid,
+            series_uid=series_uid,
+            flow_processor=flow_processor,
+            output_dir=output_dir,
+            mdai_client=None,
+            label_id_fluid=label_id_fluid,
+            label_id_machine=label_id_machine,
+            upload_to_mdai=False
+        )
+
+        retrack_status[task_id]['progress'] = 90
+        retrack_status[task_id]['message'] = 'Finalizing...'
+
+        # Clean up flow processor memory
+        flow_processor.cleanup_memory()
+
+        retrack_status[task_id]['status'] = 'complete'
+        retrack_status[task_id]['progress'] = 100
+        retrack_status[task_id]['message'] = f"Retrack complete: {result.get('annotated_frames', 0)} annotations, {result.get('predicted_frames', 0)} predictions"
+        retrack_status[task_id]['result'] = {
+            'annotated_frames': result.get('annotated_frames', 0),
+            'predicted_frames': result.get('predicted_frames', 0),
+            'output_video': result.get('output_video', '')
+        }
+
+    except Exception as e:
+        import traceback
+        retrack_status[task_id]['status'] = 'error'
+        retrack_status[task_id]['error'] = str(e)
+        retrack_status[task_id]['message'] = f'Error: {str(e)}'
+        print(f"Retrack error: {traceback.format_exc()}")
+
+@app.route('/api/retrack/status/<task_id>')
+def api_retrack_status(task_id):
+    """Get status of a retrack task."""
+    if task_id not in retrack_status:
+        return jsonify({'error': 'Task not found'}), 404
+
+    return jsonify(retrack_status[task_id])
 
 @app.route('/output/<path:filename>')
 def serve_output(filename):

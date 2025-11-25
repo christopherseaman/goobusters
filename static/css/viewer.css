@@ -160,6 +160,16 @@ html, body {
     box-shadow: 0 0 30px rgba(255, 193, 7, 0.7);
 }
 
+.tool-btn.processing {
+    background: rgba(33, 150, 243, 0.8);
+    animation: pulse-processing 1s ease-in-out infinite;
+}
+
+@keyframes pulse-processing {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 .tool-btn:hover, .control-btn:hover {
     background: rgba(255, 255, 255, 0.2);
 }

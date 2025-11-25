@@ -131,6 +131,7 @@ class AnnotationViewer {
         document.getElementById('eraseMode').addEventListener('click', () => this.setDrawMode('erase'));
         document.getElementById('markEmpty').addEventListener('click', () => this.markEmpty());
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
+        document.getElementById('retrackBtn').addEventListener('click', () => this.retrackVideo());
         document.getElementById('resetMask').addEventListener('click', () => this.resetMask());
 
         // Brush size sliders (both modal and inline)
@@ -745,6 +746,110 @@ class AnnotationViewer {
             }
         } catch (error) {
             console.error('Error saving:', error);
+        }
+    }
+
+    async retrackVideo() {
+        const { method, studyUid, seriesUid } = this.currentVideo;
+        const retrackBtn = document.getElementById('retrackBtn');
+
+        // Check for unsaved changes
+        if (this.hasUnsavedChangesForCurrentVideo()) {
+            const confirmSave = confirm('You have unsaved changes. Save them before retracking?');
+            if (confirmSave) {
+                await this.saveChanges();
+            } else {
+                return; // Cancel retrack
+            }
+        }
+
+        // Confirm retrack
+        if (!confirm('Re-run optical flow tracking with your edited annotations?\n\nThis will regenerate all tracked predictions based on your human-verified annotations.')) {
+            return;
+        }
+
+        // Show loading state
+        retrackBtn.disabled = true;
+        retrackBtn.classList.add('processing');
+        retrackBtn.textContent = '⏳';
+
+        try {
+            // Start retrack
+            const response = await fetch(`/api/retrack/${studyUid}/${seriesUid}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ method })
+            });
+
+            const data = await response.json();
+
+            if (!data.success) {
+                alert(`Retrack failed: ${data.error}`);
+                retrackBtn.disabled = false;
+                retrackBtn.classList.remove('processing');
+                retrackBtn.textContent = '⚡';
+                return;
+            }
+
+            const taskId = data.task_id;
+            console.log(`Retrack started: ${taskId}`);
+
+            // Poll for status
+            const pollStatus = async () => {
+                const statusResponse = await fetch(`/api/retrack/status/${taskId}`);
+                const status = await statusResponse.json();
+
+                console.log(`Retrack status: ${status.status} - ${status.message}`);
+
+                if (status.status === 'complete') {
+                    // Success - reload video data
+                    retrackBtn.disabled = false;
+                    retrackBtn.classList.remove('processing');
+                    retrackBtn.classList.add('success');
+                    retrackBtn.textContent = '✓';
+
+                    console.log('Retrack complete, reloading video...');
+
+                    // Clear caches and reload
+                    this.frameCache.clear();
+                    this.framesArchive = null;
+                    this.masksArchive = {};
+
+                    await this.loadVideoData();
+                    await this.loadFramesArchive();
+                    await this.goToFrame(this.currentFrame);
+
+                    // Reset button after delay
+                    setTimeout(() => {
+                        retrackBtn.classList.remove('success');
+                        retrackBtn.textContent = '⚡';
+                    }, 2000);
+
+                    alert(`Retrack complete!\n${status.result?.annotated_frames || 0} annotations\n${status.result?.predicted_frames || 0} predictions`);
+
+                } else if (status.status === 'error') {
+                    // Error
+                    retrackBtn.disabled = false;
+                    retrackBtn.classList.remove('processing');
+                    retrackBtn.textContent = '⚡';
+                    alert(`Retrack error: ${status.error}`);
+
+                } else {
+                    // Still processing - poll again
+                    retrackBtn.textContent = `${status.progress || 0}%`;
+                    setTimeout(pollStatus, 1000);
+                }
+            };
+
+            // Start polling
+            pollStatus();
+
+        } catch (error) {
+            console.error('Retrack error:', error);
+            alert(`Retrack failed: ${error.message}`);
+            retrackBtn.disabled = false;
+            retrackBtn.classList.remove('processing');
+            retrackBtn.textContent = '⚡';
         }
     }
 
