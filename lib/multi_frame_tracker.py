@@ -18,15 +18,9 @@ import os
 import cv2
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 from datetime import datetime
-import logging
 import json
-import traceback
-import time
-from dotenv import load_dotenv
 from typing import Dict, List, Tuple, Optional, Any, Union
-from collections import defaultdict, deque
 
 # Import the optical flow processor from the current implementation
 try:
@@ -77,7 +71,7 @@ class SharedParams:
     def __init__(self, params_file=None):
         """
         Initialize shared parameters with default values or from a file.
-        
+
         Args:
             params_file: Optional path to a JSON file with parameter values
         """
@@ -86,32 +80,20 @@ class SharedParams:
             # Flow algorithm parameters
             'flow_noise_threshold': 3.0,        # Threshold for flow noise filtering
             'flow_quality_threshold': 0.7,      # Quality threshold for optical flow
-            'border_constraint_weight': 0.9,    # Weight for border constraints
-            
+
             # Mask tracking parameters
             'mask_threshold': 0.5,              # Threshold for binary mask conversion
             'contour_min_area': 50,             # Minimum contour area to keep
             'morphology_kernel_size': 5,        # Kernel size for morphological operations
-            
-            # Learning parameters
-            'learning_rate': 0.3,               # Rate at which corrections influence parameters
-            'window_size': 30,                  # Window size for propagating corrections
-            'distance_decay_factor': 1.5,       # Factor controlling how quickly influence decays with distance
-            'iou_improvement_threshold': 0.2,   # Threshold for considering a correction significant
         }
-        
-        # Performance history for adapting parameters
-        self.performance_history = []
-        
+
         # Version tracking
         self.version = 1
         self.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # Load parameters from file if provided
         if params_file and os.path.exists(params_file):
             self.load_from_file(params_file)
-       
-        # SharedParams v{self.version} initialized
     
     def load_from_file(self, params_file):
         """Load parameters from a JSON file"""
@@ -143,24 +125,18 @@ class SharedParams:
             old_version = self.version
             self.version += 1
             self.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
+
             # Prepare data
             data = {
                 'tracking_params': self.tracking_params,
                 'version': self.version,
-                'last_updated': self.last_updated,
-                'performance_history': self.performance_history[-5:]  # Keep last 5 for reference
+                'last_updated': self.last_updated
             }
-            
+
             # Save to file
             with open(params_file, 'w') as f:
                 json.dump(data, f, indent=4)
-                
-            # print(f"✅ PARAMETERS UPDATED: v{old_version} → v{self.version}")
-            # print(f"   Window size: {self.tracking_params['window_size']}")
-            # print(f"   Flow quality: {self.tracking_params['flow_quality_threshold']:.3f}")
-            # print(f"   Learning rate: {self.tracking_params['learning_rate']:.3f}")
-            # print(f"   Saved to: {params_file}")
+
             return True
         except Exception as e:
             # print(f"Error saving parameters: {str(e)}")
@@ -177,52 +153,19 @@ class MultiFrameTracker:
     
     def __init__(self, flow_processor: OpticalFlowProcessor, output_dir: str, debug_mode: bool = False):
         """Initialize the multi-frame optical flow tracker with configuration."""
-        
+
         self.flow_processor = flow_processor
         self.output_dir = output_dir
         self.debug_mode = debug_mode
-        
+
         # Initialize shared parameters
         params_file = os.path.join(output_dir, 'shared_params.json')
         self.shared_params = SharedParams(params_file)
-        
-        # Tracking configuration
-        self.tracking_strategy_weight = 0.7
-        self.expert_feedback_weight = 0.3
-        self.disable_annotation_copying = False
-        self.bidirectional_tracking = True
-        self.force_tracking = False
-        self.min_tracking_frames = 5
-        self.force_annotation_propagation = True
-        
-        # Feedback and learning modes
-        self.feedback_loop_mode = True
-        self.learning_mode = True
-        
-        # State variables for multi-frame tracking
-        self.frame_idx = 0
-        self.tracks = {}  # Dictionary to store track information
-        self.track_id_counter = 0
-        self.frame_history = deque(maxlen=10)  # Store recent frames for temporal consistency
-        
-        # Performance tracking
-        self.start_time = None
-        self.processed_frames = 0
-        self.max_processing_time = 300  # 5 minutes default
-        self.max_frames_to_process = 200  # Maximum frames to process
-        
+
         # Output directories
         os.makedirs(output_dir, exist_ok=True)
         self.debug_dir = os.path.join(output_dir, 'debug')
         os.makedirs(self.debug_dir, exist_ok=True)
-        
-        # Debug: {'on' if self.debug_mode else 'off'}, Feedback: {'on' if self.feedback_loop_mode else 'off'}, Learning: {'on' if self.learning_mode else 'off'}
-    
-    def __del__(self):
-        """Cleanup file handlers on deletion."""
-        if hasattr(self, 'file_handler') and self.file_handler:
-            self.file_handler.close()
-            self.logger.removeHandler(self.file_handler)
 
     def process_annotations(self, annotations_df, video_path, study_uid, series_uid):
         """
@@ -246,8 +189,7 @@ class MultiFrameTracker:
             total_frames, frame_width, frame_height, fps = get_video_properties(video_path)
             # print(f"Video properties: {total_frames} frames, {frame_width}x{frame_height}, {fps} fps")
         except Exception as e:
-            self.logger.error(f"Failed to get video properties: {video_path} - {str(e)}")
-            # print(f"ERROR: Failed to get video properties: {video_path}")
+            # print(f"ERROR: Failed to get video properties: {video_path} - {str(e)}")
             return {}
 
         # Store self.cap as None initially - will be created as needed
@@ -259,9 +201,9 @@ class MultiFrameTracker:
         
         # Classify annotations as 'fluid' or 'clear' (based on md.ai labels)
         annotations = self._classify_annotations(annotations_df, frame_height, frame_width)
-        
+
         if not annotations:
-            self.logger.warning("No valid annotations found")
+            # print("WARNING: No valid annotations found")
             return {}
         
         # Sort annotations by frame number
@@ -282,50 +224,79 @@ class MultiFrameTracker:
                     'is_annotation': True,
                     'annotation_id': annotation.get('id', f'fluid_{annotation["frame"]}'),
                     'track_id': f"annotation_{annotation['frame']}",
-                    'label_id': annotation.get('labelId', 'original_fluid')
+                    'label_id': annotation.get('labelId', os.getenv('LABEL_ID', ''))
+                }
+            elif annotation['type'] == 'empty':
+                all_masks[annotation['frame']] = {
+                    'mask': annotation['mask'],
+                    'type': 'empty',
+                    'is_annotation': True,
+                    'annotation_id': annotation.get('id', f'empty_{annotation["frame"]}'),
+                    'track_id': f"annotation_{annotation['frame']}",
+                    'label_id': annotation.get('labelId', os.getenv('EMPTY_ID', ''))
                 }
 
         # Process segments BETWEEN consecutive annotations
-        fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
+        # Include both fluid and empty annotations for processing
+        all_annotations = [a for a in annotations if a['type'] in ['fluid', 'empty']]
 
-        for i in range(len(fluid_annotations)):
-            current = fluid_annotations[i]
+        for i in range(len(all_annotations)):
+            current = all_annotations[i]
 
             # Process segment from start of video to first annotation
+            # Track backward from annotation frame to start
             if i == 0 and current['frame'] > 0:
-                self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
+                # Only process if the first annotation is fluid (has content to track)
+                if current['type'] == 'fluid':
+                    # Track backward from annotation frame to frame 0
+                    # Include annotation frame in range for proper backward tracking reference
+                    # The annotation frame itself won't be overwritten due to the is_annotation check
+                    if current['frame'] > 0:
+                        self._process_segment(0, current['frame'], None, current['mask'], all_masks, clear_frames, video_path)
+                # If first annotation is empty, no tracking needed (no fluid to propagate)
 
             # Process segment between consecutive annotations
-            if i < len(fluid_annotations) - 1:
-                next_ann = fluid_annotations[i + 1]
+            if i < len(all_annotations) - 1:
+                next_ann = all_annotations[i + 1]
                 if next_ann['frame'] - current['frame'] > 1:
-                    # Segment {current['frame']} → {next_ann['frame']}
-                    self._process_segment(current['frame'], next_ann['frame'],
-                                        current['mask'], next_ann['mask'],
-                                        all_masks, clear_frames, video_path)
+                    # Determine tracking strategy based on annotation types
+                    tracking_strategy = self._determine_tracking_strategy(current, next_ann)
+                    
+                    if tracking_strategy == 'forward_only':
+                        # EMPTY_ID → LABEL_ID: only track forward from LABEL_ID (the fluid annotation)
+                        if current['type'] == 'empty' and next_ann['type'] == 'fluid':
+                            # Track forward from the fluid annotation only
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                None, next_ann['mask'], all_masks, clear_frames, video_path)
+                        else:
+                            # Track forward from current annotation
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
+                    elif tracking_strategy == 'backward_only':
+                        # LABEL_ID → EMPTY_ID: only track backward from LABEL_ID (the fluid annotation)
+                        if current['type'] == 'fluid' and next_ann['type'] == 'empty':
+                            # Track backward from the fluid annotation only
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                current['mask'], None, all_masks, clear_frames, video_path)
+                        else:
+                            # Track backward from next annotation
+                            self._process_segment(current['frame'], next_ann['frame'],
+                                                current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
+                    else:
+                        # Default bidirectional or other strategies
+                        self._process_segment(current['frame'], next_ann['frame'],
+                                            current['mask'], next_ann['mask'], all_masks, clear_frames, video_path)
 
             # Process segment from last annotation to end of video
-            if i == len(fluid_annotations) - 1 and current['frame'] < total_frames - 1:
-                self._process_segment(current['frame'], total_frames - 1,
-                                    current['mask'], None, all_masks, clear_frames, video_path)
-        
-        # Process clear frames
-        for clear_frame in clear_frames:
-            if clear_frame not in all_masks:
-                # Find the nearest fluid annotation to propagate from
-                nearest_fluid = self._find_nearest_fluid_annotation(clear_frame, annotations)
-                if nearest_fluid:
-                    propagated_mask = self._propagate_clear_frame(
-                        clear_frame, 
-                        nearest_fluid['frame'], 
-                        nearest_fluid['mask']
-                    )
-                    all_masks[clear_frame] = {
-                        'mask': propagated_mask,
-                        'type': 'clear',
-                        'is_annotation': False,
-                        'propagated_from': nearest_fluid['frame']
-                    }
+            # Exclude the annotation frame itself (it's already stored)
+            if i == len(all_annotations) - 1 and current['frame'] < total_frames - 1:
+                # Only process if the last annotation is fluid (has content to track)
+                if current['type'] == 'fluid':
+                    # Process from after the annotation frame to end
+                    if current['frame'] + 1 < total_frames:
+                        self._process_segment(current['frame'] + 1, total_frames - 1,
+                                            current['mask'], None, all_masks, clear_frames, video_path)
+                # If last annotation is empty, no tracking needed (no fluid to propagate)
         
         # Save results
         self._save_results(all_masks, video_path, study_uid, series_uid)
@@ -335,38 +306,88 @@ class MultiFrameTracker:
         return all_masks
     
     def _classify_annotations(self, annotations_df, frame_height, frame_width):
-        """Classify annotations as fluid or clear based on label IDs."""
+        """
+        Classify annotations as fluid or verified empty based on labelId.
+        
+        Convention:
+        - Verified empty frames: labelId == EMPTY_ID (human-verified, confirmed no fluid)
+          - Should have data: null, but labelId is the authoritative indicator
+        - Fluid frames: labelId == LABEL_ID with data.foreground containing polygon coordinates
+        - Frames with no annotation: unreviewed (not verified empty, not verified fluid) - ignored
+        """
         annotations = []
         
+        # Get label IDs from environment
+        label_id_fluid = os.getenv('LABEL_ID', '')
+        empty_id = os.getenv('EMPTY_ID', '')
         
         for _, row in annotations_df.iterrows():
             frame_num = int(row['frameNumber'])
             label_id = row.get('labelId', '')
+            data = row.get('data', None)
             
-            # Check if this is the expected free fluid label
-            if label_id == os.getenv('LABEL_ID', ''):
-                # Look for annotation data in the 'data' column
-                if 'data' not in row or row['data'] is None:
+            # Check if this is an EMPTY_ID annotation (verified empty frame)
+            # MD.ai uses labelId == EMPTY_ID to indicate verified empty/"No Fluid" frames
+            # Verified empty frames should have data: null or data: {"foreground": []} (no polygon data)
+            # Note: Some existing data may incorrectly have polygon data with EMPTY_ID, but we treat labelId as authoritative
+            if label_id == empty_id:
+                # Create empty mask for verified empty frames (regardless of data field content)
+                empty_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
+                
+                annotations.append({
+                    'frame': frame_num,
+                    'mask': empty_mask,
+                    'type': 'empty',
+                    'id': row.get('id', f'empty_{frame_num}'),
+                    'labelId': empty_id  # Always use EMPTY_ID for consistency
+                })
+                continue
+            
+            # Process fluid annotations (must have valid polygon data)
+            if label_id == label_id_fluid and isinstance(data, dict) and 'foreground' in data:
+                polygons = data['foreground']
+                
+                # Skip if foreground is empty (shouldn't happen for LABEL_ID, but handle gracefully)
+                if len(polygons) == 0:
                     continue
                 
-                data_dict = row['data']
+                # Convert polygon data to mask
+                mask = self._polygons_to_mask(polygons, frame_height, frame_width)
                 
-                # Extract polygon data from the data dictionary
-                if isinstance(data_dict, dict) and 'foreground' in data_dict:
-                    polygons = data_dict['foreground']
-                    
-                    if len(polygons) > 0:
-                        # Convert polygon data to mask
-                        mask = self._polygons_to_mask(polygons, frame_height, frame_width)
-                        
-                        annotations.append({
-                            'frame': frame_num,
-                            'mask': mask,
-                            'type': 'fluid',
-                            'id': row.get('id', f'fluid_{frame_num}')
-                        })
+                annotations.append({
+                    'frame': frame_num,
+                    'mask': mask,
+                    'type': 'fluid',
+                    'id': row.get('id', f'fluid_{frame_num}'),
+                    'labelId': label_id
+                })
+            # Note: Frames with no annotation are ignored (unreviewed - not verified empty, not verified fluid)
         
         return annotations
+    
+    def _determine_tracking_strategy(self, current_annotation, next_annotation):
+        """
+        Determine tracking strategy based on annotation types.
+        
+        Special handling for EMPTY_ID:
+        - EMPTY_ID → LABEL_ID: forward_only (track from LABEL_ID)
+        - LABEL_ID → EMPTY_ID: backward_only (track from LABEL_ID)
+        - Other combinations: bidirectional
+        """
+        current_type = current_annotation['type']
+        next_type = next_annotation['type']
+        
+        # Special case: EMPTY_ID → LABEL_ID (forward only from LABEL_ID)
+        if current_type == 'empty' and next_type == 'fluid':
+            return 'forward_only'
+        
+        # Special case: LABEL_ID → EMPTY_ID (backward only from LABEL_ID)
+        elif current_type == 'fluid' and next_type == 'empty':
+            return 'backward_only'
+        
+        # Default: bidirectional for other combinations
+        else:
+            return 'bidirectional'
     
     def _polygons_to_mask(self, polygons, height, width):
         """Convert polygon data to binary mask."""
@@ -380,176 +401,24 @@ class MultiFrameTracker:
         return mask
     
     def _identify_clear_frames(self, annotations, total_frames):
-        """Identify frames that should be marked as clear (no fluid)."""
+        """
+        Identify verified empty frames (from EMPTY_ID annotations only).
+        
+        NOTE: Only identifies frames with EMPTY_ID annotations (verified empty).
+        Does NOT infer empty frames from lack of annotations.
+        Unreviewed frames (no annotation) are NOT verified empty.
+        """
         clear_frames = []
         
-        # Find gaps between fluid annotations that should be clear
-        for i in range(len(annotations) - 1):
-            current_frame = annotations[i]['frame']
-            next_frame = annotations[i + 1]['frame']
-            
-            # If there's a gap and the next annotation is clear, mark intermediate frames
-            if next_frame - current_frame > 1:
-                if annotations[i + 1]['type'] == 'clear':
-                    for frame in range(current_frame + 1, next_frame):
-                        clear_frames.append(frame)
+        # Only use EMPTY_ID annotations to identify verified empty frames
+        # Do NOT infer verified empty from lack of annotations
+        for annotation in annotations:
+            if annotation['type'] == 'empty':
+                # This frame is explicitly verified empty via EMPTY_ID annotation
+                clear_frames.append(annotation['frame'])
         
         return clear_frames
-    
-    def _track_forward(self, start_frame, end_frame, initial_mask):
-        """Track a mask forward from start_frame to end_frame."""
-        masks = {}
-        
-        # print(f"Tracking forward from frame {start_frame} to {end_frame}")
-        
-        # Set video to start frame
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-        current_mask = initial_mask.copy()
-        masks[start_frame] = {
-            'mask': current_mask,
-            'type': 'fluid',
-            'is_annotation': True
-        }
-
-        frames_tracked = 0
-        prev_frame = None
-
-        # Read the initial frame to use as previous frame
-        ret, prev_frame = self.cap.read()
-        if not ret:
-            # print(f"Failed to read initial frame {start_frame}")
-            return masks
-
-        for frame_num in range(start_frame, end_frame + 1):
-            if frame_num == start_frame:
-                # This is the initial frame, just store the mask
-                masks[frame_num] = {
-                    'mask': current_mask,
-                    'type': 'fluid',
-                    'is_annotation': True,
-                    'track_id': f"annotation_{frame_num}",
-                    'label_id': 'original_fluid'
-                }
-                continue
-            
-            ret, curr_frame = self.cap.read()
-            if not ret:
-                print(f"Failed to read frame {frame_num}")
-                break
-
-            # Calculate optical flow from previous to current frame
-            flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
-            current_mask = self._warp_mask_with_flow(current_mask, flow)
-
-            masks[frame_num] = {
-                'mask': current_mask,
-                'type': 'fluid',
-                'is_annotation': False,
-                'track_id': f"track_{frame_num}",
-                'label_id': 'tracked_fluid'
-            }
-            frames_tracked += 1
-
-            # Update prev_frame for next iteration
-            prev_frame = curr_frame
-        
-        # Forward: {frames_tracked} frames
-        return masks
-    
-    def _track_backward(self, start_frame, end_frame, initial_mask):
-        """Track a mask backward from start_frame to end_frame."""
-        masks = {}
-
-        # print(f"Tracking backward from frame {start_frame} to {end_frame}")
-
-        # Ensure we have a video capture open
-        if self.cap is None or not self.cap.isOpened():
-            self.logger.error("Video capture not initialized for backward tracking")
-            return masks
-
-        # Set video to start frame
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        
-        current_mask = initial_mask.copy()
-        masks[start_frame] = {
-            'mask': current_mask,
-            'type': 'fluid',
-            'is_annotation': True
-        }
-        
-        frames_tracked = 0
-        prev_frame = None
-
-        # Read the initial frame
-        ret, prev_frame = self.cap.read()
-        if not ret:
-            # print(f"Failed to read initial frame {start_frame}")
-            return masks
-
-        # Track backward through frames
-        for frame_num in range(start_frame, end_frame - 1, -1):
-            if frame_num < 0:
-                break
-
-            if frame_num == start_frame:
-                # This is the initial frame, just store the mask
-                masks[frame_num] = {
-                    'mask': current_mask,
-                    'type': 'fluid',
-                    'is_annotation': True,
-                    'track_id': f"annotation_{frame_num}",
-                    'label_id': 'original_fluid'
-                }
-                continue
-
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
-            ret, curr_frame = self.cap.read()
-            if not ret:
-                print(f"Failed to read frame {frame_num}")
-                break
-
-            # Calculate optical flow from current frame to previous frame (backward)
-            # Since we're going backward, flow goes from curr_frame to prev_frame
-            flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
-            current_mask = self._warp_mask_with_flow(current_mask, flow)
-
-            masks[frame_num] = {
-                'mask': current_mask,
-                'type': 'fluid',
-                'is_annotation': False,
-                'track_id': f"track_{frame_num}",
-                'label_id': 'tracked_fluid'
-            }
-            frames_tracked += 1
-
-            # Update prev_frame for next iteration
-            prev_frame = curr_frame
-
-        # Backward: {frames_tracked} frames
-        return masks
-    
-    def _get_previous_frame(self):
-        """Get the previous frame for optical flow calculation."""
-        current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-        if current_pos > 0:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos - 1)
-            ret, frame = self.cap.read()
-            if ret:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)  # Reset position
-                return frame
-        return None
-    
-    def _get_next_frame(self):
-        """Get the next frame for optical flow calculation."""
-        current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos + 1)
-        ret, frame = self.cap.read()
-        if ret:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, current_pos)  # Reset position
-            return frame
-        return None
-    
     def _process_segment(self, start_frame, end_frame, start_mask, end_mask, all_masks, clear_frames, video_path):
         """
         Process a segment between two frames using bidirectional tracking with distance weighting.
@@ -563,8 +432,10 @@ class MultiFrameTracker:
             clear_frames: Set of frames marked as clear
             video_path: Path to video file
         """
-        if end_frame - start_frame <= 1:
-            return  # No frames to interpolate
+        if end_frame < start_frame:
+            return  # Invalid range
+        if end_frame == start_frame:
+            return  # No frames to interpolate (only one frame)
 
         # Use context manager to ensure video capture is always released
         with video_capture(video_path) as cap:
@@ -578,7 +449,7 @@ class MultiFrameTracker:
                 # Read start frame
                 ret, prev_frame = cap.read()
                 if ret:
-                    for frame_idx in range(start_frame, min(end_frame + 1, start_frame + 100)):
+                    for frame_idx in range(start_frame, end_frame + 1):
                         if frame_idx == start_frame:
                             # This is the initial frame, just store the mask
                             forward_masks[frame_idx] = current_mask
@@ -604,7 +475,7 @@ class MultiFrameTracker:
                 # Read end frame
                 ret, prev_frame = cap.read()
                 if ret:
-                    for frame_idx in range(end_frame, max(start_frame - 1, end_frame - 100), -1):
+                    for frame_idx in range(end_frame, start_frame - 1, -1):
                         if frame_idx == end_frame:
                             # This is the initial frame, just store the mask
                             backward_masks[frame_idx] = current_mask
@@ -615,8 +486,12 @@ class MultiFrameTracker:
                         if not ret:
                             break
 
-                        # Calculate optical flow (backward)
-                        flow = self.flow_processor.calculate_flow(curr_frame, prev_frame)
+                        # Calculate optical flow: prev_frame (later in time) → curr_frame (earlier in time)
+                        # Since we're tracking backward in time, prev_frame is actually the LATER frame
+                        # and curr_frame is the EARLIER frame
+                        flow = self.flow_processor.calculate_flow(prev_frame, curr_frame)
+                        # _warp_mask_with_flow does backward warping (x - flow), which is correct here
+                        # because we're warping from prev (later) to curr (earlier)
                         current_mask = self._warp_mask_with_flow(current_mask, flow)
                         backward_masks[frame_idx] = current_mask
                         prev_frame = curr_frame
@@ -625,12 +500,19 @@ class MultiFrameTracker:
         for frame_idx in range(start_frame, end_frame + 1):
             if frame_idx in clear_frames:
                 continue  # Skip clear frames
+            
+            # Preserve original annotations - don't overwrite them with tracked masks
+            if frame_idx in all_masks and isinstance(all_masks[frame_idx], dict):
+                if all_masks[frame_idx].get('is_annotation', False):
+                    continue  # Skip annotation frames - preserve original annotation
 
             if frame_idx in forward_masks and frame_idx in backward_masks:
                 # Calculate distance-based weights
+                # Forward tracking: most accurate near start_frame, degrades toward end_frame
+                # Backward tracking: most accurate near end_frame, degrades toward start_frame
                 total_dist = end_frame - start_frame
-                forward_weight = (end_frame - frame_idx) / total_dist
-                backward_weight = (frame_idx - start_frame) / total_dist
+                forward_weight = (end_frame - frame_idx) / total_dist   # HIGH near start, LOW near end
+                backward_weight = (frame_idx - start_frame) / total_dist # LOW near start, HIGH near end
 
                 # Combine masks with weights
                 combined_mask = self._combine_masks_weighted(
@@ -645,7 +527,7 @@ class MultiFrameTracker:
                     'forward_weight': forward_weight,
                     'backward_weight': backward_weight,
                     'track_id': f"track_{frame_idx}",
-                    'label_id': 'tracked_fluid'
+                    'label_id': os.getenv('LABEL_ID', '')
                 }
             elif frame_idx in forward_masks:
                 all_masks[frame_idx] = {
@@ -653,7 +535,7 @@ class MultiFrameTracker:
                     'type': 'fluid_forward',
                     'is_annotation': False,
                     'track_id': f"track_{frame_idx}",
-                    'label_id': 'tracked_fluid'
+                    'label_id': os.getenv('LABEL_ID', '')
                 }
             elif frame_idx in backward_masks:
                 all_masks[frame_idx] = {
@@ -661,7 +543,7 @@ class MultiFrameTracker:
                     'type': 'fluid_backward',
                     'is_annotation': False,
                     'track_id': f"track_{frame_idx}",
-                    'label_id': 'tracked_fluid'
+                    'label_id': os.getenv('LABEL_ID', '')
                 }
 
     def _combine_masks_weighted(self, mask1, mask2, weight1, weight2):
@@ -698,26 +580,26 @@ class MultiFrameTracker:
         return combined
 
     def _warp_mask_with_flow(self, mask, flow):
-        """Warp a mask using optical flow."""
-        # Create coordinate grids
+        """Warp a mask using optical flow (backward warping with remap)."""
         h, w = mask.shape
+
+        # Create coordinate grid
         y, x = np.mgrid[0:h, 0:w].astype(np.float32)
-        
-        # Apply flow to coordinates
-        new_x = x + flow[:, :, 0]
-        new_y = y + flow[:, :, 1]
-        
-        # Create remap coordinates
-        map_x = new_x.astype(np.float32)
-        map_y = new_y.astype(np.float32)
-        
-        # Warp the mask
-        warped_mask = cv2.remap(mask, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-        
+
+        # For backward warping: find where each destination pixel came from
+        # Flow tells us where pixels GO, so we subtract to find where they CAME FROM
+        map_x = (x - flow[:, :, 0]).astype(np.float32)
+        map_y = (y - flow[:, :, 1]).astype(np.float32)
+
+        # Remap with linear interpolation to avoid holes
+        warped_mask = cv2.remap(mask, map_x, map_y, cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
         return warped_mask
     
     def _find_nearest_fluid_annotation(self, target_frame, annotations):
         """Find the nearest fluid annotation to a target frame."""
+        # Only consider fluid annotations, not empty ones
         fluid_annotations = [a for a in annotations if a['type'] == 'fluid']
         if not fluid_annotations:
             return None
@@ -734,23 +616,12 @@ class MultiFrameTracker:
     def _save_results(self, all_masks, video_path, study_uid, series_uid):
         """Save the tracking results with individual frame masks and comprehensive data."""
         try:
-            # Create masks directory for individual frame outputs
-            masks_dir = os.path.join(self.output_dir, "masks")
-            os.makedirs(masks_dir, exist_ok=True)
-            
-            # Save individual frame masks
-            for frame_num, mask_info in all_masks.items():
-                if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
-                    mask = mask_info['mask']
-                    mask_file = os.path.join(masks_dir, f"frame_{frame_num:06d}_mask.png")
-                    cv2.imwrite(mask_file, mask)
-            
             # Save enhanced mask data with track_id and label_id
-            mask_data_path = os.path.join(self.output_dir, "mask_data.json")
-            mask_summary = {}
+            frametype_path = os.path.join(self.output_dir, "frametype.json")
+            frametype_summary = {}
             for frame_num, mask_info in all_masks.items():
                 if isinstance(mask_info, dict):
-                    mask_summary[str(frame_num)] = {
+                    frametype_summary[str(frame_num)] = {
                         'type': mask_info.get('type', 'unknown'),
                         'is_annotation': mask_info.get('is_annotation', False),
                         'has_mask': mask_info.get('mask') is not None,
@@ -758,36 +629,64 @@ class MultiFrameTracker:
                         'label_id': mask_info.get('label_id', 'unknown')
                     }
 
-            with open(mask_data_path, 'w') as f:
-                json.dump(mask_summary, f, indent=2)
+            with open(frametype_path, 'w') as f:
+                json.dump(frametype_summary, f, indent=2)
             
-            # Create tracked_annotations.json with all tracked annotations
-            tracked_annotations = []
+            # Create masks.json with all tracked annotations
+            masks_annotations = []
+            empty_id = os.getenv('EMPTY_ID', '')
+            label_id_fluid = os.getenv('LABEL_ID', '')
+            
             for frame_num, mask_info in all_masks.items():
-                if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
+                if isinstance(mask_info, dict):
+                    # Include both frames with masks and empty frames (empty masks are valid)
+                    label_id = mask_info.get('label_id', label_id_fluid)
+                    annotation_type = mask_info.get('type', 'tracked')
+                    
                     # Create annotation in MD.ai format
                     annotation = {
                         'id': mask_info.get('track_id', f"track_{frame_num}"),
-                        'labelId': mask_info.get('label_id', 'tracked_fluid'),
+                        'labelId': label_id,
                         'StudyInstanceUID': study_uid,
                         'SeriesInstanceUID': series_uid,
                         'frameNumber': frame_num,
-                        'type': mask_info.get('type', 'tracked'),
+                        'type': annotation_type,
                         'is_annotation': mask_info.get('is_annotation', False),
                         'track_id': mask_info.get('track_id', f"track_{frame_num}"),
-                        'label_id': mask_info.get('label_id', 'tracked_fluid'),
-                        'mask_file': f"frame_{frame_num:06d}_mask.png"
+                        'label_id': label_id,
+                        'mask_file': f"frame_{frame_num:06d}_mask.webp"
                     }
-                    tracked_annotations.append(annotation)
+                    
+                    # Add data field in MD.ai format
+                    # Verified empty frames: data: null (MD.ai convention for verified empty/"No Fluid" frames)
+                    # Fluid frames: omit data field (we have masks, not polygons)
+                    if label_id == empty_id or annotation_type == 'empty':
+                        annotation['data'] = None  # MD.ai format for verified empty frames
+                    
+                    masks_annotations.append(annotation)
             
-            # Save tracked annotations
-            tracked_file = os.path.join(self.output_dir, "tracked_annotations.json")
-            with open(tracked_file, 'w') as f:
-                json.dump(tracked_annotations, f, indent=2)
+            # Save masks annotations
+            masks_file = os.path.join(self.output_dir, "masks.json")
+            with open(masks_file, 'w') as f:
+                json.dump(masks_annotations, f, indent=2)
             
         except Exception as e:
             pass  # Silent failure for background task
+        
+        # Save masks as webp files
+        masks_dir = os.path.join(self.output_dir, "masks")
+        os.makedirs(masks_dir, exist_ok=True)
+        
+        for frame_num, mask_info in all_masks.items():
+            if isinstance(mask_info, dict) and mask_info.get('mask') is not None:
+                mask = mask_info['mask']
+                mask_path = os.path.join(masks_dir, f"frame_{frame_num:06d}_mask.webp")
+                cv2.imwrite(mask_path, mask, [cv2.IMWRITE_WEBP_QUALITY, 99])
 
+        # Create frames directory and extract frames as webp
+        frames_dir = os.path.join(self.output_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
+        
         # Create output video with overlayed masks
         output_video_path = os.path.join(self.output_dir, "tracked_video.mp4")
 
@@ -803,18 +702,36 @@ class MultiFrameTracker:
             try:
                 frame_num = 0
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                prev_frame_hash = None
 
-                # Skip video writing for very long videos to prevent hanging
-                # Only write first 1000 frames for long videos
-                max_frames = min(total_frames, 1000)
+                # Extract ALL frames from video sequentially
+                # IMPORTANT: Extract every frame in order, even if duplicates exist.
+                # MD.ai's frameNumber corresponds to sequential position in the video file,
+                # not unique frames. So frameNumber: 2 means the 3rd frame (0-based index 2)
+                # in the video file, even if it's identical to frame 1.
+                # We must match MD.ai's frame numbering exactly.
+                while frame_num < total_frames:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
 
-                # Add progress bar for video writing
-                with tqdm(total=max_frames, desc="Writing video", leave=False, position=1) as pbar:
-                    while frame_num < max_frames:
-                        ret, frame = cap.read()
-                        if not ret:
-                            break
+                    # Verify we're actually advancing through frames
+                    actual_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    if actual_pos <= frame_num:
+                        # OpenCV didn't advance - this shouldn't happen with sequential reads
+                        # but if it does, we need to break to avoid infinite loop
+                        break
 
+                    # Save frame as webp (smaller than jpg/png)
+                    # Note: Duplicate frames are expected and preserved to match MD.ai frame numbering
+                    frame_file = os.path.join(frames_dir, f"frame_{frame_num:06d}.webp")
+                    cv2.imwrite(frame_file, frame, [cv2.IMWRITE_WEBP_QUALITY, 85])
+
+                    # Only write to output video if frame has mask (for visualization)
+                    # Skip video writing for very long videos to prevent hanging
+                    # Only write first 1000 frames for long videos
+                    max_video_frames = min(total_frames, 1000)
+                    if frame_num < max_video_frames:
                         if frame_num in all_masks:
                             mask_info = all_masks[frame_num]
                             mask = mask_info['mask']
@@ -833,11 +750,22 @@ class MultiFrameTracker:
                             frame = cv2.addWeighted(frame, 1-alpha, overlay, alpha, 0)
 
                         out.write(frame)
-                        frame_num += 1
-                        pbar.update(1)
+                    
+                    frame_num += 1
             finally:
                 # Ensure video writer is always released
                 out.release()
+        
+        # Create tar.gz archive of frames
+        import tarfile
+        frames_archive = os.path.join(self.output_dir, "frames.tar.gz")
+        with tarfile.open(frames_archive, 'w:gz') as tar:
+            tar.add(frames_dir, arcname='frames')
+        
+        # Create tar.gz archive of masks
+        masks_archive = os.path.join(self.output_dir, "masks.tar.gz")
+        with tarfile.open(masks_archive, 'w:gz') as tar:
+            tar.add(masks_dir, arcname='masks')
         
         if os.getenv('DEBUG', 'False').lower() in ('true', '1', 'yes'):
             pass  # print(f"Results saved to: {output_video_path}")

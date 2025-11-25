@@ -6,3 +6,8 @@ tracked_*/
 optical_flow/
 output/
 __pycache__/
+__init__.py
+
+output_*.zip
+annotations.duckdb
+annotations/
