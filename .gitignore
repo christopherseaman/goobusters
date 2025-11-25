@@ -6,3 +6,5 @@ tracked_*/
 optical_flow/
 output/
 __pycache__/
+annotations/
+output_*.zip
