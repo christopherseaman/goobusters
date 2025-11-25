@@ -3,15 +3,19 @@
 ## Current State Analysis
 
 **What exists:**
-- [app.py](app.py) - Flask server that saves modified annotations to JSON + PNG files
+- [app.py](app.py) - Flask server that saves modified annotations to JSON + WebP files
 - `/api/save_changes` - Saves all `label_id` and `empty_id` annotations to:
-  - `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json` (metadata)
-  - `annotations/{method}/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.png` (masks)
+  - `annotations/{study_uid}_{series_uid}/modified_annotations.json` (metadata)
+  - `annotations/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.webp` (masks)
+  - `annotations/{study_uid}_{series_uid}/masks.tar.gz` (archive)
 - [track.py](track.py) - Reads annotations from MD.ai JSON, generates TRACK_ID predictions
+- [lib/multi_frame_tracker.py](lib/multi_frame_tracker.py) - Core tracking logic (`MultiFrameTracker`, `process_video_with_multi_frame_tracking`)
+- [lib/opticalflowprocessor.py](lib/opticalflowprocessor.py) - Optical flow algorithms
 
 **What's missing:**
-- Function to convert local annotations (JSON + PNG) to MD.ai JSON format
-- Re-tracking endpoint/mechanism that uses local annotations only (no MD.ai data needed)
+- Function to convert local annotations (JSON + WebP) to MD.ai JSON format
+- Re-tracking endpoint/mechanism that uses ONLY `label_id` and `empty_id` from `annotations/` (no MD.ai data, no `output/` data)
+- Direct use of `lib/` functions without calling `track.py` (which serves a different purpose)
 - UI button to trigger re-tracking
 
 ## Architecture Design
@@ -23,26 +27,32 @@ Initial Run:
 MD.ai JSON → track.py → output/{method}/{study_uid}_{series_uid}/ → app.py displays
 
 Iteration Loop:
-app.py (user edits) → annotations/{method}/{study_uid}_{series_uid}/
+app.py (user edits) → annotations/{study_uid}_{series_uid}/ (ONLY label_id + empty_id)
                     ↓
               Convert to MD.ai JSON format:
-              1. Read modified_annotations.json
-              2. Load PNG masks from annotations/masks/
-              3. Convert masks to polygons (for fluid) or empty vertices (for empty)
+              1. Read modified_annotations.json (ONLY label_id and empty_id frames)
+              2. Load WebP masks from annotations/masks/
+              3. Convert masks to polygons (for fluid) or null (for empty)
               4. Generate MD.ai-compliant JSON
                     ↓
-              Clear output/{method}/{study_uid}_{series_uid}/ (preserve annotations/)
+              Use lib/ functions directly (NOT track.py):
+              1. Create OpticalFlowProcessor
+              2. Call process_video_with_multi_frame_tracking() with local JSON
+              3. Save tracked masks (TRACK_ID) to annotations/ or output/
                     ↓
-              track.py with local JSON → output/ → app.py displays
+              app.py displays updated results
 ```
+
+**Key Change:** Retrack uses ONLY `label_id` and `empty_id` annotations from `annotations/`, not from `output/`. This ensures retracking is based solely on human-verified annotations.
 
 ### 2. Required Components
 
 **A. New lib module: `lib/local_annotations.py`**
 
-- `convert_local_to_mdai_json(method, study_uid, series_uid)` → MD.ai JSON file path
-  - Reads `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json`
-  - Loads PNG masks from `annotations/{method}/{study_uid}_{series_uid}/masks/`
+- `convert_local_to_mdai_json(study_uid, series_uid)` → MD.ai JSON file path
+  - Reads `annotations/{study_uid}_{series_uid}/modified_annotations.json`
+  - **ONLY processes frames with `label_id` or `empty_id`** (human-verified annotations)
+  - Loads WebP masks from `annotations/{study_uid}_{series_uid}/masks/`
   - For `label_id` frames: Convert mask to polygons using `cv2.findContours()`
   - For `empty_id` frames: Use `"data": null` (MD.ai format for empty/"No Fluid" frames)
   - Generates MD.ai-compliant JSON with format:
@@ -51,16 +61,15 @@ app.py (user edits) → annotations/{method}/{study_uid}_{series_uid}/
       "datasets": [{
         "annotations": [
           {
-            "labelId": "...",
+            "labelId": "...",  // LABEL_ID or EMPTY_ID
             "StudyInstanceUID": "...",
             "SeriesInstanceUID": "...",
-            "SOPInstanceUID": "{series_uid}_{frame_num}",
-            "frameNumber": frame_num + 1,  // 1-based (MD.ai uses 1-based)
+            "frameNumber": frame_num,  // 0-based (MD.ai uses 0-based)
             "data": {
-              "foreground": [[x1, y1, x2, y2, ...]]  // For fluid frames
+              "foreground": [[x1, y1], [x2, y2], ...]  // For fluid frames (polygon vertices)
             },
             // OR for empty frames:
-            "data": null  // MD.ai uses null, not empty array
+            "data": null  // MD.ai uses null for verified empty frames
           }
         ]
       }]
@@ -69,24 +78,45 @@ app.py (user edits) → annotations/{method}/{study_uid}_{series_uid}/
   - Saves to temporary file, returns path
   - **KISS/DRY:** Reuses existing mask→polygon conversion logic from tracking
 
-**B. Modified [track.py](track.py) flow:**
+**B. Direct use of `lib/` functions (NOT `track.py`):**
 
-- Add option to use local JSON file instead of MD.ai data
-- If local JSON provided, skip MD.ai download and use local file
-- No changes needed to [lib/multi_frame_tracker.py](lib/multi_frame_tracker.py) - it already handles MD.ai JSON format
+- `track.py` serves a different purpose (batch processing from MD.ai)
+- Retrack should use `lib/` functions directly:
+  - `lib/opticalflowprocessor.OpticalFlowProcessor` - Create flow processor
+  - `lib/multi_frame_tracker.process_video_with_multi_frame_tracking()` - Main tracking function
+  - No MD.ai client needed, no data directory needed
+  - Input: Local MD.ai JSON (from step A), video path, study/series UIDs
+  - Output: Tracked masks (TRACK_ID) - save to `annotations/` or `output/`
 
 **C. New app.py endpoint: `/api/retrack`**
 ```python
-@app.route('/api/retrack/<method>/<study_uid>/<series_uid>', methods=['POST'])
-def retrack_video(method, study_uid, series_uid):
-    # 1. Convert local annotations to MD.ai JSON format
-    # 2. Clear output/{method}/{study_uid}_{series_uid}/ (preserve annotations/)
-    # 3. Run track.py in subprocess with:
+@app.route('/api/retrack/<study_uid>/<series_uid>', methods=['POST'])
+def retrack_video(study_uid, series_uid):
+    # 1. Convert local annotations (ONLY label_id + empty_id) to MD.ai JSON format
+    # 2. Get video path from output/ or annotations/
+    # 3. Create OpticalFlowProcessor with method from request/env
+    # 4. Call process_video_with_multi_frame_tracking() directly:
     #    - Local JSON file (not MD.ai data)
-    #    - TEST_STUDY_UID, TEST_SERIES_UID, FLOW_METHOD env vars
-    # 4. Return status/progress
-    # 5. On completion, reload video data in frontend
+    #    - Video path
+    #    - Study/series UIDs
+    #    - Output to annotations/ or output/ (TBD)
+    # 5. Return status/progress
+    # 6. On completion, reload video data in frontend
 ```
+
+**D. Future Consideration: Save tracked masks to `annotations/`**
+
+- **Option A (current):** Save tracked masks to `output/{method}/{study_uid}_{series_uid}/`
+  - Pros: Keeps annotations/ clean (only human-verified)
+  - Cons: Requires output/ directory, method-specific paths
+
+- **Option B (future):** Save tracked masks to `annotations/{study_uid}_{series_uid}/`
+  - Pros: All annotations in one place, cleaner structure
+  - Cons: Requires updating `app.py` and `viewer.js` to:
+    - Load `masks.json` from `annotations/` (not just `output/`)
+    - Display TRACK_ID annotations as orange (tracked), not green (human-verified)
+    - Handle mixed annotation types (LABEL_ID=green, EMPTY_ID=empty, TRACK_ID=orange)
+    - Update `masks.json` structure to include `type` field (annotation vs tracked)
 
 **D. UI Changes:**
 - Add "Re-track" button (⚡) to top-right control buttons
@@ -97,56 +127,87 @@ def retrack_video(method, study_uid, series_uid):
 
 **Phase 1: Data Conversion** (lib/local_annotations.py)
 
-- Read `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json`
+- Read `annotations/{study_uid}_{series_uid}/modified_annotations.json`
+- **ONLY process frames with `label_id` or `empty_id`** (human-verified annotations)
 - For each frame with annotation:
-  - Load mask PNG
-  - If `is_empty: true`: Use empty polygon `{'vertices': []}`
+  - Load mask WebP from `annotations/{study_uid}_{series_uid}/masks/`
+  - If `is_empty: true`: Use `"data": null` (MD.ai format for verified empty)
   - If `is_empty: false`: Convert mask to polygons using `cv2.findContours()`
-- Generate MD.ai-compliant JSON
+- Generate MD.ai-compliant JSON (0-based frame numbers)
 - Save to temp file, return path
 
-**Phase 2: Track Integration**
+**Phase 2: Direct lib/ Integration**
 
-- Modify [track.py](track.py) to accept optional local JSON file path
-- If provided, use local JSON instead of MD.ai data
-- No changes needed to [lib/multi_frame_tracker.py](lib/multi_frame_tracker.py) - it already handles MD.ai format
+- **DO NOT modify track.py** - it serves a different purpose (batch processing from MD.ai)
+- Use `lib/` functions directly in `app.py`:
+  - Import `OpticalFlowProcessor` from `lib/opticalflowprocessor`
+  - Import `process_video_with_multi_frame_tracking` from `lib/multi_frame_tracker`
+  - Create flow processor with method from request/env
+  - Call `process_video_with_multi_frame_tracking()` with:
+    - Local MD.ai JSON (from Phase 1)
+    - Video path (from `output/` or `annotations/`)
+    - Study/series UIDs
+    - Output directory (TBD: `annotations/` or `output/`)
+  - No MD.ai client, no data directory needed
 
 **Phase 3: UI/API Layer**
 
-- Add re-track endpoint to app.py
-- Add button to viewer
+- Add `/api/retrack` endpoint to app.py
+- Add re-track button (⚡) to viewer UI
 - Handle async/progress feedback
+- Reload video data after completion
 
 ### 4. Key Considerations
+
+**Annotation Source: ONLY `annotations/`**
+
+- **Retrack uses ONLY `label_id` and `empty_id` from `annotations/`**
+- **DO NOT use `output/` annotations** - those may include TRACK_ID (machine-generated)
+- This ensures retracking is based solely on human-verified annotations
+- Structure: `annotations/{study_uid}_{series_uid}/` (no `{method}` subdirectory)
 
 **Annotation Format Consistency:**
 
 - **Local storage (app.py):**
-  - `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json` - Metadata: `{frame_key: {label_id, is_empty, modified_at}}`
-  - `annotations/{method}/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.png` - PNG masks
-- **MD.ai format (for track.py):**
+  - `annotations/{study_uid}_{series_uid}/modified_annotations.json` - Metadata: `{frame_key: {label_id, is_empty, modified_at}}`
+  - `annotations/{study_uid}_{series_uid}/masks/frame_XXXXXX_mask.webp` - WebP masks
+  - `annotations/{study_uid}_{series_uid}/masks.tar.gz` - Archive
+- **MD.ai format (for lib/ functions):**
   - JSON with `annotations` array
-  - Each annotation: `{labelId, frameNumber, data: {foreground: polygons}, type: 'polygon'}`
-  - Empty frames: `data: {foreground: []}` (empty vertices array)
+  - Each annotation: `{labelId, frameNumber, data: {foreground: polygons}}` or `{labelId, frameNumber, data: null}`
+  - Empty frames: `"data": null` (MD.ai convention for verified empty)
 
-**Solution:** Convert local annotations (JSON + PNG) to MD.ai JSON format before retracking. This allows track.py to work without MD.ai data directory. The conversion happens once per retrack, then track.py processes it normally.
+**Solution:** Convert local annotations (JSON + WebP) to MD.ai JSON format before retracking. This allows `lib/multi_frame_tracker.py` to work without MD.ai data directory. The conversion happens once per retrack, then lib functions process it normally.
 
 **Empty ID Compliance:**
 - Empty frames must use `"data": null` (not `{"foreground": []}`) for MD.ai compatibility
 - Verified in actual MD.ai annotation files: empty/"No Fluid" frames have `"data": null`
 - See TODO.md item 6-8 for validation requirements
+- See `EMPTY_ID_FORMAT.md` for detailed format specification
 
 **Performance:**
 - Re-tracking single video should be fast (seconds to minutes)
-- Run in background subprocess to avoid blocking Flask
+- Run in background thread/subprocess to avoid blocking Flask
 - Return immediately with task ID, poll for status
 
 **Data Integrity:**
 
 - `annotations/` directory is preserved during retrack (never cleared)
-- `output/{method}/{study_uid}_{series_uid}/` is cleared before retrack (except annotations/)
-- Clear distinction: LABEL_ID (human), EMPTY_ID (human), TRACK_ID (machine)
+- `output/{method}/{study_uid}_{series_uid}/` may be cleared before retrack (TBD)
+- Clear distinction: LABEL_ID (human-verified fluid), EMPTY_ID (human-verified empty), TRACK_ID (machine-tracked)
 - Version tracking: `modified_at` timestamps in JSON metadata
+
+**Tracked Masks Storage (Future Consideration):**
+
+- **Current approach:** Save tracked masks to `output/{method}/{study_uid}_{series_uid}/`
+- **Future option:** Save tracked masks to `annotations/{study_uid}_{series_uid}/`
+  - Would require updating `app.py` and `viewer.js` to:
+    - Load `masks.json` from `annotations/` (not just `output/`)
+    - Display TRACK_ID annotations as orange (tracked), not green (human-verified)
+    - Handle mixed annotation types in `masks.json`:
+      - `type: "fluid"` + `is_annotation: true` → green (LABEL_ID, human)
+      - `type: "empty"` + `is_annotation: true` → empty (EMPTY_ID, human)
+      - `type: "fluid_forward"` or `"fluid_backward"` + `is_annotation: false` → orange (TRACK_ID, machine)
 
 ## Questions for User:
 
@@ -163,30 +224,41 @@ def retrack_video(method, study_uid, series_uid):
 ### Phase 1: Data Conversion (lib/local_annotations.py)
 
 - [ ] Create `lib/local_annotations.py` module
-- [ ] Implement `convert_local_to_mdai_json(method, study_uid, series_uid)`:
-  - Load `annotations/{method}/{study_uid}_{series_uid}/modified_annotations.json`
+- [ ] Implement `convert_local_to_mdai_json(study_uid, series_uid)`:
+  - Load `annotations/{study_uid}_{series_uid}/modified_annotations.json`
+  - **ONLY process frames with `label_id` or `empty_id`** (human-verified annotations)
   - For each frame with annotation:
-    - Load mask PNG from `annotations/{method}/{study_uid}_{series_uid}/masks/`
-    - If `is_empty: true`: Use `"data": null` (MD.ai format for empty frames)
+    - Load mask WebP from `annotations/{study_uid}_{series_uid}/masks/`
+    - If `is_empty: true`: Use `"data": null` (MD.ai format for verified empty frames)
     - If `is_empty: false`: Convert mask to polygons using `cv2.findContours()`
-  - Generate MD.ai-compliant JSON structure
+  - Generate MD.ai-compliant JSON structure (0-based frame numbers)
   - Save to temp file, return path
-- [ ] Validate empty_id format matches MD.ai requirements: `"data": null` (verified in actual MD.ai files, TODO.md item 6-8)
+- [ ] Validate empty_id format matches MD.ai requirements: `"data": null` (verified in actual MD.ai files, TODO.md item 6-8, EMPTY_ID_FORMAT.md)
 - [ ] Test conversion with existing modified annotations
 
-### Phase 2: Track Integration
+### Phase 2: Direct lib/ Integration
 
-- [ ] Modify [track.py](track.py) to accept optional local JSON file path
-- [ ] If local JSON provided, skip MD.ai download and use local file
+- [ ] **DO NOT modify track.py** - it serves a different purpose
+- [ ] In `app.py`, import lib functions directly:
+  - `from lib.opticalflowprocessor import OpticalFlowProcessor`
+  - `from lib.multi_frame_tracker import process_video_with_multi_frame_tracking`
+- [ ] Create flow processor with method from request/env
+- [ ] Call `process_video_with_multi_frame_tracking()` with:
+  - Local MD.ai JSON (from Phase 1)
+  - Video path (from `output/` or `annotations/`)
+  - Study/series UIDs
+  - Output directory (TBD: `annotations/` or `output/`)
 - [ ] Test single video re-tracking with local annotations only
 - [ ] Validate output format (masks, video, metadata)
 
 ### Phase 3: UI/API Layer
 
-- [ ] Add `/api/retrack` endpoint to app.py:
-  - Convert local annotations to MD.ai JSON
-  - Clear `output/{method}/{study_uid}_{series_uid}/` (preserve `annotations/`)
-  - Run track.py subprocess with local JSON
+- [ ] Add `/api/retrack/<study_uid>/<series_uid>` endpoint to app.py:
+  - Convert local annotations (ONLY label_id + empty_id) to MD.ai JSON
+  - Get video path from `output/` or `annotations/`
+  - Create OpticalFlowProcessor with method from request/env
+  - Call `process_video_with_multi_frame_tracking()` directly (not track.py)
+  - Save tracked masks to `output/` or `annotations/` (TBD)
   - Return status/progress
 - [ ] Add re-track button (⚡) to viewer UI top-right controls
 - [ ] Implement progress feedback (simple spinner or status polling)
@@ -195,6 +267,15 @@ def retrack_video(method, study_uid, series_uid):
 
 ### Phase 4: Validation
 
-- [ ] Validate empty_id annotations are MD.ai compliant (TODO.md item 6-8)
+- [ ] Validate empty_id annotations are MD.ai compliant (TODO.md item 6-8, EMPTY_ID_FORMAT.md)
 - [ ] Ensure annotations/ directory is never cleared during retrack
 - [ ] Test that retrack works without MD.ai data directory
+- [ ] Verify retrack uses ONLY label_id and empty_id from annotations/ (not output/)
+
+### Phase 5: Future Enhancement (Optional)
+
+- [ ] Consider saving tracked masks to `annotations/` instead of `output/`
+- [ ] Update `app.py` to load `masks.json` from `annotations/` (if exists)
+- [ ] Update `viewer.js` to display TRACK_ID annotations as orange (tracked)
+- [ ] Update `masks.json` structure to include `type` and `is_annotation` fields
+- [ ] Handle mixed annotation types (LABEL_ID=green, EMPTY_ID=empty, TRACK_ID=orange)
