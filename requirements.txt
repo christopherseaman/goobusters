@@ -1,11 +1,18 @@
-ipython==8.26.0
-matplotlib==3.9.1
-mdai==0.14.3
-numpy==2.0.0
-opencv-python==4.10.0.84
-opencv-python-headless==4.10.0.84
-pandas==2.2.2
-pillow==10.4.0
-python-dotenv==1.0.1
-scikit-image==0.24.0
-scipy==1.14.0
+ipython
+matplotlib
+# mdai 0.16.0 with compatibility fix for current pydicom versions
+mdai==0.16.0
+numpy
+# IMPORTANT: Only install opencv-contrib-python, NOT opencv-python
+# Having both causes conflicts and breaks optical flow methods
+opencv-contrib-python  # Latest version with all contrib modules
+pandas
+pillow
+# Use current pydicom with compatibility bridge in lib/optical.py
+pydicom>=3.0.0
+python-dotenv
+scikit-image
+scipy
+torch
+torchvision
+tqdm

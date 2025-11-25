@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "env": {
+        "DEFAULT_MINIMUM_TOKENS": ""
+      },
+      "alwaysAllow": [
+        "get-library-docs"
+      ]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest",
+        "--browser=",
+        "--headless=",
+        "--viewport-size="
+      ]
+    }
+  }
+}

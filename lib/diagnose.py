@@ -3,7 +3,6 @@ import numpy as np
 import os
 from tqdm import tqdm
 
-
 # Usage
 base_dir = os.path.join('optical_flow', 'annotation_1022')
 video_path = os.path.join(base_dir, 'masked_1.2.826.0.1.3680043.8.498.94045070278013858526642639823753659634')
@@ -22,6 +21,8 @@ area_changes = []
 
 def diagnose_tracking(video_path, mask_dir, output_dir):
     prev_mask = None
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     for frame_idx in tqdm(range(total_frames), desc="Analyzing frames"):
         # Read frame
         ret, frame = cap.read()
@@ -79,4 +80,5 @@ def diagnose_tracking(video_path, mask_dir, output_dir):
 
     return iou_scores, area_changes
 
-iou_scores, area_changes = diagnose_tracking(video_path, mask_dir, output_dir)
+if __name__ == "__main__":
+    iou_scores, area_changes = diagnose_tracking(video_path, mask_dir, output_dir)
