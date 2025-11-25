@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Goobusters</title>
+    <link rel="stylesheet" href="/static/css/viewer.css">
+</head>
+<body>
+    <!-- Full-screen canvas for video -->
+    <canvas id="canvas"></canvas>
+    <!-- Overlay canvas for mask (stacked on top) -->
+    <canvas id="overlayCanvas"></canvas>
+
+    <!-- Brush size preview circle -->
+    <div id="brushPreview" class="brush-preview"></div>
+
+    <!-- Floating tool buttons (top-left) -->
+    <div class="tool-buttons top-left" id="toolButtons">
+        <button class="tool-btn warning" id="markEmpty" title="Mark Empty">🚫</button>
+        <button class="tool-btn" id="eraseMode" title="Erase">🧽</button>
+        <button class="tool-btn active" id="drawMode" title="Draw">✏️</button>
+        <div class="slider-spacer"></div>
+        <div class="slider-group-vertical">
+            <div class="slider-indicator-top">●</div>
+            <input type="range" id="brushSizeInline" min="5" max="50" value="15" orient="vertical">
+            <div class="slider-indicator-bottom">●</div>
+        </div>
+    </div>
+
+    <!-- Floating control buttons (top-right) -->
+    <div class="control-buttons top-right" id="controlButtons">
+        <button class="control-btn" id="prevVideo" title="Previous Video">⏪</button>
+        <button class="control-btn" id="nextVideo" title="Next Video">⏩</button>
+        <button class="control-btn" id="infoBtn" title="Info">ℹ️</button>
+        <button class="control-btn" id="navBtn" title="Navigation">🎬</button>
+        <button class="control-btn" id="resetMask" title="Reset">↺</button>
+    </div>
+
+    <!-- Save button (bottom-left) -->
+    <div class="save-button bottom-left">
+        <button class="tool-btn" id="saveChanges" title="Save">💾</button>
+        <div class="frame-counter" id="frameCounter">0 / 0</div>
+    </div>
+
+    <!-- Playback controls (top-center) -->
+    <div class="playback-buttons top-center" id="playbackButtons">
+        <button class="playback-btn" id="prevFrame" title="Previous Frame">⏮</button>
+        <button class="playback-btn" id="playPause" title="Play/Pause">▶️</button>
+        <button class="playback-btn" id="nextFrame" title="Next Frame">⏭</button>
+        <button class="playback-btn" id="toggleMask" title="Toggle Mask">🥸</button>
+    </div>
+
+    <!-- Frame slider (bottom) -->
+    <div class="slider-container" id="sliderContainer">
+        <div class="slider-wrapper">
+            <span class="slider-label" id="sliderMin">0</span>
+            <input type="range" id="frameSlider" min="0" max="100" value="0">
+            <span class="slider-label" id="sliderMax">0</span>
+        </div>
+    </div>
+
+    <!-- Info Modal -->
+    <div class="modal" id="infoModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeInfo">✕</button>
+            <h2>Video Info</h2>
+            <div class="info-section">
+                <p><strong>Method:</strong> <span id="infoMethod">{{ selected_video.method }}</span></p>
+                <p><strong>Exam:</strong> <span id="infoExam">{{ selected_video.exam_number }}</span></p>
+                <p><strong>Study:</strong> <span id="infoStudy" class="monospace">{{ selected_video.study_uid }}</span></p>
+                <p><strong>Series:</strong> <span id="infoSeries" class="monospace">{{ selected_video.series_uid }}</span></p>
+            </div>
+
+            <h3>Current Frame</h3>
+            <div class="info-section">
+                <p><strong>Frame:</strong> <span id="frameInfo">0 / 0</span></p>
+                <p><strong>Type:</strong> <span id="frameType">-</span></p>
+                <p><strong>Label:</strong> <span id="frameLabelId" class="monospace">-</span></p>
+                <p><strong>Modified:</strong> <span id="frameModified">No</span></p>
+            </div>
+
+            <h3>Labels</h3>
+            <div class="info-section">
+                {% for label in selected_video.labels %}
+                <div class="label-item">
+                    <span class="label-badge label-id">{{ label.labelId }}</span>
+                    <span>{{ label.labelName }}</span>
+                </div>
+                {% endfor %}
+            </div>
+
+            <h3>Color Guide</h3>
+            <div class="info-section">
+                <div class="label-item">
+                    <span class="color-box" style="background: rgba(0, 255, 0, 0.5);"></span>
+                    <span>Human annotation (LABEL_ID)</span>
+                </div>
+                <div class="label-item">
+                    <span class="color-box" style="background: rgba(255, 165, 0, 0.5);"></span>
+                    <span>Tracking prediction (TRACK_ID)</span>
+                </div>
+            </div>
+
+            <h3>Keyboard Shortcuts</h3>
+            <div class="info-section">
+                <div class="shortcuts">
+                    <div><kbd>Space</kbd> Play/Pause</div>
+                    <div><kbd>←</kbd> <kbd>→</kbd> Navigate frames</div>
+                    <div><kbd>D</kbd> Draw mode</div>
+                    <div><kbd>E</kbd> Erase mode</div>
+                    <div><kbd>⌘S</kbd> Save changes</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Navigation Modal -->
+    <div class="modal" id="navModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeNav">✕</button>
+            <h2>Navigation</h2>
+
+            <div class="nav-section">
+                <h3>Select Video</h3>
+                <select id="videoSelect" class="video-select">
+                    {% for video in videos %}
+                    <option value="{{ video.method }}|{{ video.study_uid }}|{{ video.series_uid }}"
+                            {% if video == selected_video %}selected{% endif %}>
+                        {{ video.method }} - Exam {{ video.exam_number }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="nav-section">
+                <h3>Mask Settings</h3>
+                <div class="slider-group">
+                    <label>Opacity: <span id="maskOpacityValue">30</span>%</label>
+                    <input type="range" id="maskOpacity" min="0" max="100" value="30">
+                </div>
+                <div class="slider-group">
+                    <label>Brush Size: <span id="brushSizeValue">15</span>px</label>
+                    <input type="range" id="brushSize" min="5" max="50" value="15">
+                </div>
+            </div>
+
+            <div class="nav-section">
+                <h3>Keyboard Shortcuts</h3>
+                <div class="shortcuts">
+                    <div><kbd>Space</kbd> Play/Pause</div>
+                    <div><kbd>←</kbd> <kbd>→</kbd> Navigate frames</div>
+                    <div><kbd>D</kbd> Draw mode</div>
+                    <div><kbd>E</kbd> Erase mode</div>
+                    <div><kbd>⌘S</kbd> Save changes</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.min.js"></script>
+    <script>
+        const INITIAL_VIDEO = {
+            method: '{{ selected_video.method }}',
+            studyUid: '{{ selected_video.study_uid }}',
+            seriesUid: '{{ selected_video.series_uid }}'
+        };
+    </script>
+    <script src="/static/js/viewer.js"></script>
+</body>
+</html>
