@@ -14,6 +14,18 @@ Split the monolithic annotation editor into a client-server architecture:
 4. **Efficient data transfer**: Only transmit masks (WebP format in .tgz archives)
 5. **Secure communication**: HTTPS via Caddy reverse proxy (not optional)
 
+## Implementation Roadmap
+
+| Phase | Focus | Key Deliverables | Validation (real runs only) |
+| --- | --- | --- | --- |
+| 0. Baseline & Config Sync | Confirm shared `dot.env`, MD.ai credentials, disk layout | Fresh `dot.env` copies (`dot.env.server`, `dot.env.client`), documented secrets loading, hydrated `data/` cache | `uv run python3 track.py --help` (ensures deps), MD.ai SDK smoke test downloading single study |
+| 1. Server Core | Flask API skeleton, storage scaffolding, lazy tracking trigger | `/api/status`, `/api/series`, `/api/masks` (GET) read-only paths wired to filesystem, background worker stub | Local request flow using real dataset metadata, manual `uv run python3 track.py --study ...` executed by worker |
+| 2. Client Foundation | iPad Python backend + WebView hooking, MD.ai download loop | `client/client.py` serving viewer assets, MD.ai SDK-based downloader, frame extractor feeding WebView | Run client on desktop simulator with MD.ai token, verify frames rendered with placeholder masks fetched from server |
+| 3. Collaboration & Retrack | Versioning, conflict handling, retrack queue, activity pings | Version files, `/api/masks` POST path, `/api/retrack/status`, keep-alive endpoint, queue workers (>= `RETRACK_WORKERS`) | Multi-user test: two real clients editing same series, observe 409 conflict + retrack completion with true masks |
+| 4. Hardening & Ops | HTTPS, observability, disaster recovery, completion UX | Caddy config, structured logging, backup scripts, completion state flows, alerting on worker failure | End-to-end test on staging: full annotation loop incl. mark-complete, TLS validation via `curl https://.../api/status` |
+
+**Exit criteria per phase**: No phase is “done” until commands listed in Validation are executed against the real pipeline—no mocks, no synthetic payloads.
+
 ## Components
 
 ### Server Component
@@ -39,6 +51,18 @@ Split the monolithic annotation editor into a client-server architecture:
 - Filesystem-based storage (JSON files for metadata, NO SQLite)
 - Existing tracking pipeline (`MultiFrameTracker`, `OpticalFlowProcessor`)
 - Caddy for HTTPS reverse proxy with Let's Encrypt
+
+#### Server Work Packages
+
+| ID | Task | Description | Dependencies | Validation |
+| --- | --- | --- | --- | --- |
+| S1 | Storage bootstrap | Implement `server/storage/series_manager.py` to materialize `server_state/` tree, migrate legacy `output/` layout | Access to MD.ai metadata json, filesystem permissions | Run `python server/storage/series_manager.py --init` then `ls server_state/series | wc -l` to ensure entries created |
+| S2 | Auth middleware | Build token validator hitting MD.ai `/me` endpoint once per token + cache result for 15 min | MD.ai SDK, shared `dot.env` secrets | `curl -H "Authorization: Bearer $MDAI_TOKEN" /api/auth/validate` returns real MD.ai profile json |
+| S3 | Series navigation API | Wire `/api/series`, `/api/series/next`, `/api/series/{...}` to storage, include activity metadata | S1, S2 | Manual GETs via `httpie` showing real series data from dataset snapshot |
+| S4 | Mask serving | Package current `output/dis/{series}` into .tgz via `tarfile`, stream with headers, fall back to pending/failure payloads | S1, tracking outputs | Download `.tgz`, untar, diff vs `output/` mask files byte-for-byte |
+| S5 | Mask submission + retrack queue | Accept uploads, enforce version checks, enqueue retrack jobs, expose `/api/retrack/status` | S1-S4, queue implementation | Submit actual edited mask archive, observe new `version_temp.json`, retrack worker promoting `masks_temp` after running `track.py` |
+| S6 | Activity & completion | Keep-alive handler, `complete` / `reopen` endpoints, smart-selection heuristics (`RECENT_VIEW_THRESHOLD_MINUTES`) | S3, S5 | Simulate two clients pinging every 30s, assert oldest inactive series served via `/api/series/next` |
+| S7 | Observability & TLS | Structured JSON logs, health/status endpoints, Caddy config with HTTPS + MD.ai token passthrough | All prior | `curl -v https://server/api/status` shows valid cert, logs contain request IDs |
 
 **API Endpoints:**
 ```
@@ -93,6 +117,29 @@ POST /api/series/{study_uid}/{series_uid}/activity # Update last activity timest
 - **Client does NOT perform tracking** - only frame extraction and mask overlay
 
 **Critical Constraint**: All clients (desktop and iPad) download videos using MD.ai SDK. Server NEVER serves PHI/videos, only masks.
+
+#### Client Work Packages
+
+| ID | Task | Description | Dependencies | Validation |
+| --- | --- | --- | --- | --- |
+| C1 | Runtime wrapper | Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView | Apple dev account, shared config loader | Build IPA, install on test iPad, confirm Python process starts and serves local HTTP port |
+| C2 | MD.ai sync | Implement `client/mdai_client.py` to auth, list series, download exams, and store under `client_cache/data` | C1, MD.ai SDK | Download real exam (>=500 MB) over Wi-Fi, hash compare with MD.ai CLI output |
+| C3 | Frame extraction | Use ffmpeg/opencv to split MP4 to PNG frames, maintain manifest consumed by WebView | C2, ffmpeg binary bundled | Run extractor on downloaded video, ensure frame count matches metadata and PNGs accessible via `file://` path |
+| C4 | Viewer integration | Reuse `static/js/viewer.js` + CSS inside WebView, inject fetch adapters hitting server APIs | C1 | Manual interaction: load video, see masks overlay (initially from GET masks), draw annotations with touch |
+| C5 | Local edit cache | Persist edits in LocalStorage + filesystem, support reset + unsaved indicator | C4 | Start edit, kill app, relaunch → edits still present until Save; Reset clears |
+| C6 | Save + retrack UX | Package edits into .tgz, attach `X-Previous-Version-ID`, display retrack spinner, poll `/api/retrack/status` | C4, C5, server S5 | Real save cycle using staging server; verify new version ID returned and spinner hides when GET masks matches |
+| C7 | Conflict + completion flows | Surface warnings (recent activity, version mismatch), mark complete UI, next navigation linking to server selection | C6, server S6 | Two devices editing same series; second sees warning + 409 toast, Next button fetches new series metadata |
+
+### Shared Components & Testing Discipline
+
+| ID | Task | Description | Owners | Validation |
+| --- | --- | --- | --- | --- |
+| SH1 | Config refactor | Derive `dot.env.server` / `dot.env.client` from shared template, enforce typed loader shared via `lib/config.py` | Server & Client | Run `python lib/config.py --dump` on both sides; diff outputs except scoped keys |
+| SH2 | Tracking library contract | Expose `run_tracking(study_uid, series_uid, flow_method)` wrapper to be imported by server workers, ensuring no duplication of `track.py` options | Server workers | Execute wrapper directly against MD.ai series, compare outputs to legacy `track.py` run |
+| SH3 | Artifact packaging utilities | Shared module to tar/un-tar mask archives, emit metadata.json, validate schema | Server & Client | Round-trip test: client creates archive → server validates → server re-archives → client diff ensures identical manifest |
+| SH4 | Real test matrix | Document required manual/automated runs per phase (tracking smoke, retrack conflict, offline resilience) | All | Checklist stored in repo, each run referencing actual command + timestamp, no synthetic mocks |
+
+All functionality must be verified with real MD.ai downloads and actual mask archives. If production data is unreachable, the corresponding task remains blocked rather than using fake payloads.
 
 ## User Workflow
 
@@ -527,6 +574,25 @@ Response:
   "series_failed": 2
 }
 ```
+
+## Validation Plan
+
+- **Tracking pipeline smoke**: `uv run python3 track.py --study $TEST_STUDY_UID --series $TEST_SERIES_UID --flow dis` executes end-to-end after every change under `lib/` to guarantee parity with production outputs.
+- **Server API contract**:
+  - Start server via `uv run python3 server/server.py`.
+  - Issue `curl` requests for `/api/status`, `/api/series/next`, `/api/masks/{study}/{series}` pulling real .tgz files and comparing against `output/`.
+  - Upload edited archive with `http --form POST ... < archive.tgz` to ensure retrack queue writes `version_temp.json` and spawns worker invoking real tracking code.
+- **Client-device loop**:
+  - Launch iPad build, authenticate with MD.ai, download actual study, confirm PNG extraction count equals `metadata.json.frame_count`.
+  - Save edits to staging server, observe retrack completion and updated masks.
+- **Conflict + completion scenario**:
+  - Run two physical devices, have both save; second must receive HTTP 409 from real server.
+  - After completion, `GET /api/series/next` should skip the finished series.
+- **TLS + observability**:
+  - Deploy Caddy reverse proxy, run `curl -v https://server/api/status` from fresh machine to validate certificate chain.
+  - Tail structured logs ensuring each request logs command name, MD.ai user email (hashed), and duration.
+
+Testing must always target real MD.ai downloads and mask artifacts; placeholder payloads or mocked APIs are not accepted evidence of functionality.
 
 ## Success Criteria
 
