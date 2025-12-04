@@ -50,6 +50,7 @@ class ClientConfig(SharedConfig):
     server_url: str = "http://localhost:5000"
     user_email: Optional[str] = None
     video_cache_path: Path = Path("client_cache/data")
+    frames_path: Path = Path("client_cache/frames")
 
 
 def _coerce_bool(value: Optional[str]) -> bool:
@@ -133,6 +134,7 @@ def load_config(role: Literal["server", "client", "shared"] = "shared") -> Share
             server_url=raw.get("SERVER_URL", "http://localhost:5000"),
             user_email=raw.get("USER_EMAIL"),
             video_cache_path=Path(raw.get("VIDEO_CACHE_PATH", "client_cache/data")).resolve(),
+            frames_path=Path(raw.get("FRAMES_CACHE_PATH", "client_cache/frames")).resolve(),
         )
         return ClientConfig(**shared_kwargs, **client_kwargs)
 
