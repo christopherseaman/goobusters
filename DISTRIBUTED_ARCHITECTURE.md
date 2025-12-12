@@ -14,12 +14,66 @@ Split the monolithic annotation editor into a client-server architecture:
 4. **Efficient data transfer**: Only transmit masks (WebP format in .tgz archives)
 5. **Secure communication**: HTTPS via Caddy reverse proxy (not optional)
 
+## Core Server Operation: Mask Generation and Flow
+
+**This section defines the fundamental operation of the server - how masks are generated, served, and retracked. This is core to the specification.**
+
+### Mask Flow: Initial Tracking → Client → Retracking
+
+**Complete Flow**:
+
+1. **Server Startup (Before serving clients)**:
+   - Server downloads MD.ai dataset using token + project_id + dataset_id
+   - Server downloads videos and annotations to `data/` directory
+   - Server builds series index from downloaded annotations
+   - **Server generates masks for all series** (on startup):
+     - For each series: Read MD.ai annotations (polygons for `LABEL_ID` and `EMPTY_ID`)
+     - Convert polygons → mask images (binary masks)
+     - Run optical flow tracking → generates mask images for all frames
+     - Save all mask images as `.webp` files to `output/{flow_method}/{study_uid}_{series_uid}/masks/`
+     - Update series metadata: `tracking_status = "completed"`
+   - Server is now ready to serve masks immediately
+
+2. **Client Downloads Masks**:
+   - Client requests masks: `GET /api/masks/{study}/{series}`
+   - Server reads `.webp` files from disk
+   - Server builds metadata.json with `frames` array (all frames with `is_annotation`, `label_id`, `filename`)
+   - Server packages masks + metadata into `.tgz` archive
+   - Server sends archive to client
+
+3. **Client Edits Masks**:
+   - Client extracts archive (has `.webp` files + `metadata.json`)
+   - Client modifies mask images (edits `.webp` files)
+   - Client updates `metadata.json` (preserves `frames` array structure)
+
+4. **Client Uploads Edited Masks**:
+   - Client packages edited masks + updated metadata into `.tgz` archive
+   - Client uploads: `POST /api/masks/{study}/{series}` with `X-Previous-Version-ID` header
+   - Server extracts archive (has edited `.webp` files + updated `metadata.json`)
+   - Server queues retrack job
+
+5. **Server Retracks**:
+   - Retrack worker loads edited mask images (`.webp` files) from uploaded archive
+   - Worker filters `frames` array for `is_annotation=true` entries
+   - Worker loads actual mask image data from `.webp` files
+   - Worker uses those masks as input for optical flow tracking
+   - Worker generates new tracked masks for all frames
+   - Worker saves new masks, promotes to production
+
+**Key Points**:
+- **Server startup**: Downloads MD.ai dataset (videos + annotations) using token + project + dataset config
+- **Server startup**: Generates masks for ALL series (MD.ai polygons → mask images → tracking) before serving clients
+- **Client download**: Server reads pre-generated mask images from disk (masks already exist)
+- **Retracking**: Client's edited mask images → server uses as input
+- **Mask images**: ALWAYS generated locally by server (never downloaded from MD.ai)
+- **Tracking timing**: Both dataset download AND mask generation happen on startup; server ready when all masks generated
+
 ## Implementation Roadmap
 
 | Phase | Focus | Key Deliverables | Validation (real runs only) |
 | --- | --- | --- | --- |
 | 0. Baseline & Config Sync | Confirm shared `dot.env`, MD.ai credentials, disk layout | Fresh `dot.env` copies (`dot.env.server`, `dot.env.client`), documented secrets loading, hydrated `data/` cache | `uv run python3 track.py --help` (ensures deps), MD.ai SDK smoke test downloading single study |
-| 1. Server Core | Flask API skeleton, storage scaffolding, lazy tracking trigger | `/api/status`, `/api/series`, `/api/masks` (GET) read-only paths wired to filesystem, background worker stub | Local request flow using real dataset metadata, manual `uv run python3 track.py --study ...` executed by worker |
+| 1. Server Core | Flask API skeleton, storage scaffolding, MD.ai dataset download on startup, initial mask generation on startup | `/api/status`, `/api/series`, `/api/masks` (GET) read-only paths wired to filesystem, MD.ai dataset sync, tracking workers for all series | Server downloads real dataset on startup, generates masks for all series on startup, then serves masks immediately |
 | 2. Client Foundation | iPad Python backend + WebView hooking, MD.ai download loop | `client/client.py` serving viewer assets, MD.ai SDK-based downloader, frame extractor feeding WebView | Run client on desktop simulator with MD.ai token, verify frames rendered with placeholder masks fetched from server |
 | 3. Collaboration & Retrack | Versioning, conflict handling, retrack queue, activity pings | Version files, `/api/masks` POST path, `/api/retrack/status`, keep-alive endpoint, queue workers (>= `RETRACK_WORKERS`) | Multi-user test: two real clients editing same series, observe 409 conflict + retrack completion with true masks |
 | 4. Hardening & Ops | HTTPS, observability, disaster recovery, completion UX | Caddy config, structured logging, backup scripts, completion state flows, alerting on worker failure | End-to-end test on staging: full annotation loop incl. mark-complete, TLS validation via `curl https://.../api/status` |
@@ -39,7 +93,7 @@ Split the monolithic annotation editor into a client-server architecture:
 - Serve mask data via REST API
 
 **Key Features:**
-- Lazy tracking: Track series on-demand when first requested (not all upfront)
+- Initial tracking: Generate masks for all series on startup (before serving clients)
 - Activity tracking: Track last activity timestamp per series via keep-alive pings (30s interval)
 - Conflict warnings: Display recent activity to prevent concurrent edits
 - Retrack queue: FIFO processing with parallel support (3-6 concurrent users)
@@ -155,8 +209,8 @@ All functionality must be verified with real MD.ai downloads and actual mask arc
 9. Client renders video with mask overlay (green=annotation, orange=tracked)
 
 **Error states:**
-- ☕ "Server is preparing masks..." (pending/processing initial tracking)
-- 💩🔥 "Tracking failed for this series. Contact admin." (failed initial tracking)
+- 💩🔥 "Tracking failed for this series. Contact admin." (failed initial tracking on startup)
+- Note: Masks should be available immediately after server startup completes
 
 ### Editing
 1. User draws/modifies annotations in browser
@@ -526,14 +580,23 @@ dataset_id: D_V688LQ
 
 ## Implementation Details
 
-### Initial Mask Generation
+### Initial Mask Generation (On Startup)
 
-- Server runs `track.py` logic with DIS tracking method
-- Triggered **lazily** on first series request (not upfront for entire dataset)
-- Uses ONLY LABEL_ID and EMPTY_ID annotations from MD.ai (ignores TRACK_ID)
-- On failure: Server stores error state with error_code
-- Client displays ☕ (startup), 💩🔥 (failure), or ⏳ (in-progress) based on error_code
-- No masks available until tracking succeeds
+**When it happens**: On server startup, before serving any clients. Server cannot serve masks without generating them first.
+
+**Process**:
+1. Server reads MD.ai annotations (polygons for `LABEL_ID` and `EMPTY_ID` only)
+2. Server converts polygons to mask images (binary masks)
+3. Server runs optical flow tracking to generate mask images for `TRACK_ID` on all frames
+4. Server saves all mask images as `.webp` files to `output/{flow_method}/{study_uid}_{series_uid}/masks/`
+5. Server updates series metadata: `tracking_status = "completed"`
+
+**Key points**:
+- Initial tracking uses MD.ai annotations (polygons) as input, NOT mask images
+- Mask images are generated locally by the server
+- Tracking happens on startup for ALL series (time-consuming but necessary)
+- All frames get mask images (either from annotations or tracked)
+- Server ready to serve masks immediately after startup completes
 
 ### Retrack Behavior
 
@@ -557,10 +620,25 @@ dataset_id: D_V688LQ
 ### Server Startup Sequence
 
 1. Initialize filesystem storage structure
-2. Download MD.ai dataset (incremental update if already exists)
-3. Populate series metadata from annotations
-4. Start API server (don't wait for tracking)
-5. Track series lazily on first request
+2. **Download MD.ai dataset** (incremental update if already exists):
+   - Use MD.ai token + project_id + dataset_id from config
+   - Connect to MD.ai using SDK: `mdai.Client(domain=DOMAIN, access_token=MDAI_TOKEN)`
+   - Download/update project: `client.project(project_id=PROJECT_ID, dataset_id=DATASET_ID, path=DATA_DIR)`
+   - This downloads videos and annotations to `data/` directory (same as `track.py`)
+   - **Note**: Currently server expects dataset to exist; implementation needs to add this download step
+3. **Populate series metadata** from downloaded annotations:
+   - Build series index from annotations JSON (already implemented in `SeriesManager._build_index_from_annotations`)
+   - Create series metadata files in `server_state/series/`
+4. **Generate masks for all series** (on startup, before serving):
+   - For each series in the dataset:
+     - Read MD.ai annotations (polygons for `LABEL_ID` and `EMPTY_ID`)
+     - Convert polygons → mask images (binary masks)
+     - Run optical flow tracking → generates mask images for all frames
+     - Save all mask images as `.webp` files to `output/{flow_method}/{study_uid}_{series_uid}/masks/`
+     - Update series metadata: `tracking_status = "completed"`
+   - **Note**: This is time-consuming (15-25 seconds per video), but necessary - server cannot serve masks without generating them first
+   - Can run in parallel workers to speed up (similar to retrack queue)
+5. **Start API server** (after masks are generated, or start API immediately and track in background)
 
 **Status endpoint:**
 ```http
@@ -691,6 +769,6 @@ goobusters/
 5. **Error Handling**: Server returns codes, client looks up emoji/message (☕, 💩🔥, ⏳, 🎉)
 6. **Client Architecture**: iPad app with Python backend for MD.ai SDK, WebView for UI
 7. **Smart Navigation**: Server-side selection, skip recently viewed, keep-alive pings
-8. **Tracking**: Lazy on-demand (not all upfront), DIS method, FIFO retrack queue with parallel support
+8. **Tracking**: Initial masks generated on startup for all series, DIS method, FIFO retrack queue with parallel support
 9. **Annotations**: Three types (LABEL_ID, EMPTY_ID, TRACK_ID), server ignores MD.ai TRACK_ID for initial tracking
 10. **Security**: HTTPS via Caddy with Let's Encrypt (not optional)

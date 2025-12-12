@@ -41,7 +41,7 @@ class ServerConfig(SharedConfig):
     mask_storage_path: Path = Path("output")
     recent_view_threshold_minutes: int = 60
     retrack_workers: int = 2
-    flow_method: str = "dis"
+    # flow_method is inherited from SharedConfig, don't redefine it
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,9 @@ def _coerce_bool(value: Optional[str]) -> bool:
     return str(value).lower() in {"1", "true", "yes", "on"}
 
 
-def _resolve_env(base_path: Path, role: Literal["shared", "server", "client"]) -> dict[str, str]:
+def _resolve_env(
+    base_path: Path, role: Literal["shared", "server", "client"]
+) -> dict[str, str]:
     """
     Load environment dictionaries in priority order:
     1. `dot.env`
@@ -68,11 +70,15 @@ def _resolve_env(base_path: Path, role: Literal["shared", "server", "client"]) -
 
     root_file = base_path / "dot.env"
     if root_file.exists():
-        env.update({k: v for k, v in dotenv_values(root_file).items() if v is not None})
+        env.update({
+            k: v for k, v in dotenv_values(root_file).items() if v is not None
+        })
 
     role_file = base_path / f"dot.env.{role}"
     if role != "shared" and role_file.exists():
-        env.update({k: v for k, v in dotenv_values(role_file).items() if v is not None})
+        env.update({
+            k: v for k, v in dotenv_values(role_file).items() if v is not None
+        })
 
     # Finally, overlay os.environ without importing os at module level to keep
     # import time fast for tools that only need metadata.
@@ -82,7 +88,9 @@ def _resolve_env(base_path: Path, role: Literal["shared", "server", "client"]) -
     return env
 
 
-def load_config(role: Literal["server", "client", "shared"] = "shared") -> SharedConfig:
+def load_config(
+    role: Literal["server", "client", "shared"] = "shared",
+) -> SharedConfig:
     """
     Build the typed configuration for the requested role.
     """
@@ -117,14 +125,33 @@ def load_config(role: Literal["server", "client", "shared"] = "shared") -> Share
     )
 
     if role == "server":
+        # Resolve paths relative to server directory for isolation
+        # Find server directory by looking for server/server.py
+        server_dir = None
+        # Try common locations
+        possible_server_dirs = [
+            Path("server").resolve(),
+            Path(__file__).parent.parent / "server",
+        ]
+        for possible_dir in possible_server_dirs:
+            if (possible_dir / "server.py").exists():
+                server_dir = possible_dir
+                break
+        
+        if server_dir is None:
+            # Fallback: assume server/ is relative to project root
+            server_dir = Path("server").resolve()
+        
         server_kwargs = dict(
             server_host=raw.get("SERVER_HOST", "0.0.0.0"),
             server_port=int(raw.get("SERVER_PORT", 5000)),
-            server_state_path=Path(raw.get("SERVER_STATE_PATH", "server_state")).resolve(),
-            mask_storage_path=Path(raw.get("MASK_STORAGE_PATH", "output")).resolve(),
-            recent_view_threshold_minutes=int(raw.get("RECENT_VIEW_THRESHOLD_MINUTES", 60)),
+            server_state_path=(server_dir / raw.get("SERVER_STATE_PATH", "server_state")).resolve(),
+            mask_storage_path=(server_dir / raw.get("MASK_STORAGE_PATH", "output")).resolve(),
+            recent_view_threshold_minutes=int(
+                raw.get("RECENT_VIEW_THRESHOLD_MINUTES", 60)
+            ),
             retrack_workers=int(raw.get("RETRACK_WORKERS", 2)),
-            flow_method=raw.get("FLOW_METHOD", "dis"),
+            # flow_method is already in shared_kwargs, don't duplicate
         )
         return ServerConfig(**shared_kwargs, **server_kwargs)
 
@@ -133,8 +160,12 @@ def load_config(role: Literal["server", "client", "shared"] = "shared") -> Share
             client_port=int(raw.get("CLIENT_PORT", 8080)),
             server_url=raw.get("SERVER_URL", "http://localhost:5000"),
             user_email=raw.get("USER_EMAIL"),
-            video_cache_path=Path(raw.get("VIDEO_CACHE_PATH", "client_cache/data")).resolve(),
-            frames_path=Path(raw.get("FRAMES_CACHE_PATH", "client_cache/frames")).resolve(),
+            video_cache_path=Path(
+                raw.get("VIDEO_CACHE_PATH", "client_cache/data")
+            ).resolve(),
+            frames_path=Path(
+                raw.get("FRAMES_CACHE_PATH", "client_cache/frames")
+            ).resolve(),
         )
         return ClientConfig(**shared_kwargs, **client_kwargs)
 

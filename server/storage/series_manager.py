@@ -176,16 +176,53 @@ class SeriesManager:
             payload = json.load(f)
         return SeriesMetadata(**payload)
 
+    def _compute_tracking_status(self, study_uid: str, series_uid: str) -> str:
+        """
+        Compute tracking_status from on-disk checks.
+        Retracked masks take precedence over initial tracking masks.
+        """
+        mask_root = Path(self.config.mask_storage_path)
+        flow_method = self.config.flow_method
+        output_dir = mask_root / flow_method / f"{study_uid}_{series_uid}"
+        
+        # Check for retracking in progress (retrack/masks_temp exists - temporary staging)
+        retrack_temp_dir = output_dir / "retrack" / "masks_temp"
+        if retrack_temp_dir.exists() and list(retrack_temp_dir.glob("*.webp")):
+            return "retracking"
+        
+        # Check for retracked archive (completion marker - built as LAST step)
+        retrack_archive = output_dir / "retrack" / "masks.tgz"
+        if retrack_archive.exists():
+            return "completed"
+        
+        # Check for initial tracking archive (completion marker)
+        # Only check for masks.tgz (server format), not masks.tar.gz (track.py format)
+        # The server must generate its own masks, not rely on track.py output
+        initial_archive_tgz = output_dir / "masks.tgz"
+        if initial_archive_tgz.exists():
+            return "completed"
+        
+        # No masks found
+        return "never_run"
+
     def list_series(self) -> list[SeriesMetadata]:
         items: list[SeriesMetadata] = []
         for metadata_path in self.series_root.glob("*/metadata.json"):
             with metadata_path.open() as f:
                 payload = json.load(f)
-            items.append(SeriesMetadata(**payload))
+            metadata = SeriesMetadata(**payload)
+            # Compute status from disk (source of truth)
+            metadata.tracking_status = self._compute_tracking_status(
+                metadata.study_uid, metadata.series_uid
+            )
+            items.append(metadata)
         return items
 
     def get_series(self, study_uid: str, series_uid: str) -> SeriesMetadata:
-        return self._read_metadata(study_uid, series_uid)
+        metadata = self._read_metadata(study_uid, series_uid)
+        # Compute status from disk (source of truth)
+        metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
+        return metadata
 
     def mark_complete(self, study_uid: str, series_uid: str) -> SeriesMetadata:
         with self._lock:
@@ -227,11 +264,17 @@ class SeriesManager:
             return metadata
 
     def update_tracking_status(self, study_uid: str, series_uid: str, status: str, mask_count: int = 0) -> SeriesMetadata:
+        """
+        DEPRECATED: tracking_status is now computed from disk checks.
+        This method is kept for backward compatibility but only updates mask_count.
+        """
         with self._lock:
             metadata = self._read_metadata(study_uid, series_uid)
-            metadata.tracking_status = status
+            # Status is computed from disk, but we can update mask_count
             metadata.mask_count = mask_count or metadata.mask_count
             self._write_metadata(metadata)
+            # Return with computed status
+            metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
             return metadata
 
     # ----------------------------------------------------------- Activity helpers

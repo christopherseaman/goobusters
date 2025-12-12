@@ -11,3 +11,5 @@ __init__.py
 output_*.zip
 annotations.duckdb
 annotations/
+log/
+server_state/

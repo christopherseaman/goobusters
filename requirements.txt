@@ -19,5 +19,3 @@ tqdm
 pyyaml
 psutil  # For performance monitoring
 flask  # For annotation review web app
-duckdb  # For local annotation storage
-httpx>=0.27.0  # Client → server proxy requests
