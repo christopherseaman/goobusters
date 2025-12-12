@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import tempfile
 from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
@@ -24,10 +22,6 @@ from server.storage.series_manager import SeriesManager, SeriesMetadata
 from server.tracking_worker import trigger_lazy_tracking
 
 
-def iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _serialize_series(metadata: SeriesMetadata) -> dict:
     payload = asdict(metadata)
     return payload
@@ -39,8 +33,6 @@ def _mask_series_dir(
     return mask_root / flow_method / f"{study_uid}_{series_uid}"
 
 
-
-
 def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     bp = Blueprint("distributed_api", __name__)
 
@@ -50,7 +42,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     @bp.get("/api/status")
     def status() -> Response:
         series = series_manager.list_series()
-        completed = sum(1 for item in series if item.status == "completed")
+        completed = sum(
+            1 for item in series if item.tracking_status == "completed"
+        )
         failed = sum(1 for item in series if item.tracking_status == "failed")
         pending = sum(
             1
@@ -129,18 +123,24 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         mask_dir = _mask_series_dir(
             mask_root, flow_method, study_uid, series_uid
         )
-        
+
         # Check for retracked masks first (retracked take precedence)
         retrack_masks_path = mask_dir / "retrack" / "masks"
         initial_masks_path = mask_dir / "masks"
-        
+
         # Use retracked masks if they exist, otherwise use initial tracking masks
-        if retrack_masks_path.exists() and list(retrack_masks_path.glob("*.webp")):
+        if retrack_masks_path.exists() and list(
+            retrack_masks_path.glob("*.webp")
+        ):
             masks_path = retrack_masks_path
-        elif initial_masks_path.exists() and list(initial_masks_path.glob("*.webp")):
+        elif initial_masks_path.exists() and list(
+            initial_masks_path.glob("*.webp")
+        ):
             masks_path = initial_masks_path
         else:
-            masks_path = initial_masks_path  # Default to initial for lazy tracking check
+            masks_path = (
+                initial_masks_path  # Default to initial for lazy tracking check
+            )
 
         # Fallback lazy tracking: if masks don't exist, trigger tracking
         # NOTE: Per DISTRIBUTED_ARCHITECTURE.md, masks should be generated on startup.
@@ -203,7 +203,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         # Retracked archive takes precedence
         retrack_archive_path = mask_dir / "retrack" / "masks.tgz"
         initial_archive_path = mask_dir / "masks.tgz"
-        
+
         if retrack_archive_path.exists():
             archive_path = retrack_archive_path
         elif initial_archive_path.exists():
@@ -225,13 +225,18 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             import tarfile
             import json
             import io
-            with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+
+            with tarfile.open(
+                fileobj=io.BytesIO(archive_bytes), mode="r:gz"
+            ) as tar:
                 metadata_file = tar.extractfile("metadata.json")
                 if metadata_file:
                     metadata = json.load(metadata_file)
                 else:
                     # Fallback: build metadata if not in archive
-                    metadata = build_mask_metadata(series, masks_path, flow_method)
+                    metadata = build_mask_metadata(
+                        series, masks_path, flow_method
+                    )
 
         headers = {
             "Content-Type": "application/x-tar+gzip",

@@ -125,28 +125,16 @@ def load_config(
     )
 
     if role == "server":
-        # Resolve paths relative to server directory for isolation
-        # Find server directory by looking for server/server.py
-        server_dir = None
-        # Try common locations
-        possible_server_dirs = [
-            Path("server").resolve(),
-            Path(__file__).parent.parent / "server",
-        ]
-        for possible_dir in possible_server_dirs:
-            if (possible_dir / "server.py").exists():
-                server_dir = possible_dir
-                break
-        
-        if server_dir is None:
-            # Fallback: assume server/ is relative to project root
-            server_dir = Path("server").resolve()
-        
+        # Resolve paths relative to project root (per DISTRIBUTED_ARCHITECTURE.md)
         server_kwargs = dict(
             server_host=raw.get("SERVER_HOST", "0.0.0.0"),
             server_port=int(raw.get("SERVER_PORT", 5000)),
-            server_state_path=(server_dir / raw.get("SERVER_STATE_PATH", "server_state")).resolve(),
-            mask_storage_path=(server_dir / raw.get("MASK_STORAGE_PATH", "output")).resolve(),
+            server_state_path=(
+                base_path / raw.get("SERVER_STATE_PATH", "server_state")
+            ).resolve(),
+            mask_storage_path=(
+                base_path / raw.get("MASK_STORAGE_PATH", "output")
+            ).resolve(),
             recent_view_threshold_minutes=int(
                 raw.get("RECENT_VIEW_THRESHOLD_MINUTES", 60)
             ),

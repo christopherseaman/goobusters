@@ -82,13 +82,17 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
     - filename: Name of mask file (.webp)
 
     Retracking uses frames where is_annotation=true, loading the actual mask files.
+    Includes EMPTY_ID frames with has_mask=false per spec.
     """
     from lib.config import load_config
+    import json
 
-    mask_files = sorted(masks_path.glob("*.webp"))
-    frames = []
     config = load_config("server")
+    frames = []
+    frames_by_number = {}  # Track frames by number to avoid duplicates
 
+    # First, process existing mask files (LABEL_ID frames)
+    mask_files = sorted(masks_path.glob("*.webp"))
     for file_path in mask_files:
         frame_number = None
         parts = file_path.stem.split("_")
@@ -98,7 +102,7 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
         if frame_number is None:
             continue
 
-        # All tracked frames are annotation frames (they have label_id)
+        # All tracked frames with masks are annotation frames (they have label_id)
         frame_entry = {
             "frame_number": frame_number,
             "has_mask": True,
@@ -106,7 +110,46 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
             "label_id": config.label_id,
             "filename": file_path.name,
         }
-        frames.append(frame_entry)
+        frames_by_number[frame_number] = frame_entry
+
+    # Second, read input_annotations.json to find EMPTY_ID frames
+    # input_annotations.json is in the parent directory (output_dir)
+    output_dir = masks_path.parent
+    input_annotations_path = output_dir / "input_annotations.json"
+    
+    if input_annotations_path.exists():
+        try:
+            with input_annotations_path.open() as f:
+                input_data = json.load(f)
+            
+            # Extract EMPTY_ID frames from annotations
+            for annotation in input_data.get("annotations", []):
+                label_id = annotation.get("labelId", "")
+                frame_number = annotation.get("frameNumber")
+                
+                # Only process EMPTY_ID frames that don't already have a mask
+                if label_id == config.empty_id and frame_number is not None:
+                    frame_num = int(frame_number)
+                    # Skip if we already have a mask for this frame
+                    if frame_num not in frames_by_number:
+                        frame_entry = {
+                            "frame_number": frame_num,
+                            "has_mask": False,
+                            "is_annotation": True,  # EMPTY_ID frames are annotations
+                            "label_id": config.empty_id,
+                            "filename": None,  # No mask file for EMPTY_ID
+                        }
+                        frames_by_number[frame_num] = frame_entry
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            # If we can't read annotations, continue with mask files only
+            # This is a fallback - better to have partial metadata than fail completely
+            pass
+
+    # Convert dict to sorted list
+    frames = sorted(frames_by_number.values(), key=lambda x: x["frame_number"])
+
+    # Count masks (frames with has_mask=True)
+    mask_count = sum(1 for f in frames if f.get("has_mask", False))
 
     metadata = {
         "study_uid": series.study_uid,
@@ -115,7 +158,7 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
         "flow_method": flow_method,
         "generated_at": iso_now(),
         "frame_count": len(frames),
-        "mask_count": len(frames),
+        "mask_count": mask_count,
         "frames": frames,  # Single array - retracking filters by is_annotation=true
     }
     return metadata
