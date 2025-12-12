@@ -19,3 +19,4 @@ tqdm
 pyyaml
 psutil  # For performance monitoring
 flask  # For annotation review web app
+httpx  # For test scripts (HTTP client)

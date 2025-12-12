@@ -19,13 +19,17 @@ class MaskArchiveError(RuntimeError):
     """Raised when a mask archive cannot be created or extracted."""
 
 
-def _add_bytes_as_file(tar: tarfile.TarFile, filename: str, payload: bytes) -> None:
+def _add_bytes_as_file(
+    tar: tarfile.TarFile, filename: str, payload: bytes
+) -> None:
     info = tarfile.TarInfo(name=filename)
     info.size = len(payload)
     tar.addfile(info, io.BytesIO(payload))
 
 
-def build_mask_archive(mask_dir: Path, metadata: dict, include_metadata: bool = True) -> bytes:
+def build_mask_archive(
+    mask_dir: Path, metadata: dict, include_metadata: bool = True
+) -> bytes:
     """
     Package masks/metadata into a single .tgz blob for transport.
     """
@@ -36,7 +40,9 @@ def build_mask_archive(mask_dir: Path, metadata: dict, include_metadata: bool = 
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         if include_metadata:
-            metadata_bytes = json.dumps(metadata, indent=2, sort_keys=False).encode("utf-8")
+            metadata_bytes = json.dumps(
+                metadata, indent=2, sort_keys=False
+            ).encode("utf-8")
             _add_bytes_as_file(tar, MASK_METADATA_FILENAME, metadata_bytes)
 
         for path in sorted(mask_dir.glob("*.webp")):
@@ -51,7 +57,9 @@ def _safe_members(members: Iterable[tarfile.TarInfo], destination: Path):
     for member in members:
         member_path = destination / member.name
         if not str(member_path.resolve()).startswith(str(destination)):
-            raise MaskArchiveError(f"Unsafe path detected in archive: {member.name}")
+            raise MaskArchiveError(
+                f"Unsafe path detected in archive: {member.name}"
+            )
         yield member
 
 
@@ -64,7 +72,12 @@ def extract_mask_archive(archive_bytes: bytes, destination: Path) -> None:
 
     buffer = io.BytesIO(archive_bytes)
     with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
-        tar.extractall(path=destination, members=_safe_members(tar.getmembers(), destination))
+        tar.extractall(
+            path=destination,
+            members=_safe_members(tar.getmembers(), destination),
+        )
+
+
 def iso_now() -> str:
     """Return current UTC time as ISO format string."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -116,31 +129,44 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
     # input_annotations.json is in the parent directory (output_dir)
     output_dir = masks_path.parent
     input_annotations_path = output_dir / "input_annotations.json"
-    
+
     if input_annotations_path.exists():
         try:
             with input_annotations_path.open() as f:
                 input_data = json.load(f)
-            
-            # Extract EMPTY_ID frames from annotations
-            for annotation in input_data.get("annotations", []):
-                label_id = annotation.get("labelId", "")
-                frame_number = annotation.get("frameNumber")
-                
-                # Only process EMPTY_ID frames that don't already have a mask
-                if label_id == config.empty_id and frame_number is not None:
-                    frame_num = int(frame_number)
-                    # Skip if we already have a mask for this frame
-                    if frame_num not in frames_by_number:
-                        frame_entry = {
-                            "frame_number": frame_num,
-                            "has_mask": False,
-                            "is_annotation": True,  # EMPTY_ID frames are annotations
-                            "label_id": config.empty_id,
-                            "filename": None,  # No mask file for EMPTY_ID
-                        }
-                        frames_by_number[frame_num] = frame_entry
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+
+            # Handle case where input_data might be a string (double-encoded JSON)
+            if isinstance(input_data, str):
+                input_data = json.loads(input_data)
+
+            # Ensure input_data is a dict before calling .get()
+            if not isinstance(input_data, dict):
+                # Skip if not a dict - can't process
+                pass
+            else:
+                # Extract EMPTY_ID frames from annotations
+                for annotation in input_data.get("annotations", []):
+                    # Ensure annotation is a dict
+                    if not isinstance(annotation, dict):
+                        continue
+
+                    label_id = annotation.get("labelId", "")
+                    frame_number = annotation.get("frameNumber")
+
+                    # Only process EMPTY_ID frames that don't already have a mask
+                    if label_id == config.empty_id and frame_number is not None:
+                        frame_num = int(frame_number)
+                        # Skip if we already have a mask for this frame
+                        if frame_num not in frames_by_number:
+                            frame_entry = {
+                                "frame_number": frame_num,
+                                "has_mask": False,
+                                "is_annotation": True,  # EMPTY_ID frames are annotations
+                                "label_id": config.empty_id,
+                                "filename": None,  # No mask file for EMPTY_ID
+                            }
+                            frames_by_number[frame_num] = frame_entry
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             # If we can't read annotations, continue with mask files only
             # This is a fallback - better to have partial metadata than fail completely
             pass
@@ -162,4 +188,3 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
         "frames": frames,  # Single array - retracking filters by is_annotation=true
     }
     return metadata
-

@@ -55,17 +55,23 @@ class ServiceManager:
             )
 
             # Wait for server to be ready
-            max_wait = 10
-            for _ in range(max_wait):
+            # Note: Server may take a long time to start if generating masks on startup
+            # We check if the server process is responding, not if startup is complete
+            max_wait = 30  # Increased from 10 to 30 seconds
+            for i in range(max_wait):
                 try:
                     response = httpx.get(f"{self.base_url}/healthz", timeout=1)
                     if response.status_code == 200:
-                        print("  ✓ Server is ready")
+                        print("  ✓ Server is ready (API responding)")
                         return True
                 except Exception:
+                    if i % 5 == 0 and i > 0:  # Print progress every 5 seconds
+                        print(f"  ⏳ Waiting for server... ({i}/{max_wait}s)")
                     time.sleep(1)
 
-            print("  ✗ Server failed to start (timeout)")
+            print("  ✗ Server failed to start (timeout after 30s)")
+            print("     Note: If server is generating masks, it may take longer.")
+            print("     Check server logs for progress.")
             return False
         except Exception as exc:
             print(f"  ✗ Failed to start server: {exc}")
