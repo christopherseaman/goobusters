@@ -40,6 +40,20 @@ class ServiceManager:
     def start_server(self) -> bool:
         """Start the Flask server."""
         print("[1/4] Starting server...")
+        
+        # First, check if server is already running
+        try:
+            response = httpx.get(f"{self.base_url}/healthz", timeout=2)
+            if response.status_code == 200:
+                print("  ✓ Server is already running on port 5000")
+                print("  ✓ Using existing server instance")
+                # Don't set server_process - we're using an existing server
+                return True
+        except Exception:
+            # Server not running, continue to start it
+            pass
+        
+        # Server not running, start it
         try:
             # Use server/server.py directly since run_server.py may not exist
             self.server_process = subprocess.Popen(
@@ -103,6 +117,7 @@ class ServiceManager:
         """Stop all background services."""
         print("\n[Cleanup] Stopping services...")
         if self.server_process:
+            # Only stop server if we started it (not if it was already running)
             try:
                 self.server_process.terminate()
                 self.server_process.wait(timeout=5)
@@ -110,6 +125,9 @@ class ServiceManager:
             except Exception:
                 self.server_process.kill()
                 print("  ✓ Server killed")
+        else:
+            # Server was already running when we started - don't stop it
+            print("  ⚠ Server was already running - leaving it running")
 
         if self.worker_process:
             try:

@@ -31,14 +31,15 @@ def build_mask_archive(
     mask_dir: Path, metadata: dict, include_metadata: bool = True
 ) -> bytes:
     """
-    Package masks/metadata into a single .tgz blob for transport.
+    Package masks/metadata into a single .tar blob for transport.
+    No gzip compression - WebP images are already compressed.
     """
     mask_dir = mask_dir.resolve()
     if not mask_dir.exists():
         raise MaskArchiveError(f"Mask directory does not exist: {mask_dir}")
 
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
         if include_metadata:
             metadata_bytes = json.dumps(
                 metadata, indent=2, sort_keys=False
@@ -66,12 +67,20 @@ def _safe_members(members: Iterable[tarfile.TarInfo], destination: Path):
 def extract_mask_archive(archive_bytes: bytes, destination: Path) -> None:
     """
     Extract a received mask archive into `destination`, validating paths.
+    Supports both .tar (no gzip) and .tar.gz (legacy) formats.
     """
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
 
     buffer = io.BytesIO(archive_bytes)
-    with tarfile.open(fileobj=buffer, mode="r:gz") as tar:
+    # Try .tar first (no gzip), fall back to .tar.gz for backwards compatibility
+    try:
+        tar = tarfile.open(fileobj=buffer, mode="r")
+    except tarfile.ReadError:
+        buffer.seek(0)
+        tar = tarfile.open(fileobj=buffer, mode="r:gz")
+    
+    with tar:
         tar.extractall(
             path=destination,
             members=_safe_members(tar.getmembers(), destination),
@@ -101,75 +110,120 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
     import json
 
     config = load_config("server")
-    frames = []
-    frames_by_number = {}  # Track frames by number to avoid duplicates
+    frames_by_number: dict[int, dict] = {}
 
-    # First, process existing mask files (LABEL_ID frames)
-    mask_files = sorted(masks_path.glob("*.webp"))
-    for file_path in mask_files:
-        frame_number = None
-        parts = file_path.stem.split("_")
-        if len(parts) >= 2 and parts[1].isdigit():
-            frame_number = int(parts[1])
-
-        if frame_number is None:
-            continue
-
-        # All tracked frames with masks are annotation frames (they have label_id)
-        frame_entry = {
-            "frame_number": frame_number,
-            "has_mask": True,
-            "is_annotation": True,  # All tracked frames are annotations for retracking
-            "label_id": config.label_id,
-            "filename": file_path.name,
-        }
-        frames_by_number[frame_number] = frame_entry
-
-    # Second, read input_annotations.json to find EMPTY_ID frames
-    # input_annotations.json is in the parent directory (output_dir)
+    # Prefer frametype.json if present (authoritative per-frame metadata)
     output_dir = masks_path.parent
-    input_annotations_path = output_dir / "input_annotations.json"
+    frametype_path = output_dir / "frametype.json"
 
-    if input_annotations_path.exists():
+    if frametype_path.exists():
         try:
-            with input_annotations_path.open() as f:
-                input_data = json.load(f)
+            with frametype_path.open() as f:
+                summary = json.load(f)
 
-            # Handle case where input_data might be a string (double-encoded JSON)
-            if isinstance(input_data, str):
-                input_data = json.loads(input_data)
-
-            # Ensure input_data is a dict before calling .get()
-            if not isinstance(input_data, dict):
-                # Skip if not a dict - can't process
-                pass
-            else:
-                # Extract EMPTY_ID frames from annotations
-                for annotation in input_data.get("annotations", []):
-                    # Ensure annotation is a dict
-                    if not isinstance(annotation, dict):
+            if isinstance(summary, dict):
+                for frame_key, info in summary.items():
+                    if not isinstance(info, dict):
+                        continue
+                    try:
+                        frame_num = int(frame_key)
+                    except (TypeError, ValueError):
                         continue
 
-                    label_id = annotation.get("labelId", "")
-                    frame_number = annotation.get("frameNumber")
+                    has_mask = bool(info.get("has_mask", False))
+                    is_annotation = bool(info.get("is_annotation", False))
+                    label_id = info.get("label_id") or config.label_id
+                    type_str = info.get("type", "tracked")
+                    mask_file = info.get("mask_file")
+                    if has_mask and not mask_file:
+                        mask_file = f"frame_{frame_num:06d}_mask.webp"
 
-                    # Only process EMPTY_ID frames that don't already have a mask
-                    if label_id == config.empty_id and frame_number is not None:
+                    frames_by_number[frame_num] = {
+                        "frame_number": frame_num,
+                        "has_mask": has_mask,
+                        "is_annotation": is_annotation,
+                        "label_id": label_id,
+                        "type": type_str,
+                        "filename": mask_file if has_mask else None,
+                    }
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            # If frametype.json is unreadable, fall back to mask files + input_annotations
+            frames_by_number = {}
+
+    if not frames_by_number:
+        # Fallback: infer from mask files and input_annotations.json (legacy path)
+        # First, process existing mask files (tracked frames by default)
+        mask_files = sorted(masks_path.glob("*.webp"))
+        for file_path in mask_files:
+            frame_number = None
+            parts = file_path.stem.split("_")
+            if len(parts) >= 2 and parts[1].isdigit():
+                frame_number = int(parts[1])
+
+            if frame_number is None:
+                continue
+
+            frames_by_number[frame_number] = {
+                "frame_number": frame_number,
+                "has_mask": True,
+                "is_annotation": False,
+                "label_id": config.label_id,
+                "type": "tracked",
+                "filename": file_path.name,
+            }
+
+        # Then refine using input_annotations.json for LABEL_ID / EMPTY_ID
+        input_annotations_path = output_dir / "input_annotations.json"
+
+        if input_annotations_path.exists():
+            try:
+                with input_annotations_path.open() as f:
+                    input_data = json.load(f)
+
+                if isinstance(input_data, str):
+                    input_data = json.loads(input_data)
+
+                if isinstance(input_data, dict):
+                    for annotation in input_data.get("annotations", []):
+                        if not isinstance(annotation, dict):
+                            continue
+
+                        label_id = annotation.get("labelId", "")
+                        frame_number = annotation.get("frameNumber")
+                        if frame_number is None:
+                            continue
                         frame_num = int(frame_number)
-                        # Skip if we already have a mask for this frame
-                        if frame_num not in frames_by_number:
-                            frame_entry = {
+
+                        # Human fluid annotation (LABEL_ID)
+                        if label_id == config.label_id:
+                            entry = frames_by_number.get(frame_num)
+                            if entry:
+                                entry["is_annotation"] = True
+                                entry["label_id"] = config.label_id
+                                entry["type"] = "fluid"
+                            else:
+                                frames_by_number[frame_num] = {
+                                    "frame_number": frame_num,
+                                    "has_mask": False,
+                                    "is_annotation": True,
+                                    "label_id": config.label_id,
+                                    "type": "fluid",
+                                    "filename": None,
+                                }
+
+                        # Human empty annotation (EMPTY_ID)
+                        if label_id == config.empty_id:
+                            frames_by_number[frame_num] = {
                                 "frame_number": frame_num,
                                 "has_mask": False,
-                                "is_annotation": True,  # EMPTY_ID frames are annotations
+                                "is_annotation": True,
                                 "label_id": config.empty_id,
-                                "filename": None,  # No mask file for EMPTY_ID
+                                "type": "empty",
+                                "filename": None,
                             }
-                            frames_by_number[frame_num] = frame_entry
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            # If we can't read annotations, continue with mask files only
-            # This is a fallback - better to have partial metadata than fail completely
-            pass
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                # If we can't read annotations, continue with mask files only
+                pass
 
     # Convert dict to sorted list
     frames = sorted(frames_by_number.values(), key=lambda x: x["frame_number"])

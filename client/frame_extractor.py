@@ -1,15 +1,16 @@
 """
 Frame extraction utilities for the client.
 
-Converts downloaded MP4 videos into per-frame PNGs stored under the configured
+Converts downloaded MP4 videos into per-frame WebP images stored under the configured
 frames cache directory. These frames are served directly to the WebView so no
-PHI ever leaves the iPad.
+PHI ever leaves the iPad. WebP format matches the server's frame format.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tarfile
 from pathlib import Path
 
 import cv2
@@ -30,17 +31,26 @@ class FrameExtractor:
     def manifest_path(self, study_uid: str, series_uid: str) -> Path:
         return self.frame_dir(study_uid, series_uid) / "manifest.json"
 
-    def ensure_frames(self, video_path: Path, study_uid: str, series_uid: str) -> Path:
+    def frames_tar_path(self, study_uid: str, series_uid: str) -> Path:
+        """Path to cached .tar archive of frames (no gzip, WebP already compressed)."""
+        return self.frame_dir(study_uid, series_uid) / "frames.tar"
+
+    def ensure_frames(
+        self, video_path: Path, study_uid: str, series_uid: str
+    ) -> Path:
         """
         Extract frames for the requested video if missing or stale.
-        Returns the directory containing PNGs.
+        Returns the directory containing WebP frames.
         """
         target_dir = self.frame_dir(study_uid, series_uid)
         target_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = self.manifest_path(study_uid, series_uid)
 
         source_mtime = os.path.getmtime(video_path)
-        if manifest_path.exists():
+        tar_path = self.frames_tar_path(study_uid, series_uid)
+
+        # Check if frames and tar are up-to-date
+        if manifest_path.exists() and tar_path.exists():
             with manifest_path.open() as f:
                 manifest = json.load(f)
             if manifest.get("source_mtime") == source_mtime:
@@ -56,13 +66,22 @@ class FrameExtractor:
             success, frame = cap.read()
             if not success:
                 break
-            filename = target_dir / f"frame_{frame_index:06d}.png"
-            if not cv2.imwrite(str(filename), frame):
+            filename = target_dir / f"frame_{frame_index:06d}.webp"
+            # Use WebP format with quality 95 (matches server format)
+            if not cv2.imwrite(
+                str(filename), frame, [cv2.IMWRITE_WEBP_QUALITY, 95]
+            ):
                 cap.release()
                 raise FrameExtractionError(f"Failed to write frame {filename}")
             frame_index += 1
 
         cap.release()
+
+        # Build cached tar archive (no gzip - WebP already compressed)
+        tar_path = self.frames_tar_path(study_uid, series_uid)
+        with tarfile.open(tar_path, mode="w") as tar:
+            for frame_path in sorted(target_dir.glob("frame_*.webp")):
+                tar.add(frame_path, arcname=f"frames/{frame_path.name}")
 
         manifest = {
             "study_uid": study_uid,
@@ -82,6 +101,8 @@ class FrameExtractor:
         target_dir = self.frame_dir(study_uid, series_uid)
         if not target_dir.exists():
             return []
-        return sorted(
-            [path.name for path in target_dir.glob("frame_*.png") if path.is_file()]
-        )
+        return sorted([
+            path.name
+            for path in target_dir.glob("frame_*.webp")
+            if path.is_file()
+        ])

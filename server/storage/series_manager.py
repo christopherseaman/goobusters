@@ -178,9 +178,22 @@ class SeriesManager:
 
     def _compute_tracking_status(self, study_uid: str, series_uid: str) -> str:
         """
-        Compute tracking_status from on-disk checks.
+        Compute tracking_status from on-disk checks and persisted metadata.
         Retracked masks take precedence over initial tracking masks.
+        
+        First checks metadata.json for persisted "failed" status (series without annotations
+        that failed tracking should not be retried).
         """
+        # First, check if status is persisted as "failed" in metadata
+        # This prevents retrying series that failed due to missing annotations
+        try:
+            metadata = self._read_metadata(study_uid, series_uid)
+            if metadata.tracking_status == "failed":
+                return "failed"
+        except FileNotFoundError:
+            # Metadata doesn't exist yet, continue with disk checks
+            pass
+        
         mask_root = Path(self.config.mask_storage_path)
         flow_method = self.config.flow_method
         output_dir = mask_root / flow_method / f"{study_uid}_{series_uid}"
@@ -191,18 +204,26 @@ class SeriesManager:
             return "retracking"
         
         # Check for retracked archive (completion marker - built as LAST step)
-        retrack_archive = output_dir / "retrack" / "masks.tgz"
+        retrack_archive = output_dir / "retrack" / "masks.tar"
         if retrack_archive.exists():
             return "completed"
         
         # Check for initial tracking archive (completion marker)
-        # Only check for masks.tgz (server format), not masks.tar.gz (track.py format)
+        # Only check for masks.tar (server format), not masks.tar.gz (track.py format)
         # The server must generate its own masks, not rely on track.py output
-        initial_archive_tgz = output_dir / "masks.tgz"
+        initial_archive_tgz = output_dir / "masks.tar"
         if initial_archive_tgz.exists():
             return "completed"
         
-        # No masks found
+        # No masks found - check if we have a persisted "failed" status
+        try:
+            metadata = self._read_metadata(study_uid, series_uid)
+            if metadata.tracking_status == "failed":
+                return "failed"
+        except FileNotFoundError:
+            pass
+        
+        # No masks found and not marked as failed
         return "never_run"
 
     def list_series(self) -> list[SeriesMetadata]:
@@ -265,16 +286,23 @@ class SeriesManager:
 
     def update_tracking_status(self, study_uid: str, series_uid: str, status: str, mask_count: int = 0) -> SeriesMetadata:
         """
-        DEPRECATED: tracking_status is now computed from disk checks.
-        This method is kept for backward compatibility but only updates mask_count.
+        Update tracking status and persist it to metadata.json.
+        
+        For "failed" status, this is persisted so the series won't be retried.
+        For "completed" status, the archive file is the source of truth, but we update mask_count.
         """
         with self._lock:
             metadata = self._read_metadata(study_uid, series_uid)
-            # Status is computed from disk, but we can update mask_count
-            metadata.mask_count = mask_count or metadata.mask_count
+            # Persist "failed" status so series without annotations aren't retried
+            if status == "failed":
+                metadata.tracking_status = "failed"
+            # Update mask_count if provided
+            if mask_count > 0:
+                metadata.mask_count = mask_count
             self._write_metadata(metadata)
-            # Return with computed status
-            metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
+            # For non-failed statuses, recompute from disk (archive files are source of truth)
+            if status != "failed":
+                metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
             return metadata
 
     # ----------------------------------------------------------- Activity helpers

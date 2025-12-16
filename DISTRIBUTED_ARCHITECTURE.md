@@ -153,6 +153,7 @@ POST /api/series/{study_uid}/{series_uid}/activity # Update last activity timest
 - Cache mask edits locally until save
 - Submit annotation changes to server
 - Handle reset/revert of local changes
+- Detect/handle newer dataset versions (client vs server) and coordinate refresh
 
 **Key Features:**
 - Native app wrapper with embedded WebView
@@ -178,7 +179,7 @@ POST /api/series/{study_uid}/{series_uid}/activity # Update last activity timest
 | --- | --- | --- | --- | --- |
 | C1 | Runtime wrapper | Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView | Apple dev account, shared config loader | Build IPA, install on test iPad, confirm Python process starts and serves local HTTP port |
 | C2 | MD.ai sync | Implement `client/mdai_client.py` to auth, list series, download exams, and store under `client_cache/data` | C1, MD.ai SDK | Download real exam (>=500 MB) over Wi-Fi, hash compare with MD.ai CLI output |
-| C3 | Frame extraction | Use ffmpeg/opencv to split MP4 to PNG frames, maintain manifest consumed by WebView | C2, ffmpeg binary bundled | Run extractor on downloaded video, ensure frame count matches metadata and PNGs accessible via `file://` path |
+| C3 | Frame extraction | Use ffmpeg/opencv to split MP4 to PNG frames, maintain manifest consumed by WebView; auto-extract after dataset sync | C2, ffmpeg binary bundled | Run extractor on downloaded video, ensure frame count matches metadata and PNGs accessible via `file://` path; verify post-sync auto-extraction |
 | C4 | Viewer integration | Reuse `static/js/viewer.js` + CSS inside WebView, inject fetch adapters hitting server APIs | C1 | Manual interaction: load video, see masks overlay (initially from GET masks), draw annotations with touch |
 | C5 | Local edit cache | Persist edits in LocalStorage + filesystem, support reset + unsaved indicator | C4 | Start edit, kill app, relaunch → edits still present until Save; Reset clears |
 | C6 | Save + retrack UX | Package edits into .tgz, attach `X-Previous-Version-ID`, display retrack spinner, poll `/api/retrack/status` | C4, C5, server S5 | Real save cycle using staging server; verify new version ID returned and spinner hides when GET masks matches |

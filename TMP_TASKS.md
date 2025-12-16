@@ -3,3 +3,5 @@
 3. Lazy tracking trigger — background worker for initial tracking on first request
 4. Frontend integration — update viewer.js to use new APIs (can happen in parallel)
 5. iPad app foundation — start C1 (runtime wrapper) when ready
+6. Auto-extract frames after dataset sync in client
+7. Add client/server dataset version negotiation & refresh handling

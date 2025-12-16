@@ -123,7 +123,8 @@ def process_retrack_job(
         import tempfile
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Run tracking (same as tracking worker, with same parameters)
+            # Run tracking (same as tracking worker, with same parameters).
+            # This writes frametype.json, masks.json, masks/, frames/ into temp_dir.
             result = process_video_with_multi_frame_tracking(
                 video_path=str(video_path),
                 annotations_df=filtered_annotations,  # Use filtered annotations
@@ -139,43 +140,38 @@ def process_retrack_job(
                 dataset_id=config.dataset_id,  # Same as tracking
             )
 
-            # Extract all_masks from result
-            all_masks = result.get("all_masks", {})
+            temp_output_dir = Path(temp_dir)
+            temp_masks_dir = temp_output_dir / "masks"
+            if not temp_masks_dir.exists():
+                raise FileNotFoundError(
+                    f"Expected masks directory not found in retrack output: {temp_masks_dir}"
+                )
 
             # Clear and create temp masks directory
             if masks_temp_dir.exists():
                 shutil.rmtree(masks_temp_dir)
-            masks_temp_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save masks to temp directory
-            mask_count = 0
-            for frame_num, frame_info in all_masks.items():
-                if not isinstance(frame_info, dict):
-                    continue
-
-                mask = frame_info.get("mask")
-                if mask is None:
-                    continue
-
-                # Save as WebP
-                mask_file = f"frame_{frame_num:06d}.webp"
-                mask_path = masks_temp_dir / mask_file
-                cv2.imwrite(
-                    str(mask_path), mask, [cv2.IMWRITE_WEBP_QUALITY, 85]
-                )
-                mask_count += 1
+            shutil.copytree(temp_masks_dir, masks_temp_dir)
 
             # Promote temp to production: move masks_temp to masks
             if masks_dir.exists():
                 shutil.rmtree(masks_dir)
             masks_temp_dir.rename(masks_dir)
 
+            # Count masks for metadata
+            mask_count = len(list(masks_dir.glob("*.webp")))
+
+            # Copy frametype.json / masks.json into retrack_dir for canonical metadata
+            for json_name in ("frametype.json", "masks.json"):
+                src_json = temp_output_dir / json_name
+                if src_json.exists():
+                    shutil.copy2(src_json, retrack_dir / json_name)
+
             # Build mask archive and metadata (completion marker)
             # This is done once on completion, not on every API request
             series = series_manager.get_series(job.study_uid, job.series_uid)
             try:
                 metadata = build_mask_metadata(series, masks_dir, config.flow_method)
-                archive_path = retrack_dir / "masks.tgz"
+                archive_path = retrack_dir / "masks.tar"
                 archive_bytes = build_mask_archive(masks_dir, metadata)
                 with archive_path.open("wb") as f:
                     f.write(archive_bytes)

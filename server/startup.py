@@ -9,7 +9,6 @@ This module implements the core server operation as specified in DISTRIBUTED_ARC
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -89,76 +88,41 @@ def generate_masks_for_all_series(
 
     logger.info(f"Found {total} series. Generating masks...")
 
-    # Replicate track.py logic: filter annotations, check video existence, then group by series
-    # This ensures we use the same criteria as track.py
-    import mdai
-    import pandas as pd
-    from track import find_annotations_file, find_images_dir
-    
-    annotations_path = find_annotations_file(
-        str(config.data_dir),
-        config.project_id,
-        config.dataset_id,
+    # Use shared logic to get trackable series (same as track.py)
+    from lib.trackable_series import get_trackable_series
+
+    trackable_series_set = get_trackable_series(config)
+
+    logger.info(
+        f"Found {len(trackable_series_set)} series with free fluid annotations and existing videos (same logic as track.py)"
     )
-    images_dir = find_images_dir(
-        str(config.data_dir),
-        config.project_id,
-        config.dataset_id,
-    )
-    
-    annotations_blob = mdai.common_utils.json_to_dataframe(annotations_path)
-    annotations_df = pd.DataFrame(annotations_blob["annotations"])
-    
-    # Filter annotations for free fluid label AND empty frames (same as track.py)
-    label_id = config.label_id
-    empty_id = config.empty_id
-    free_fluid_annotations = annotations_df[
-        ((annotations_df["labelId"] == label_id) | (annotations_df["labelId"] == empty_id))
-    ].copy()
-    
-    # Check if video files exist (same as track.py)
-    # Use os.path.join to match track.py exactly
-    images_dir_str = str(images_dir)
-    def construct_video_path(base_dir, study_uid, series_uid):
-        return os.path.join(base_dir, study_uid, f"{series_uid}.mp4")
-    
-    free_fluid_annotations['video_path'] = free_fluid_annotations.apply(
-        lambda row: construct_video_path(images_dir_str, row['StudyInstanceUID'], row['SeriesInstanceUID']), axis=1
-    )
-    free_fluid_annotations['file_exists'] = free_fluid_annotations['video_path'].apply(os.path.exists)
-    
-    # Group by series (same as track.py) - only series with existing videos and free fluid annotations
-    matched_annotations = free_fluid_annotations[free_fluid_annotations['file_exists']]
-    video_groups = matched_annotations.groupby(['StudyInstanceUID', 'SeriesInstanceUID'])
-    
-    # Create set of trackable series (same logic as track.py)
-    trackable_series_set = set(
-        (study_uid, series_uid)
-        for (study_uid, series_uid), _ in video_groups
-    )
-    
-    logger.info(f"Found {len(trackable_series_set)} series with free fluid annotations and existing videos (same logic as track.py)")
-    
+
     mask_root = Path(config.mask_storage_path)
     flow_method = config.flow_method
-    
+
     untracked = []
     for series in all_series:
         # Only attempt series that track.py would process (have annotations + video exists)
         if (series.study_uid, series.series_uid) not in trackable_series_set:
+            # Skip series without annotations - don't mark as failed, just skip
             continue
-        
+
         # Check if tracking completed by looking for the server's archive file
         # Archive is built as the LAST step of tracking, so it's the completion marker
-        # Only check for masks.tgz (server format), not masks.tar.gz (track.py format)
+        # Only check for masks.tar (server format), not masks.tar.gz (track.py format)
         # The server must generate its own masks, not rely on track.py output
         output_dir = (
-            mask_root
-            / flow_method
-            / f"{series.study_uid}_{series.series_uid}"
+            mask_root / flow_method / f"{series.study_uid}_{series.series_uid}"
         )
-        archive_tgz = output_dir / "masks.tgz"
-        
+        archive_tgz = output_dir / "masks.tar"
+
+        # Skip series that have already failed (don't retry them)
+        if series.tracking_status == "failed":
+            logger.debug(
+                f"Skipping failed series: {series.study_uid}/{series.series_uid}"
+            )
+            continue
+
         # Series needs tracking if server's archive doesn't exist (server never completed tracking)
         if not archive_tgz.exists():
             untracked.append(series)
@@ -167,9 +131,7 @@ def generate_masks_for_all_series(
         logger.info("All series already have masks generated. Skipping.")
         return
 
-    logger.info(
-        f"Generating masks for {len(untracked)} untracked series..."
-    )
+    logger.info(f"Generating masks for {len(untracked)} untracked series...")
 
     # Process series sequentially (can be parallelized later if needed)
     # For now, sequential is safer and easier to debug

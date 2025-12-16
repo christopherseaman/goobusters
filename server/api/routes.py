@@ -120,6 +120,18 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
 
+        # Check status FIRST - if failed, return immediately (no expensive checks)
+        tracking_status = series.tracking_status
+        if tracking_status == "failed":
+            return (
+                jsonify({
+                    "status": "failed",
+                    "error_code": "TRACK_FAILED",
+                    "error_message": "Tracking failed for this series (likely no annotations). Check server logs for details.",
+                }),
+                500,
+            )
+
         mask_dir = _mask_series_dir(
             mask_root, flow_method, study_uid, series_uid
         )
@@ -146,9 +158,24 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         # NOTE: Per DISTRIBUTED_ARCHITECTURE.md, masks should be generated on startup.
         # This is a fallback for edge cases (e.g., new series added after startup).
         if not masks_path.exists() or not list(masks_path.glob("*.webp")):
-            tracking_status = series.tracking_status
+            # Check if series is trackable BEFORE triggering lazy tracking
+            # Use shared logic to avoid retrying non-trackable series
+            from lib.trackable_series import is_series_trackable
+            if not is_series_trackable(study_uid, series_uid, config):
+                # Series not trackable - mark as failed and return error
+                series_manager.update_tracking_status(study_uid, series_uid, "failed")
+                return (
+                    jsonify({
+                        "status": "failed",
+                        "error_code": "TRACK_FAILED",
+                        "error_message": "Series is not trackable (no free fluid annotations or video missing).",
+                    }),
+                    500,
+                )
+            
             if tracking_status == "never_run":
                 # Trigger lazy tracking in background
+                # Note: Worker will mark as "failed" if tracking fails, preventing retries
                 trigger_lazy_tracking(
                     study_uid, series_uid, config, series_manager
                 )
@@ -168,27 +195,6 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     }),
                     202,
                 )
-            elif tracking_status == "failed":
-                # Tracking failed - try to get error details from series metadata
-                try:
-                    # Check if there's an error message stored anywhere
-                    # For now, just return generic failure
-                    return (
-                        jsonify({
-                            "status": "failed",
-                            "error_code": "TRACK_FAILED",
-                            "error_message": "Tracking failed. Check server logs for details.",
-                        }),
-                        500,
-                    )
-                except Exception:
-                    return (
-                        jsonify({
-                            "status": "failed",
-                            "error_code": "TRACK_FAILED",
-                        }),
-                        500,
-                    )
             else:
                 # Unknown state, return pending
                 return (
@@ -199,47 +205,56 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     202,
                 )
 
-        # Check for pre-built archive (built on tracking/retracking completion)
-        # Retracked archive takes precedence
-        retrack_archive_path = mask_dir / "retrack" / "masks.tgz"
-        initial_archive_path = mask_dir / "masks.tgz"
+        # Check for pre-built archive (built on tracking/retracking completion).
+        # Retracked archive takes precedence. Archives are built exactly once by
+        # the tracking/retrack workers; this endpoint never re-tars on demand.
+        retrack_archive_path = mask_dir / "retrack" / "masks.tar"
+        initial_archive_path = mask_dir / "masks.tar"
 
         if retrack_archive_path.exists():
             archive_path = retrack_archive_path
         elif initial_archive_path.exists():
             archive_path = initial_archive_path
         else:
-            archive_path = initial_archive_path  # Default for fallback building
-        if not archive_path.exists():
-            # Fallback: build archive on-demand if it doesn't exist (for backwards compatibility)
-            metadata = build_mask_metadata(series, masks_path, flow_method)
-            try:
-                archive_bytes = build_mask_archive(masks_path, metadata)
-            except MaskArchiveError as exc:
-                return jsonify({"error": str(exc)}), 500
-        else:
-            # Serve pre-built archive
-            with archive_path.open("rb") as f:
-                archive_bytes = f.read()
-            # Load metadata from archive for headers
-            import tarfile
-            import json
-            import io
+            return (
+                jsonify({
+                    "status": "failed",
+                    "error_code": "TRACK_MISSING_ARCHIVE",
+                    "error_message": "Mask archive not found. Tracking/retracking did not complete successfully.",
+                }),
+                500,
+            )
 
-            with tarfile.open(
-                fileobj=io.BytesIO(archive_bytes), mode="r:gz"
-            ) as tar:
-                metadata_file = tar.extractfile("metadata.json")
-                if metadata_file:
-                    metadata = json.load(metadata_file)
-                else:
-                    # Fallback: build metadata if not in archive
-                    metadata = build_mask_metadata(
-                        series, masks_path, flow_method
-                    )
+        # Serve pre-built archive
+        with archive_path.open("rb") as f:
+            archive_bytes = f.read()
+
+        # Load metadata from archive for headers
+        import tarfile
+        import json
+        import io
+
+        # Try .tar first (no gzip), fall back to .tar.gz for backwards compatibility
+        try:
+            tar = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r")
+        except tarfile.ReadError:
+            tar = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz")
+
+        with tar:
+            metadata_file = tar.extractfile("metadata.json")
+            if metadata_file:
+                metadata = json.load(metadata_file)
+            else:
+                # Fallback: synthesize minimal headers when metadata.json is missing.
+                # This should not happen for new archives; treat as degraded state.
+                metadata = {
+                    "version_id": series.current_version_id,
+                    "generated_at": iso_now(),
+                    "mask_count": 0,
+                }
 
         headers = {
-            "Content-Type": "application/x-tar+gzip",
+            "Content-Type": "application/x-tar",
             "X-Version-ID": metadata.get("version_id") or "",
             "X-Mask-Count": str(metadata.get("mask_count", 0)),
             "X-Flow-Method": flow_method,
@@ -250,7 +265,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     @bp.post("/api/masks/<study_uid>/<series_uid>")
     def post_masks(study_uid: str, series_uid: str):
         """
-        Accept edited masks as .tgz archive, validate version, and queue retrack.
+        Accept edited masks as .tar archive, validate version, and queue retrack.
         """
         try:
             series = series_manager.get_series(study_uid, series_uid)

@@ -211,8 +211,10 @@ def find_test_series(base_url: str) -> dict | None:
         series_list = response.json()
 
         # Look for series that has NEVER been tracked
+        # Skip failed series - they can't be tracked (e.g., no annotations)
         for series in series_list:
-            if series.get("tracking_status") == "never_run":
+            status = series.get("tracking_status")
+            if status == "never_run":
                 study_uid = series.get("study_uid")
                 series_uid = series.get("series_uid")
                 print(
@@ -220,13 +222,23 @@ def find_test_series(base_url: str) -> dict | None:
                 )
                 print(f"  ✓ Exam number: {series.get('exam_number')}")
                 return series
+            elif status == "failed":
+                # Skip failed series - they can't be tracked
+                study_uid = series.get("study_uid")
+                series_uid = series.get("series_uid")
+                print(
+                    f"  ⚠ Skipping failed series: {study_uid[:20]}.../{series_uid[:20]}... (no annotations or other error)"
+                )
+                continue
 
         # No never_run series found - reset a completed one for testing
+        # But only if we haven't found any failed series (failed series can't be tracked)
         print(
             "  ⚠ No untracked series found - resetting a completed series for testing..."
         )
         for series in series_list:
-            if series.get("tracking_status") == "completed":
+            status = series.get("tracking_status")
+            if status == "completed":
                 study_uid = series.get("study_uid")
                 series_uid = series.get("series_uid")
                 print(
@@ -260,6 +272,17 @@ def find_test_series(base_url: str) -> dict | None:
 
                         shutil.rmtree(masks_dir)
                         print("  ✓ Deleted existing masks")
+                    
+                    # Also delete archive if it exists
+                    archive_path = (
+                        mask_root
+                        / flow_method
+                        / f"{study_uid}_{series_uid}"
+                        / "masks.tgz"
+                    )
+                    if archive_path.exists():
+                        archive_path.unlink()
+                        print("  ✓ Deleted existing archive")
 
                     return series
                 except Exception as exc:
@@ -267,6 +290,7 @@ def find_test_series(base_url: str) -> dict | None:
                     continue
 
         print("  ✗ No suitable series found to reset")
+        print("     Note: Failed series cannot be used for testing (they have no annotations)")
         return None
 
     except Exception as exc:

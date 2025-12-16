@@ -81,6 +81,14 @@ def run_tracking_for_series(
                 f"No annotations found for series {study_uid}/{series_uid}"
             )
 
+        # Check if series is trackable using shared logic
+        from lib.trackable_series import is_series_trackable
+        
+        if not is_series_trackable(study_uid, series_uid, config):
+            raise ValueError(
+                f"Series {study_uid}/{series_uid} is not trackable (no free fluid annotations or video missing)"
+            )
+        
         # Filter for LABEL_ID and EMPTY_ID only (ignore TRACK_ID)
         label_id = config.label_id
         empty_id = config.empty_id
@@ -124,7 +132,7 @@ def run_tracking_for_series(
         # Initialize optical flow processor
         flow_processor = OpticalFlowProcessor(config.flow_method)
 
-        # Run tracking
+        # Run tracking - this writes frametype.json, masks.json, masks/, frames/
         result = process_video_with_multi_frame_tracking(
             video_path=str(video_path),
             annotations_df=free_fluid_annotations,
@@ -140,35 +148,23 @@ def run_tracking_for_series(
             dataset_id=config.dataset_id,
         )
 
-        # Extract masks from result and save to masks/ directory
-        all_masks = result.get("all_masks", {})
-        masks_dir = output_dir / "masks"
-        masks_dir.mkdir(parents=True, exist_ok=True)
-
-        mask_count = 0
-        for frame_num, frame_info in all_masks.items():
-            if not isinstance(frame_info, dict):
-                continue
-
-            mask = frame_info.get("mask")
-            if mask is None:
-                continue
-
-            # Save as WebP
-            mask_file = f"frame_{frame_num:06d}.webp"
-            mask_path = masks_dir / mask_file
-            cv2.imwrite(str(mask_path), mask, [cv2.IMWRITE_WEBP_QUALITY, 85])
-            mask_count += 1
-
         # Clean up flow processor
         flow_processor.cleanup_memory()
+
+        # Use masks/ written by tracking pipeline (frame_XXXXXX_mask.webp)
+        masks_dir = output_dir / "masks"
+        if not masks_dir.exists():
+            raise FileNotFoundError(f"Expected masks directory not found: {masks_dir}")
+
+        # Count masks for metadata
+        mask_count = len(list(masks_dir.glob("*.webp")))
 
         # Build mask archive and metadata (completion marker)
         # This is done once on completion, not on every API request
         series = series_manager.get_series(study_uid, series_uid)
         try:
             metadata = build_mask_metadata(series, masks_dir, config.flow_method)
-            archive_path = output_dir / "masks.tgz"
+            archive_path = output_dir / "masks.tar"
             archive_bytes = build_mask_archive(masks_dir, metadata)
             with archive_path.open("wb") as f:
                 f.write(archive_bytes)
