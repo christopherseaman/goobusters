@@ -85,7 +85,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 )
             )
         except FileNotFoundError:
-            return jsonify({"error": "Annotations file not found on server"}), 500
+            return jsonify({
+                "error": "Annotations file not found on server"
+            }), 500
 
         stat = annotations_path.stat()
         return jsonify({
@@ -148,7 +150,21 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         try:
             series = series_manager.get_series(study_uid, series_uid)
         except FileNotFoundError:
-            return jsonify({"error": "Series not found"}), 404
+            return jsonify({
+                "error": "Series not found",
+                "study_uid": study_uid,
+                "series_uid": series_uid,
+            }), 404
+        except Exception as exc:
+            import traceback
+
+            print(f"Error getting series {study_uid}/{series_uid}: {exc}")
+            traceback.print_exc()
+            return jsonify({
+                "error": f"Internal error: {str(exc)}",
+                "study_uid": study_uid,
+                "series_uid": series_uid,
+            }), 500
 
         # Check status FIRST - if failed, return immediately (no expensive checks)
         tracking_status = series.tracking_status
@@ -191,9 +207,12 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             # Check if series is trackable BEFORE triggering lazy tracking
             # Use shared logic to avoid retrying non-trackable series
             from lib.trackable_series import is_series_trackable
+
             if not is_series_trackable(study_uid, series_uid, config):
                 # Series not trackable - mark as failed and return error
-                series_manager.update_tracking_status(study_uid, series_uid, "failed")
+                series_manager.update_tracking_status(
+                    study_uid, series_uid, "failed"
+                )
                 return (
                     jsonify({
                         "status": "failed",
@@ -202,7 +221,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     }),
                     500,
                 )
-            
+
             if tracking_status == "never_run":
                 # Trigger lazy tracking in background
                 # Note: Worker will mark as "failed" if tracking fails, preventing retries
@@ -256,8 +275,19 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
 
         # Serve pre-built archive
-        with archive_path.open("rb") as f:
-            archive_bytes = f.read()
+        try:
+            with archive_path.open("rb") as f:
+                archive_bytes = f.read()
+        except Exception as exc:
+            import traceback
+
+            print(f"Error reading archive {archive_path}: {exc}")
+            traceback.print_exc()
+            return jsonify({
+                "error": f"Failed to read mask archive: {str(exc)}",
+                "error_code": "ARCHIVE_READ_ERROR",
+                "archive_path": str(archive_path),
+            }), 500
 
         # Load metadata from archive for headers
         import tarfile
@@ -268,20 +298,44 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         try:
             tar = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r")
         except tarfile.ReadError:
-            tar = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz")
+            try:
+                tar = tarfile.open(
+                    fileobj=io.BytesIO(archive_bytes), mode="r:gz"
+                )
+            except Exception as exc:
+                import traceback
 
-        with tar:
-            metadata_file = tar.extractfile("metadata.json")
-            if metadata_file:
-                metadata = json.load(metadata_file)
-            else:
-                # Fallback: synthesize minimal headers when metadata.json is missing.
-                # This should not happen for new archives; treat as degraded state.
-                metadata = {
-                    "version_id": series.current_version_id,
-                    "generated_at": iso_now(),
-                    "mask_count": 0,
-                }
+                print(f"Error opening tar archive: {exc}")
+                traceback.print_exc()
+                return jsonify({
+                    "error": f"Failed to parse mask archive: {str(exc)}",
+                    "error_code": "ARCHIVE_PARSE_ERROR",
+                }), 500
+
+        try:
+            with tar:
+                metadata_file = tar.extractfile("metadata.json")
+                if metadata_file:
+                    metadata = json.load(metadata_file)
+                else:
+                    # Fallback: synthesize minimal headers when metadata.json is missing.
+                    # This should not happen for new archives; treat as degraded state.
+                    metadata = {
+                        "version_id": series.current_version_id,
+                        "generated_at": iso_now(),
+                        "mask_count": 0,
+                    }
+        except Exception as exc:
+            import traceback
+
+            print(f"Error extracting metadata from archive: {exc}")
+            traceback.print_exc()
+            # Fallback to minimal metadata
+            metadata = {
+                "version_id": series.current_version_id or "",
+                "generated_at": iso_now(),
+                "mask_count": 0,
+            }
 
         headers = {
             "Content-Type": "application/x-tar",

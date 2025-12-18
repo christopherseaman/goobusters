@@ -181,19 +181,9 @@ class SeriesManager:
         Compute tracking_status from on-disk checks and persisted metadata.
         Retracked masks take precedence over initial tracking masks.
         
-        First checks metadata.json for persisted "failed" status (series without annotations
-        that failed tracking should not be retried).
+        Archive files are the source of truth - if an archive exists, status is "completed".
+        Only trust persisted "failed" status if no archive exists.
         """
-        # First, check if status is persisted as "failed" in metadata
-        # This prevents retrying series that failed due to missing annotations
-        try:
-            metadata = self._read_metadata(study_uid, series_uid)
-            if metadata.tracking_status == "failed":
-                return "failed"
-        except FileNotFoundError:
-            # Metadata doesn't exist yet, continue with disk checks
-            pass
-        
         mask_root = Path(self.config.mask_storage_path)
         flow_method = self.config.flow_method
         output_dir = mask_root / flow_method / f"{study_uid}_{series_uid}"
@@ -204,6 +194,7 @@ class SeriesManager:
             return "retracking"
         
         # Check for retracked archive (completion marker - built as LAST step)
+        # Archive files are the source of truth - if they exist, status is completed
         retrack_archive = output_dir / "retrack" / "masks.tar"
         if retrack_archive.exists():
             return "completed"
@@ -214,6 +205,16 @@ class SeriesManager:
         initial_archive_tgz = output_dir / "masks.tar"
         if initial_archive_tgz.exists():
             return "completed"
+        
+        # No archive found - check if we have a persisted "failed" status
+        # Only trust persisted "failed" if no archive exists (archive is source of truth)
+        try:
+            metadata = self._read_metadata(study_uid, series_uid)
+            if metadata.tracking_status == "failed":
+                return "failed"
+        except FileNotFoundError:
+            # Metadata doesn't exist yet
+            pass
         
         # No masks found - check if we have a persisted "failed" status
         try:

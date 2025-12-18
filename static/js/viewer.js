@@ -1149,6 +1149,17 @@ class AnnotationViewer {
                 });
             }
             
+            // Check if series exists locally before trying to load
+            // The client needs to have synced its dataset to include this series
+            const checkResponse = await fetch(`/api/video/${method}/${data.study_uid}/${data.series_uid}`);
+            if (!checkResponse.ok) {
+                if (checkResponse.status === 404) {
+                    alert(`Series ${data.study_uid}/${data.series_uid} not found locally. Please sync your dataset first.`);
+                    return;
+                }
+                throw new Error(`Failed to verify series locally: ${checkResponse.statusText}`);
+            }
+            
             // Load the series from server
             // Note: loadVideo() will start activity pings automatically
             await this.loadVideo(method, data.study_uid, data.series_uid);
@@ -1306,6 +1317,15 @@ class AnnotationViewer {
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
             const response = await fetch(`/api/frames/${method}/${studyUid}/${seriesUid}`);
+            
+            if (!response.ok) {
+                if (response.status === 404) {
+                    throw new Error(`Series ${studyUid}/${seriesUid} not found locally. Please sync your dataset.`);
+                }
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error || `Failed to load frames: ${response.statusText}`);
+            }
+            
             const { frames_archive_url, masks_archive_url } = await response.json();
 
             // Load frames archive (.tar format, no gzip)
@@ -1339,51 +1359,81 @@ class AnnotationViewer {
             this.masksArchive = {};
             if (masks_archive_url) {
                 const masksArchiveResponse = await fetch(masks_archive_url);
-                const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
-                const masksTarData = new Uint8Array(masksArrayBuffer);
                 
-                // Store version ID from response headers for optimistic locking
-                this.currentVersionId = masksArchiveResponse.headers.get('X-Version-ID') || null;
+                if (!masksArchiveResponse.ok) {
+                    console.warn(`Failed to load masks archive: ${masksArchiveResponse.status} ${masksArchiveResponse.statusText}`);
+                    // Try to get error details
+                    const errorText = await masksArchiveResponse.text().catch(() => '');
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        console.warn('Mask archive error:', errorData);
+                        if (errorData.error_code === 'TRACK_FAILED' || errorData.error_code === 'TRACK_MISSING_ARCHIVE' || errorData.error_code === 'TRACK_PENDING') {
+                            // Series not tracked yet or tracking failed - this is OK, just no masks
+                            console.log(`Series tracking status: ${errorData.error_code} - continuing without masks`);
+                        } else {
+                            throw new Error(errorData.error || `Failed to load masks: ${masksArchiveResponse.statusText}`);
+                        }
+                    } catch (e) {
+                        if (e instanceof Error && e.message.includes('Failed to load masks')) {
+                            throw e;
+                        }
+                        // If we can't parse the error, just log and continue
+                        console.warn('Could not parse mask archive error, continuing without masks');
+                    }
+                    // Continue without masks - viewer will show frames only
+                } else {
+                    const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
+                    const masksTarData = new Uint8Array(masksArrayBuffer);
+                    
+                    // Store version ID from response headers for optimistic locking
+                    this.currentVersionId = masksArchiveResponse.headers.get('X-Version-ID') || null;
 
-                let metadataBytes = null;
+                    let metadataBytes = null;
 
-                // Parse tar: extract masks and metadata.json
-                offset = 0;
-                while (offset < masksTarData.length) {
-                    if (offset + 512 > masksTarData.length) break;
+                    // Parse tar: extract masks and metadata.json
+                    offset = 0;
+                    while (offset < masksTarData.length) {
+                        if (offset + 512 > masksTarData.length) break;
 
-                    const name = new TextDecoder().decode(masksTarData.slice(offset, offset + 100)).replace(/\0/g, '');
-                    if (!name) break;
+                        const name = new TextDecoder().decode(masksTarData.slice(offset, offset + 100)).replace(/\0/g, '');
+                        if (!name) break;
 
-                    const size = parseInt(new TextDecoder().decode(masksTarData.slice(offset + 124, offset + 136)), 8);
-                    offset += 512;
+                        const size = parseInt(new TextDecoder().decode(masksTarData.slice(offset + 124, offset + 136)), 8);
+                        offset += 512;
 
-                    if (size > 0) {
-                        const fileData = masksTarData.slice(offset, offset + size);
+                        if (size > 0) {
+                            const fileData = masksTarData.slice(offset, offset + size);
 
-                        if (name === 'metadata.json') {
-                            metadataBytes = fileData;
-                        } else if (name.endsWith('.webp') && name.includes('_mask')) {
-                            // Mask files live at root of archive
-                            this.masksArchive[name] = fileData;
+                            if (name === 'metadata.json') {
+                                metadataBytes = fileData;
+                            } else if (name.endsWith('.webp') && name.includes('_mask')) {
+                                // Mask files live at root of archive
+                                this.masksArchive[name] = fileData;
+                            }
+                        }
+
+                        offset += Math.ceil(size / 512) * 512;
+                    }
+
+                    // Apply per-frame metadata for coloring and info panel
+                    if (metadataBytes) {
+                        try {
+                            const metadataText = new TextDecoder().encode
+                                ? new TextDecoder().decode(metadataBytes)
+                                : new TextDecoder('utf-8').decode(metadataBytes);
+                            const metadata = JSON.parse(metadataText);
+                            this.updateMaskDataFromMetadata(metadata);
+                        } catch (e) {
+                            console.error('Failed to parse metadata.json from masks archive', e);
                         }
                     }
-
-                    offset += Math.ceil(size / 512) * 512;
                 }
-
-                // Apply per-frame metadata for coloring and info panel
-                if (metadataBytes) {
-                    try {
-                        const metadataText = new TextDecoder().encode
-                            ? new TextDecoder().decode(metadataBytes)
-                            : new TextDecoder('utf-8').decode(metadataBytes);
-                        const metadata = JSON.parse(metadataText);
-                        this.updateMaskDataFromMetadata(metadata);
-                    } catch (e) {
-                        console.error('Failed to parse metadata.json from masks archive', e);
-                    }
-                }
+            }
+        } catch (error) {
+            console.error('Error loading frames/masks archive:', error);
+            // Don't throw - allow viewer to continue with frames only if masks fail
+            if (error.message && !error.message.includes('not tracked yet') && !error.message.includes('TRACK_')) {
+                alert(`Warning: ${error.message}. Viewer will continue without masks.`);
             }
         } finally {
             loadingDiv.style.display = 'none';
