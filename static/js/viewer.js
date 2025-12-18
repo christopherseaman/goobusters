@@ -18,7 +18,8 @@ class AnnotationViewer {
         this.maskCtx = this.maskCanvas.getContext('2d', { willReadFrequently: true });
 
         // State
-        this.currentVideo = INITIAL_VIDEO;
+        // currentVideo will be set by loadNextSeries() on init
+        this.currentVideo = null;
         this.currentFrame = 0;
         this.totalFrames = 0;
         this.isPlaying = false;
@@ -49,11 +50,14 @@ class AnnotationViewer {
         // Structure: Map<videoKey, Map<frame_num, { maskData, maskType, is_empty }>>
         this.modifiedFrames = new Map(); // videoKey -> Map(frame_num -> data)
         
+        // Navigation history for Prev button (server-driven selection)
+        this.videoHistory = []; // Stack of {method, studyUid, seriesUid} for prev navigation
         
         this.frameCache = new Map(); // frameNum -> {frameImage, maskImageData, maskType, originalMaskImageData, originalMaskType, canvasWidth, canvasHeight}
         this.framesArchive = null; // Extracted frames from tar
         this.masksArchive = {}; // Masks from tar archive (webp images)
         this.currentVersionId = null; // Track version ID from server for optimistic locking
+        this.activityPingInterval = null; // Interval ID for activity pings (30s)
 
         this.toolsVisible = true;
 
@@ -88,9 +92,20 @@ class AnnotationViewer {
 
     async init() {
         this.setupEventListeners();
-        await this.loadVideoData();
-        await this.loadFramesArchive();
-        await this.goToFrame(0);
+        // Load initial video from server's "next" selection
+        try {
+            await this.loadNextSeries();
+        } catch (error) {
+            console.error('Failed to load initial series from server:', error);
+            // Fallback to INITIAL_VIDEO if defined (legacy support)
+            if (typeof INITIAL_VIDEO !== 'undefined' && INITIAL_VIDEO && INITIAL_VIDEO.studyUid) {
+                console.warn('Falling back to INITIAL_VIDEO from template');
+                await this.loadVideo(INITIAL_VIDEO.method, INITIAL_VIDEO.studyUid, INITIAL_VIDEO.seriesUid);
+            } else {
+                alert('Failed to load series. Please check server connection.');
+            }
+        }
+        this.checkDatasetSyncStatus().catch(() => {});
     }
 
     setupEventListeners() {
@@ -107,14 +122,34 @@ class AnnotationViewer {
             });
         });
 
-        // Video selection
-        document.getElementById('videoSelect').addEventListener('change', (e) => {
-            const [method, studyUid, seriesUid] = e.target.value.split('|');
-            this.loadVideo(method, studyUid, seriesUid);
-        });
+        // Completion modal
+        const closeComplete = document.getElementById('closeComplete');
+        const cancelComplete = document.getElementById('cancelComplete');
+        const confirmComplete = document.getElementById('confirmComplete');
+        if (closeComplete) closeComplete.addEventListener('click', () => this.hideModal('completeModal'));
+        if (cancelComplete) cancelComplete.addEventListener('click', () => this.hideModal('completeModal'));
+        if (confirmComplete) confirmComplete.addEventListener('click', () => this.confirmCompleteSeries());
 
-        document.getElementById('prevVideo').addEventListener('click', () => this.navigateVideo(-1));
-        document.getElementById('nextVideo').addEventListener('click', () => this.navigateVideo(1));
+        // Conflict modal
+        const closeConflict = document.getElementById('closeConflict');
+        const cancelConflict = document.getElementById('cancelConflict');
+        const resetAndReload = document.getElementById('resetAndReload');
+        if (closeConflict) closeConflict.addEventListener('click', () => this.hideModal('conflictModal'));
+        if (cancelConflict) cancelConflict.addEventListener('click', () => this.hideModal('conflictModal'));
+        if (resetAndReload) resetAndReload.addEventListener('click', () => this.handleResetAndReload());
+
+        // Video selection (server-driven)
+        // Keep videoSelect for manual selection if needed, but wire Next/Prev to server
+        const videoSelect = document.getElementById('videoSelect');
+        if (videoSelect) {
+            videoSelect.addEventListener('change', (e) => {
+                const [method, studyUid, seriesUid] = e.target.value.split('|');
+                this.loadVideo(method, studyUid, seriesUid);
+            });
+        }
+
+        document.getElementById('prevVideo').addEventListener('click', () => this.navigateVideoPrev());
+        document.getElementById('nextVideo').addEventListener('click', () => this.navigateVideoNext());
 
         // Playback controls
         document.getElementById('prevFrame').addEventListener('click', () => this.navigateFrame(-1));
@@ -252,6 +287,9 @@ class AnnotationViewer {
     }
 
     async loadVideoData() {
+        if (!this.currentVideo) {
+            throw new Error('No current video set');
+        }
         const { method, studyUid, seriesUid } = this.currentVideo;
         const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
         const data = await response.json();
@@ -793,37 +831,49 @@ class AnnotationViewer {
         }
 
         try {
-            // Build .tar archive with modified masks
-            const archiveData = await this.buildMaskArchive(
-                videoModifiedFrames,
-                studyUid,
-                seriesUid,
-                method
-            );
+            // Prepare modified_frames payload with PNG data URLs
+            const modifiedFramesPayload = {};
+            for (const [frameNum, frameData] of videoModifiedFrames.entries()) {
+                const frameNumber = parseInt(frameNum);
+                // Render mask to offscreen canvas to get PNG data URL
+                const offscreen = document.createElement('canvas');
+                offscreen.width = this.maskCanvas.width;
+                offscreen.height = this.maskCanvas.height;
+                const offCtx = offscreen.getContext('2d');
+                offCtx.putImageData(frameData.maskData, 0, 0);
+                const pngDataUrl = offscreen.toDataURL('image/png');
 
-            // POST to server via proxy with version ID header
-            const headers = {
-                'Content-Type': 'application/x-tar',
-                'X-Previous-Version-ID': this.currentVersionId || ''
+                modifiedFramesPayload[frameNumber] = {
+                    mask_data: pngDataUrl,
+                    is_empty: frameData.is_empty || frameData.maskType === 'empty'
+                };
+            }
+
+            const payload = {
+                method,
+                study_uid: studyUid,
+                series_uid: seriesUid,
+                previous_version_id: this.currentVersionId || '',
+                modified_frames: modifiedFramesPayload
             };
-            
-            const allResponse = await fetch(`/proxy/api/masks/${studyUid}/${seriesUid}`, {
+
+            const allResponse = await fetch('/api/save_changes', {
                 method: 'POST',
-                headers: headers,
-                body: archiveData
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
 
             if (allResponse.ok) {
                 const result = await allResponse.json();
                 console.log(`✅ Saved and queued retrack: ${result.version_id}`);
-                
+
                 // Update version ID for next save
                 this.currentVersionId = result.version_id;
-                
+
                 // Clear modified frames
                 videoModifiedFrames.clear();
                 this.hasUnsavedChanges = false;
-                
+
                 // Show success state
                 const saveBtn = document.getElementById('saveChanges');
                 saveBtn.classList.remove('unsaved');
@@ -832,7 +882,7 @@ class AnnotationViewer {
                     saveBtn.classList.remove('success');
                     this.updateSaveButtonState();
                 }, 2000);
-                
+
                 // Poll retrack status and reload when complete
                 if (result.retrack_queued) {
                     await this.pollRetrackStatus(studyUid, seriesUid);
@@ -840,10 +890,32 @@ class AnnotationViewer {
             } else {
                 const error = await allResponse.json().catch(() => ({ error: 'Save failed' }));
                 console.error('❌ Failed to save:', error);
-                alert(`Save failed: ${error.error_code || error.error || 'Unknown error'}`);
+                
+                // Handle 409 conflicts with specific error codes
+                if (allResponse.status === 409) {
+                    if (error.error_code === 'VERSION_MISMATCH') {
+                        this.showConflictModal(
+                            'Version Mismatch',
+                            error.message || 'Someone else edited this series. Your changes conflict with the server version.',
+                            `Your version: ${error.your_version || 'unknown'}\nServer version: ${error.current_version || 'unknown'}`
+                        );
+                    } else if (error.error_code === 'RETRACK_IN_PROGRESS') {
+                        // Retrack is already in progress - just show message and start polling
+                        alert(`Retrack already in progress: ${error.message || 'Please wait for retrack to complete.'}`);
+                        // Start polling retrack status
+                        await this.pollRetrackStatus(studyUid, seriesUid);
+                    } else {
+                        // Other 409 errors
+                        alert(`Conflict: ${error.error_code || error.error || 'Unknown conflict'}`);
+                    }
+                } else {
+                    // Other errors (400, 500, etc.)
+                    alert(`Save failed: ${error.error_code || error.error || 'Unknown error'}`);
+                }
             }
         } catch (error) {
             console.error('Error saving:', error);
+            alert(`Error saving: ${error.message}`);
         }
     }
 
@@ -920,6 +992,64 @@ class AnnotationViewer {
         this.render();
     }
 
+    async confirmCompleteSeries() {
+        // Hide modal immediately
+        this.hideModal('completeModal');
+
+        const { studyUid, seriesUid } = this.currentVideo;
+        try {
+            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/complete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                alert(`Failed to mark complete: ${data.error || resp.status}`);
+                return;
+            }
+            // Optional: simple toast via alert for now
+            alert('Series marked as done on server.');
+        } catch (e) {
+            alert(`Failed to mark complete: ${e.message}`);
+        }
+    }
+
+    showConflictModal(title, message, details) {
+        document.getElementById('conflictTitle').textContent = title;
+        document.getElementById('conflictMessage').textContent = message;
+        document.getElementById('conflictDetails').textContent = details || '';
+        this.showModal('conflictModal');
+    }
+
+    async handleResetAndReload() {
+        this.hideModal('conflictModal');
+        
+        const { studyUid, seriesUid } = this.currentVideo;
+        const videoKey = `${studyUid}__${seriesUid}`;
+        
+        // Clear all local edits for this video
+        this.modifiedFrames.delete(videoKey);
+        this.hasUnsavedChanges = false;
+        this.updateSaveButtonState();
+        
+        // Clear frame cache
+        this.frameCache.clear();
+        this.framesArchive = null;
+        this.masksArchive = {};
+        
+        // Reload from server
+        console.log('Resetting and reloading from server...');
+        try {
+            await this.loadVideoData();
+            await this.loadFramesArchive();
+            await this.goToFrame(this.currentFrame);
+            console.log('✅ Reloaded from server');
+        } catch (error) {
+            console.error('Error reloading from server:', error);
+            alert(`Error reloading: ${error.message}`);
+        }
+    }
+
     markEmpty() {
         // Clear the mask (set all pixels to black)
         for (let i = 0; i < this.maskImageData.data.length; i += 4) {
@@ -981,13 +1111,144 @@ class AnnotationViewer {
         this.render(); // Re-render to show/hide mask
     }
 
-    navigateVideo(delta) {
-        const select = document.getElementById('videoSelect');
-        const newIndex = select.selectedIndex + delta;
-        if (newIndex >= 0 && newIndex < select.options.length) {
-            select.selectedIndex = newIndex;
-            const [method, studyUid, seriesUid] = select.value.split('|');
-            this.loadVideo(method, studyUid, seriesUid);
+    /**
+     * Load the next series from server's selection logic.
+     * This is the primary navigation method - server decides what to work on next.
+     */
+    async loadNextSeries() {
+        try {
+            const response = await fetch('/proxy/api/series/next', {
+                headers: {
+                    'X-User-Email': this.getUserEmail() || ''
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Failed to fetch next series: ${response.statusText}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.no_available_series) {
+                alert('No available series to work on. All series may be completed or in progress.');
+                return;
+            }
+            
+            // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
+            // We need to determine the method - for now, use flow_method from config or default
+            // The server doesn't return method, so we'll need to infer it or use a default
+            // For now, assume method is 'dis' (the flow method)
+            const method = 'dis'; // TODO: Get from server response or config
+            
+            // Add current video to history before loading new one (if exists)
+            if (this.currentVideo && this.currentVideo.studyUid) {
+                this.videoHistory.push({
+                    method: this.currentVideo.method,
+                    studyUid: this.currentVideo.studyUid,
+                    seriesUid: this.currentVideo.seriesUid
+                });
+            }
+            
+            // Load the series from server
+            // Note: loadVideo() will start activity pings automatically
+            await this.loadVideo(method, data.study_uid, data.series_uid);
+        } catch (error) {
+            console.error('Error loading next series:', error);
+            alert(`Failed to load next series: ${error.message}`);
+        }
+    }
+    
+    /**
+     * Navigate to previous video from history (client-side stack).
+     */
+    async navigateVideoPrev() {
+        if (this.videoHistory.length === 0) {
+            // No history - try to load next series instead
+            await this.loadNextSeries();
+            return;
+        }
+        
+        const prevVideo = this.videoHistory.pop();
+        await this.loadVideo(prevVideo.method, prevVideo.studyUid, prevVideo.seriesUid);
+    }
+    
+    /**
+     * Navigate to next video using server's selection logic.
+     */
+    async navigateVideoNext() {
+        await this.loadNextSeries();
+    }
+    
+    /**
+     * Get user email from config or prompt (for identification header).
+     * The client backend (client.py) automatically adds X-User-Email header
+     * from config, so we don't need to set it here. This is a placeholder
+     * for future client-side identification if needed.
+     */
+    getUserEmail() {
+        // Client backend handles X-User-Email header automatically via proxy_to_server
+        // Return empty string - header will be added by backend if config.user_email is set
+        return '';
+    }
+    
+    /**
+     * Start sending activity pings to server every 30 seconds.
+     * This marks the series as "actively being viewed" to prevent conflicts.
+     */
+    startActivityPings() {
+        // Clear any existing interval
+        this.stopActivityPings();
+        
+        if (!this.currentVideo || !this.currentVideo.studyUid) {
+            return;
+        }
+        
+        // Send initial ping immediately
+        this.sendActivityPing();
+        
+        // Then ping every 30 seconds
+        this.activityPingInterval = setInterval(() => {
+            this.sendActivityPing();
+        }, 30000); // 30 seconds
+    }
+    
+    /**
+     * Stop sending activity pings (when navigating away or unloading).
+     */
+    stopActivityPings() {
+        if (this.activityPingInterval !== null) {
+            clearInterval(this.activityPingInterval);
+            this.activityPingInterval = null;
+        }
+    }
+    
+    /**
+     * Send a single activity ping to the server.
+     * This marks the current series as "actively being viewed".
+     */
+    async sendActivityPing() {
+        if (!this.currentVideo || !this.currentVideo.studyUid) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(
+                `/proxy/api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}/activity`,
+                {
+                    method: 'POST',
+                    headers: {
+                        'X-User-Email': this.getUserEmail() || ''
+                    }
+                }
+            );
+            
+            if (!response.ok) {
+                console.warn(`Activity ping failed: ${response.status} ${response.statusText}`);
+            } else {
+                console.debug('Activity ping sent successfully');
+            }
+        } catch (error) {
+            console.warn('Failed to send activity ping:', error);
         }
     }
 
@@ -1004,6 +1265,9 @@ class AnnotationViewer {
     }
 
     async loadVideo(method, studyUid, seriesUid) {
+        // Stop activity pings for previous video (if any)
+        this.stopActivityPings();
+        
         this.frameImage = null;
         this.frameCache.clear();
         this.framesArchive = null;
@@ -1016,6 +1280,16 @@ class AnnotationViewer {
         await this.goToFrame(0);
         this.updateSaveButtonState();
         this.updateVideoInfo();
+        
+        // Start activity pings for this video (every 30s)
+        this.startActivityPings();
+    }
+    
+    /**
+     * Cleanup when viewer is destroyed or page unloads.
+     */
+    cleanup() {
+        this.stopActivityPings();
     }
     
     async loadFramesArchive() {
@@ -1155,7 +1429,33 @@ class AnnotationViewer {
     }
 }
 
+AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
+    try {
+        const resp = await fetch('/api/dataset/version_status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const banner = document.getElementById('datasetWarning');
+        if (!banner) return;
+        if (data.in_sync) {
+            banner.classList.add('hidden');
+        } else {
+            banner.classList.remove('hidden');
+        }
+    } catch (e) {
+        const banner = document.getElementById('datasetWarning');
+        if (banner) banner.classList.add('hidden');
+    }
+};
+
 // Initialize viewer when DOM is ready
+let viewer;
 document.addEventListener('DOMContentLoaded', () => {
-    new AnnotationViewer();
+    viewer = new AnnotationViewer();
+    
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        if (viewer) {
+            viewer.cleanup();
+        }
+    });
 });

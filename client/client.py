@@ -4,10 +4,17 @@ Flask application exposing the local iPad/WebView backend.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Optional
+
+# Add project root to Python path BEFORE any imports
+# This allows running client/client.py directly
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import atexit
-import io
 import json
 import tarfile
 
@@ -22,19 +29,19 @@ from flask import (
     send_file,
 )
 
+# Now we can import lib modules (project_root is in sys.path)
+from lib.mask_archive import build_mask_archive, iso_now
+from lib.config import ClientConfig, load_config
+
 # Support running as a module (`python -m client.client`) or as a script
 if __package__:
     from .frame_extractor import FrameExtractionError, FrameExtractor
     from .mdai_client import DatasetNotReady, MDaiDatasetManager
 else:  # pragma: no cover - fallback for direct script execution
-    import sys
-    from pathlib import Path
-
     # Add project root to import path, then import without the package prefix
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    # (already done above, but keeping for clarity)
     from frame_extractor import FrameExtractionError, FrameExtractor  # type: ignore
     from mdai_client import DatasetNotReady, MDaiDatasetManager  # type: ignore
-from lib.config import ClientConfig, load_config
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = PROJECT_ROOT / "templates"
@@ -213,8 +220,39 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
     @app.post("/api/dataset/sync")
     def sync_dataset():
+        """
+        Blockingly:
+        - Download/refresh the MD.ai dataset
+        - Discover all local series
+        - Extract frames for each series
+
+        This is intentionally blocking so callers know that, on success, both
+        dataset and frames are ready for use.
+        """
         images_dir = context.dataset.sync_dataset()
-        return jsonify({"images_dir": str(images_dir)})
+
+        extracted = []
+        series = context.dataset.list_local_series()
+        for info in series:
+            try:
+                context.frames.ensure_frames(
+                    info.video_path, info.study_uid, info.series_uid
+                )
+                extracted.append(f"{info.study_uid}/{info.series_uid}")
+            except Exception as exc:  # pragma: no cover - surfaced to caller
+                return (
+                    jsonify({
+                        "error": f"Failed to extract frames for {info.study_uid}/{info.series_uid}: {exc}",
+                        "images_dir": str(images_dir),
+                    }),
+                    500,
+                )
+
+        return jsonify({
+            "images_dir": str(images_dir),
+            "series_count": len(series),
+            "frames_extracted_for": extracted,
+        })
 
     @app.get("/api/local/series")
     def local_series():
@@ -238,6 +276,67 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             for info in series
         ]
         return jsonify(payload)
+
+    @app.get("/api/dataset/version_status")
+    def dataset_version_status():
+        """
+        Compare dataset version between client and server.
+
+        Uses the MD.ai annotations export mtime on each side as a simple version
+        key. Intended only for warning UI; no automatic negotiation yet.
+        """
+        from track import find_annotations_file
+
+        client_version = None
+        server_version = None
+
+        # Client annotations version
+        try:
+            client_annotations = Path(
+                find_annotations_file(
+                    str(config.data_dir),
+                    config.project_id,
+                    config.dataset_id,
+                )
+            )
+            cstat = client_annotations.stat()
+            client_version = {
+                "annotations_path": str(client_annotations),
+                "annotations_mtime_ns": cstat.st_mtime_ns,
+                "annotations_size": cstat.st_size,
+            }
+        except FileNotFoundError:
+            client_version = None
+
+        # Server annotations version via API
+        try:
+            resp = context.http_client.get(
+                f"{config.server_url.rstrip('/')}/api/dataset/version",
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                server_version = resp.json()
+            else:
+                server_version = {"error": f"HTTP {resp.status_code}"}
+        except Exception as exc:  # pragma: no cover - network failures
+            server_version = {"error": str(exc)}
+
+        in_sync = False
+        if (
+            client_version
+            and isinstance(server_version, dict)
+            and "annotations_mtime_ns" in server_version
+        ):
+            in_sync = (
+                client_version["annotations_mtime_ns"]
+                == server_version["annotations_mtime_ns"]
+            )
+
+        return jsonify({
+            "client": client_version,
+            "server": server_version,
+            "in_sync": in_sync,
+        })
 
     @app.post("/api/local/frames/<study_uid>/<series_uid>")
     def ensure_frames(study_uid: str, series_uid: str):
@@ -283,23 +382,115 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
     def save_changes():
         """
         Adapter route: convert legacy viewer save format to distributed API format.
-        Proxies to POST /api/masks/{study}/{series} with proper .tgz archive.
+        Builds a .tar mask archive using lib.mask_archive and POSTs it to the
+        central server /api/masks/{study}/{series}.
         """
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
 
+        method = data.get("method")
         study_uid = data.get("study_uid")
         series_uid = data.get("series_uid")
-        if not study_uid or not series_uid:
-            return jsonify({"error": "study_uid and series_uid required"}), 400
+        modified_frames = data.get("modified_frames") or {}
+        previous_version_id = data.get("previous_version_id") or ""
 
-        # For now, proxy directly - viewer.js will need to be updated to send
-        # .tgz format. This is a placeholder that will fail gracefully.
-        # TODO: Convert viewer.js JSON format to .tgz archive format
-        return jsonify({
-            "error": "save_changes endpoint needs conversion to .tgz format"
-        }), 501
+        if not study_uid or not series_uid or not method:
+            return jsonify({"error": "method, study_uid and series_uid required"}), 400
+
+        if not modified_frames:
+            return jsonify({"error": "No modified frames provided"}), 400
+
+        # Build temporary mask directory and metadata.frames
+        from tempfile import TemporaryDirectory
+
+        label_id_fluid = config.label_id
+        label_id_empty = config.empty_id
+
+        with TemporaryDirectory() as tmp:
+            mask_dir = Path(tmp) / "masks"
+            mask_dir.mkdir(parents=True, exist_ok=True)
+
+            frames_meta = []
+
+            for frame_str, frame_data in modified_frames.items():
+                try:
+                    frame_num = int(frame_str)
+                except (TypeError, ValueError):
+                    continue
+
+                is_empty = bool(frame_data.get("is_empty"))
+                has_mask = not is_empty
+                label_id = label_id_empty if is_empty else label_id_fluid
+                filename = None
+
+                if has_mask:
+                    filename = f"frame_{frame_num:06d}_mask.webp"
+                    mask_path = mask_dir / filename
+                    mask_b64 = frame_data.get("mask_data") or ""
+                    
+                    # Use shared helper for base64→WebP conversion
+                    from lib.mask_utils import decode_base64_mask_to_webp
+                    if not decode_base64_mask_to_webp(mask_b64, mask_path, quality=85):
+                        continue
+
+                frames_meta.append(
+                    {
+                        "frame_number": frame_num,
+                        "has_mask": has_mask,
+                        "is_annotation": True,
+                        "label_id": label_id,
+                        "filename": filename,
+                    }
+                )
+
+            if not frames_meta:
+                return jsonify({"error": "No valid masks generated from modified_frames"}), 400
+
+            # Use shared helper for ISO timestamp
+            from lib.mask_archive import iso_now
+            
+            metadata = {
+                "study_uid": study_uid,
+                "series_uid": series_uid,
+                "previous_version_id": previous_version_id or None,
+                "flow_method": config.flow_method,
+                "generated_at": iso_now(),
+                "frame_count": len(frames_meta),
+                "mask_count": sum(1 for f in frames_meta if f.get("has_mask")),
+                "frames": frames_meta,
+            }
+
+            # Build .tar archive (no gzip) using shared helper
+            archive_bytes = build_mask_archive(mask_dir, metadata)
+
+        # POST archive to central server /api/masks/{study}/{series}
+        server_url = config.server_url.rstrip("/")
+        url = f"{server_url}/api/masks/{study_uid}/{series_uid}"
+
+        headers = {
+            "Content-Type": "application/x-tar",
+            "X-Previous-Version-ID": previous_version_id or "",
+        }
+        # Identification for last editor
+        if config.user_email:
+            headers["X-Editor"] = config.user_email
+
+        try:
+            resp = context.http_client.post(
+                url,
+                content=archive_bytes,
+                headers=headers,
+                timeout=60,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"Error contacting server: {exc}"}), 502
+
+        # Pass through server response JSON and status
+        content_type = resp.headers.get("content-type", "")
+        if "application/json" in content_type:
+            return jsonify(resp.json()), resp.status_code
+        return Response(resp.content, status=resp.status_code)
 
     @app.post("/api/retrack/<study_uid>/<series_uid>")
     def retrack_series(study_uid: str, series_uid: str):
@@ -336,12 +527,15 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         headers = {
             key: value
             for key, value in request.headers
-            if key.lower() not in {"host", "content-length", "connection"}
+            if key.lower() not in {"host", "content-length", "connection", "authorization"}
         }
-        headers["Authorization"] = f"Bearer {config.mdai_token}"
-        
+
         # Add X-User-Email from config if available and not already set
-        if config.user_email and "X-User-Email" not in headers and "X-Editor" not in headers:
+        if (
+            config.user_email
+            and "X-User-Email" not in headers
+            and "X-Editor" not in headers
+        ):
             headers["X-User-Email"] = config.user_email
 
         files = None

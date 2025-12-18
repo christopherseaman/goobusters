@@ -8,6 +8,11 @@
     <link rel="stylesheet" href="/static/css/viewer.css">
 </head>
 <body>
+    <!-- Dataset version mismatch warning -->
+    <div id="datasetWarning" class="dataset-warning hidden">
+        ⚠ Dataset on this client may be out of sync with the server. Run client dataset sync before trusting masks.
+    </div>
+
     <!-- Full-screen canvas for video -->
     <canvas id="canvas"></canvas>
     <!-- Overlay canvas for mask (stacked on top) -->
@@ -156,6 +161,38 @@
                     <div><kbd>E</kbd> Erase mode</div>
                     <div><kbd>⌘S</kbd> Save changes</div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Completion confirmation modal -->
+    <div class="modal" id="completeModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeComplete">✕</button>
+            <h2>Mark series as done?</h2>
+            <div class="info-section">
+                <p>This will remove the current series from normal rotation.</p>
+                <p>You can reopen it later if needed.</p>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn" id="confirmComplete">✅ Mark Done</button>
+                <button class="modal-btn" id="cancelComplete">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Conflict modal (version mismatch or retrack in progress) -->
+    <div class="modal" id="conflictModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeConflict">✕</button>
+            <h2 id="conflictTitle">Save Conflict</h2>
+            <div class="info-section">
+                <p id="conflictMessage"></p>
+                <div id="conflictDetails" class="monospace" style="font-size: 0.9em; margin-top: 10px; color: #666;"></div>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn warning" id="resetAndReload">🔄 Reset & Reload</button>
+                <button class="modal-btn" id="cancelConflict">Cancel</button>
             </div>
         </div>
     </div>

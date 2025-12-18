@@ -66,6 +66,36 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         ]
         return jsonify(records)
 
+    @bp.get("/api/dataset/version")
+    def dataset_version():
+        """
+        Report the server's current dataset version.
+
+        For now this is derived from the MD.ai annotations export mtime so the
+        client can detect when its local dataset is out of sync with server.
+        """
+        from track import find_annotations_file
+
+        try:
+            annotations_path = Path(
+                find_annotations_file(
+                    str(config.data_dir),
+                    config.project_id,
+                    config.dataset_id,
+                )
+            )
+        except FileNotFoundError:
+            return jsonify({"error": "Annotations file not found on server"}), 500
+
+        stat = annotations_path.stat()
+        return jsonify({
+            "project_id": config.project_id,
+            "dataset_id": config.dataset_id,
+            "annotations_path": str(annotations_path),
+            "annotations_mtime_ns": stat.st_mtime_ns,
+            "annotations_size": stat.st_size,
+        })
+
     @bp.get("/api/series/next")
     def next_series():
         user_email = request.headers.get("X-User-Email")
