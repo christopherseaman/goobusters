@@ -246,10 +246,14 @@ class SeriesManager:
         metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
         return metadata
 
-    def mark_complete(self, study_uid: str, series_uid: str) -> SeriesMetadata:
+    def mark_complete(self, study_uid: str, series_uid: str, user_email: Optional[str] = None) -> SeriesMetadata:
         with self._lock:
             metadata = self._read_metadata(study_uid, series_uid)
             metadata.status = "completed"
+            if user_email:
+                metadata.last_editor = user_email
+                # Also update activity to note completion
+                metadata.touch_activity(user_email)
             self._write_metadata(metadata)
             return metadata
 
@@ -332,13 +336,25 @@ class SeriesManager:
 
     # -------------------------------------------------------------- Selection logic
     def select_next_series(self, user_email: Optional[str] = None) -> Optional[SeriesMetadata]:
-        threshold = utc_now() - timedelta(minutes=self.config.recent_view_threshold_minutes)
+        """
+        Get the series for a user to work on.
+        
+        Logic (prefer returning same series if user was recently active):
+        1. Filter out completed series
+        2. Prefer series where:
+           - Current user was recently active (within threshold)
+           - Others have NOT been active since (or no other activity)
+           - Series is not complete
+        3. If no such series, fall back to:
+           - Series where others were last active (prefer oldest activity)
+           - Series where current user was last active (prefer oldest view)
+        """
+        # Get threshold with fallback if attribute doesn't exist (for backwards compatibility)
+        threshold_minutes = getattr(self.config, 'recent_view_threshold_minutes', 60)
+        threshold = utc_now() - timedelta(minutes=threshold_minutes)
         candidates: list[SeriesMetadata] = []
         for metadata in self.list_series():
             if metadata.status == "completed":
-                continue
-            last_activity = parse_time(metadata.last_activity_at)
-            if last_activity and last_activity > threshold:
                 continue
             candidates.append(metadata)
 
@@ -346,8 +362,34 @@ class SeriesManager:
             return None
 
         def sort_key(item: SeriesMetadata):
+            # Check if current user was last active
+            is_current_user_last = (
+                user_email and 
+                item.last_activity_by and 
+                item.last_activity_by == user_email
+            )
+            
+            last_activity = parse_time(item.last_activity_at) or datetime.fromtimestamp(0, tz=timezone.utc)
             last_view = parse_time(item.last_viewed_at) or datetime.fromtimestamp(0, tz=timezone.utc)
-            return last_view
+            
+            # Check if current user was recently active (within threshold)
+            is_recently_active_by_user = (
+                is_current_user_last and
+                last_activity > threshold
+            )
+            
+            # Primary sort: prefer series where current user was recently active
+            # This means refreshing returns the same series if user was just viewing it
+            if is_recently_active_by_user:
+                # Current user was recently active - prefer this (sorts first)
+                # Among these, prefer most recent activity (descending = newest first)
+                return (0, -last_activity.timestamp())
+            elif is_current_user_last:
+                # Current user was last active but not recently - prefer oldest view
+                return (1, last_view.timestamp())
+            else:
+                # Other user was last active (or no activity) - prefer oldest activity
+                return (2, last_activity.timestamp())
 
         selected = sorted(candidates, key=sort_key)[0]
         return self.record_view(selected.study_uid, selected.series_uid, user_email)

@@ -388,130 +388,19 @@ def api_save_mask():
 @app.route('/api/save_changes', methods=['POST'])
 def api_save_changes():
     """
-    Save user modifications on top of existing tracking results.
-
-    Copies ALL frames from output/ (or existing annotations/), then overlays user modifications.
-    Outputs in same format as track.py: masks.json + masks/ + masks.tar.gz
-
-    Expected JSON:
-        {
-            'method': str,
-            'study_uid': str,
-            'series_uid': str,
-            'modified_frames': dict of {frame_num: {mask_data: base64, is_empty: bool}} - user-edited frames
-        }
+    LEGACY ENDPOINT - DISABLED
+    
+    This endpoint committed masks to annotations/ before retrack completed, breaking atomic save+retrack.
+    The distributed architecture uses client/client.py's /api/save_changes which correctly proxies
+    to server/api/routes.py's POST /api/masks/{study}/{series} endpoint.
+    
+    This endpoint should not be used. If you're seeing this error, ensure you're using the
+    distributed architecture (client + server) and not the legacy app.py server.
     """
-    import tarfile
-
-    data = request.json
-    method = data['method']
-    study_uid = data['study_uid']
-    series_uid = data['series_uid']
-    modified_frames_data = data.get('modified_frames', {})
-    label_id = os.getenv('LABEL_ID', '')
-    empty_id = os.getenv('EMPTY_ID', '')
-
-    video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
-    annotations_dir = get_annotations_dir(study_uid, series_uid)
-    annotations_dir.mkdir(parents=True, exist_ok=True)
-
-    # Get video dimensions
-    video_path = video_dir / 'tracked_video.mp4'
-    cap = cv2.VideoCapture(str(video_path))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    ret, first_frame = cap.read()
-    height, width = (first_frame.shape[:2]) if ret else (0, 0)
-    cap.release()
-
-    # Setup masks directory
-    masks_dir = annotations_dir / 'masks'
-    masks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Start with existing masks.json (from annotations/ if exists, else output/)
-    existing_masks_json = []
-    source_masks_dir = None
-
-    existing_annotations_masks = annotations_dir / 'masks.json'
-    output_masks_json = video_dir / 'masks.json'
-
-    if existing_annotations_masks.exists():
-        # Use existing annotations as base
-        with open(existing_annotations_masks) as f:
-            existing_masks_json = json.load(f)
-        source_masks_dir = annotations_dir / 'masks'
-    elif output_masks_json.exists():
-        # Use output as base
-        with open(output_masks_json) as f:
-            existing_masks_json = json.load(f)
-        source_masks_dir = video_dir / 'masks'
-
-    # Build lookup by frame number
-    masks_by_frame = {entry['frameNumber']: entry for entry in existing_masks_json}
-    modified_frame_nums = set(int(k) for k in modified_frames_data.keys())
-
-    # Copy all existing masks that aren't being modified
-    if source_masks_dir and source_masks_dir.exists():
-        for entry in existing_masks_json:
-            frame_num = entry['frameNumber']
-            if frame_num not in modified_frame_nums:
-                mask_file = entry.get('mask_file', f'frame_{frame_num:06d}_mask.webp')
-                src_mask = source_masks_dir / mask_file
-                dst_mask = masks_dir / mask_file
-                if src_mask.exists() and src_mask != dst_mask:
-                    shutil.copy2(src_mask, dst_mask)
-
-    # Apply user modifications
-    for frame_num_str, frame_data in modified_frames_data.items():
-        frame_num = int(frame_num_str)
-        is_empty = frame_data.get('is_empty', False)
-        frame_label_id = empty_id if is_empty else label_id
-        mask_file = f'frame_{frame_num:06d}_mask.webp'
-        mask_path = masks_dir / mask_file
-
-        # Decode and save mask
-        mask_b64 = frame_data.get('mask_data', '')
-        if mask_b64:
-            mask_bytes = base64.b64decode(mask_b64.split(',')[1] if ',' in mask_b64 else mask_b64)
-            mask_img = Image.open(io.BytesIO(mask_bytes)).convert('L')
-            mask_array = np.array(mask_img)
-            cv2.imwrite(str(mask_path), mask_array, [cv2.IMWRITE_WEBP_QUALITY, 85])
-        elif is_empty:
-            empty_mask = np.zeros((height, width), dtype=np.uint8)
-            cv2.imwrite(str(mask_path), empty_mask, [cv2.IMWRITE_WEBP_QUALITY, 85])
-
-        # Update or create entry
-        masks_by_frame[frame_num] = {
-            'id': f'annotation_{frame_num}',
-            'labelId': frame_label_id,
-            'StudyInstanceUID': study_uid,
-            'SeriesInstanceUID': series_uid,
-            'frameNumber': frame_num,
-            'type': 'empty' if is_empty else 'fluid',
-            'is_annotation': True,
-            'track_id': f'annotation_{frame_num}',
-            'label_id': frame_label_id,
-            'mask_file': mask_file
-        }
-
-    # Build final masks_json sorted by frame
-    masks_json = [masks_by_frame[fn] for fn in sorted(masks_by_frame.keys())]
-
-    # Write masks.json
-    with open(annotations_dir / 'masks.json', 'w') as f:
-        json.dump(masks_json, f, indent=2)
-
-    # Create masks.tar.gz archive
-    masks_archive = annotations_dir / 'masks.tar.gz'
-    with tarfile.open(masks_archive, 'w:gz') as tar:
-        tar.add(masks_dir, arcname='masks')
-
-    annotation_count = sum(1 for m in masks_json if m.get('is_annotation', False))
     return jsonify({
-        'success': True,
-        'saved_count': len(masks_json),
-        'annotation_count': annotation_count,
-        'total_frames': total_frames
-    })
+        'error': 'Legacy endpoint disabled. Use distributed architecture (client + server).',
+        'error_code': 'LEGACY_ENDPOINT_DISABLED'
+    }), 410  # 410 Gone - resource no longer available
 
 @app.route('/api/mark_empty', methods=['POST'])
 def api_mark_empty():

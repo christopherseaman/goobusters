@@ -9,30 +9,67 @@
 - ⏳ Verify viewer → client → server → retrack worker → viewer reload
 - ⏳ Test conflict handling (409 responses) in real multi-user scenario
 
-### 2. Wire viewer to use `/api/series/next` (Task 6)
-- Replace local `videoSelect` with server-driven selection
-- Wire Next/Prev buttons to server selection logic
+### 2. Wire viewer to use `/api/series/next` (Task 6) ✅
+- ✅ Replace local `videoSelect` with server-driven selection
+- ✅ Wire checkmark button to mark complete + get next series
+- ✅ Remove Prev button (server-driven navigation doesn't support going back)
+- ✅ Series selection prefers same series if user was recently active (refresh returns same series)
 
-### 3. Activity pings (Task 7)
-- Send `POST /api/series/{study}/{series}/activity` every 30s while viewing
-- Surface "recent activity" in info modal
+### 3. Activity pings (Task 7) ✅
+- ✅ Send `POST /api/series/{study}/{series}/activity` every 30s while viewing
+- ⏳ Surface "recent activity" in info modal
 
 ## Medium Priority (UX Polish)
 
-### 4. Local edit cache (Task 8)
+### 4. Consolidate save & retrack functionality ✅
+- ✅ Removed redundant retrack button (save automatically triggers retrack)
+- ✅ Removed `retrackVideo()` function (now just calls `saveChanges()`)
+- ✅ Updated save button tooltip to indicate it triggers retrack
+- ✅ Flow is now: Save → Client builds .tar → POST to server → Server enqueues retrack → Viewer polls status
+
+### 5. Viewer UI improvements for multiplayer workflow
+- ✅ Remove Prev button (server-driven navigation doesn't support going back)
+- ✅ Spacebar restarts play from beginning if at end of video
+- ⏳ Scrubbing improvements:
+  - Larger click target (as tall as circular scrub location indicator)
+  - Scrub line indicators for frame annotation type:
+    - Bar behind scrub line divided into sections by frame #
+    - Colored by annotation type:
+      - `track_id` (transparent)
+      - `label_id` (green, 50% alpha)
+      - `empty_id` (red, same alpha as label_id)
+- ⏳ Empty_id annotated frames visual indicator:
+  - Red outline similar to current tool's green rounded square outline
+  - Large red drop-shadow pulse (similar to hovering clear frame button)
+
+### 10. Activity warnings and recent activity display
+- ⏳ Add activity metadata to all API responses:
+  - Add `X-Last-Activity-At` and `X-Last-Activity-By` headers to `/api/masks/{study}/{series}` responses
+  - Include in `/api/frames/{study}/{series}` responses (via client proxy)
+  - This ensures client gets activity updates within keepalive period (30s)
+- ⏳ Warning banner (top-left third, prominent but not modal):
+  - Show when `last_activity_at` is within threshold (configurable, default 60min) AND `last_activity_by` != current user
+  - Update on every API response (masks/frames)
+  - Similar styling to dataset warning banner
+- ⏳ Info modal activity display:
+  - Show recent activity history (already available via `/api/series/{study}/{series}`)
+  - Display who was active and when
+  - Show "Last active by X at Y" prominently
+
+### 6. Local edit cache (Task 8)
 - Persist edits in LocalStorage + filesystem
 - Restore on reload with unsaved indicator
 
-### 5. Conflict handling refinement (Task 10)
+### 7. Conflict handling refinement (Task 10)
 - Test 409 `VERSION_MISMATCH` in real multi-user scenario
 - Add clear reset/reload flow in viewer
 
 ## Lower Priority (Testing/Ops)
 
-### 6. Fresh startup verification (Task 5)
+### 8. Fresh startup verification (Task 5)
 - Script to wipe `output/` and `server_state/`, verify clean startup
 
-### 7. Test suite refresh (Task 13)
+### 9. Test suite refresh (Task 13)
 - Update tests to `.tar` + `metadata.json` contract
 
 ---

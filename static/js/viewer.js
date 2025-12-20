@@ -11,7 +11,10 @@ class AnnotationViewer {
 
         // Set canvases to full viewport size
         this.resizeCanvas();
-        window.addEventListener('resize', () => this.resizeCanvas());
+        window.addEventListener('resize', () => {
+            this.resizeCanvas();
+            this.updateSliderTypeBar();
+        });
 
         // Create hidden canvas for mask manipulation (like teef's maskCanvas)
         this.maskCanvas = document.createElement('canvas');
@@ -50,14 +53,13 @@ class AnnotationViewer {
         // Structure: Map<videoKey, Map<frame_num, { maskData, maskType, is_empty }>>
         this.modifiedFrames = new Map(); // videoKey -> Map(frame_num -> data)
         
-        // Navigation history for Prev button (server-driven selection)
-        this.videoHistory = []; // Stack of {method, studyUid, seriesUid} for prev navigation
         
         this.frameCache = new Map(); // frameNum -> {frameImage, maskImageData, maskType, originalMaskImageData, originalMaskType, canvasWidth, canvasHeight}
         this.framesArchive = null; // Extracted frames from tar
         this.masksArchive = {}; // Masks from tar archive (webp images)
         this.currentVersionId = null; // Track version ID from server for optimistic locking
         this.activityPingInterval = null; // Interval ID for activity pings (30s)
+        this.userEmail = null; // User email for identification (from localStorage or prompt)
 
         this.toolsVisible = true;
 
@@ -92,6 +94,10 @@ class AnnotationViewer {
 
     async init() {
         this.setupEventListeners();
+        
+        // Ensure user email is set (prompt if missing)
+        await this.ensureUserEmail();
+        
         // Load initial video from server's "next" selection
         try {
             await this.loadNextSeries();
@@ -107,6 +113,34 @@ class AnnotationViewer {
         }
         this.checkDatasetSyncStatus().catch(() => {});
     }
+    
+    async ensureUserEmail() {
+        // Check localStorage first
+        let userEmail = localStorage.getItem('userEmail');
+        
+        if (!userEmail) {
+            // Prompt user for email
+            userEmail = prompt(
+                'Please enter your email address for identification:\n\n' +
+                'This is used to track which series you\'ve worked on and coordinate with other users.',
+                ''
+            );
+            
+            if (!userEmail || !userEmail.trim()) {
+                // User cancelled or entered empty - use a default
+                userEmail = `user_${Date.now()}@local`;
+                console.warn('No email provided, using temporary identifier:', userEmail);
+            } else {
+                userEmail = userEmail.trim();
+            }
+            
+            // Store in localStorage
+            localStorage.setItem('userEmail', userEmail);
+        }
+        
+        this.userEmail = userEmail;
+        return userEmail;
+    }
 
     setupEventListeners() {
         // Modal controls
@@ -115,10 +149,12 @@ class AnnotationViewer {
         document.getElementById('closeInfo').addEventListener('click', () => this.hideModal('infoModal'));
         document.getElementById('closeNav').addEventListener('click', () => this.hideModal('navModal'));
 
-        // Close modals on background click
+        // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {
             modal.addEventListener('click', (e) => {
-                if (e.target === modal) this.hideModal(modal.id);
+                if (e.target === modal && modal.id !== 'retrackLoadingModal') {
+                    this.hideModal(modal.id);
+                }
             });
         });
 
@@ -138,6 +174,32 @@ class AnnotationViewer {
         if (cancelConflict) cancelConflict.addEventListener('click', () => this.hideModal('conflictModal'));
         if (resetAndReload) resetAndReload.addEventListener('click', () => this.handleResetAndReload());
 
+        // Reset retrack modal (current series)
+        const resetRetrackBtn = document.getElementById('resetRetrackBtn');
+        const closeResetRetrack = document.getElementById('closeResetRetrack');
+        const cancelResetRetrack = document.getElementById('cancelResetRetrack');
+        const confirmResetRetrack = document.getElementById('confirmResetRetrack');
+        if (resetRetrackBtn) resetRetrackBtn.addEventListener('click', () => {
+            this.hideModal('navModal');
+            this.showModal('resetRetrackModal');
+        });
+        if (closeResetRetrack) closeResetRetrack.addEventListener('click', () => this.hideModal('resetRetrackModal'));
+        if (cancelResetRetrack) cancelResetRetrack.addEventListener('click', () => this.hideModal('resetRetrackModal'));
+        if (confirmResetRetrack) confirmResetRetrack.addEventListener('click', () => this.confirmResetRetrack());
+
+        // Reset retrack all modal (all series)
+        const resetRetrackAllBtn = document.getElementById('resetRetrackAllBtn');
+        const closeResetRetrackAll = document.getElementById('closeResetRetrackAll');
+        const cancelResetRetrackAll = document.getElementById('cancelResetRetrackAll');
+        const confirmResetRetrackAll = document.getElementById('confirmResetRetrackAll');
+        if (resetRetrackAllBtn) resetRetrackAllBtn.addEventListener('click', () => {
+            this.hideModal('navModal');
+            this.showModal('resetRetrackAllModal');
+        });
+        if (closeResetRetrackAll) closeResetRetrackAll.addEventListener('click', () => this.hideModal('resetRetrackAllModal'));
+        if (cancelResetRetrackAll) cancelResetRetrackAll.addEventListener('click', () => this.hideModal('resetRetrackAllModal'));
+        if (confirmResetRetrackAll) confirmResetRetrackAll.addEventListener('click', () => this.confirmResetRetrackAll());
+
         // Video selection (server-driven)
         // Keep videoSelect for manual selection if needed, but wire Next/Prev to server
         const videoSelect = document.getElementById('videoSelect');
@@ -148,8 +210,7 @@ class AnnotationViewer {
             });
         }
 
-        document.getElementById('prevVideo').addEventListener('click', () => this.navigateVideoPrev());
-        document.getElementById('nextVideo').addEventListener('click', () => this.navigateVideoNext());
+        document.getElementById('markComplete').addEventListener('click', () => this.markCompleteAndNext());
 
         // Playback controls
         document.getElementById('prevFrame').addEventListener('click', () => this.navigateFrame(-1));
@@ -167,7 +228,6 @@ class AnnotationViewer {
         document.getElementById('eraseMode').addEventListener('click', () => this.setDrawMode('erase'));
         document.getElementById('markEmpty').addEventListener('click', () => this.markEmpty());
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
-        document.getElementById('retrackBtn').addEventListener('click', () => this.retrackVideo());
         document.getElementById('resetMask').addEventListener('click', () => this.resetMask());
 
         // Brush size sliders (both modal and inline)
@@ -228,7 +288,13 @@ class AnnotationViewer {
             switch(e.key) {
                 case ' ':
                     e.preventDefault();
-                    this.togglePlayPause();
+                    // If at end of video, restart from beginning; otherwise toggle play/pause
+                    if (this.currentFrame >= this.totalFrames - 1) {
+                        this.goToFrame(0);
+                        this.togglePlayPause();
+                    } else {
+                        this.togglePlayPause();
+                    }
                     break;
                 case 'ArrowLeft':
                     e.preventDefault();
@@ -351,6 +417,57 @@ class AnnotationViewer {
         document.getElementById('frameSlider').min = 0;
         document.getElementById('frameSlider').max = this.totalFrames - 1;
         this.updateFrameCounter();
+        this.updateSliderTypeBar();
+    }
+    
+    updateSliderTypeBar() {
+        const typeBar = document.getElementById('sliderTypeBar');
+        if (!typeBar || !this.videoData || !this.totalFrames) return;
+        
+        const slider = document.getElementById('frameSlider');
+        if (!slider) return;
+        
+        // Wait for next frame to ensure layout is complete
+        requestAnimationFrame(() => {
+            const sliderRect = slider.getBoundingClientRect();
+            
+            // Set canvas size to match slider width
+            typeBar.width = sliderRect.width;
+            typeBar.height = 24; // Match thumb height
+            
+            const ctx = typeBar.getContext('2d');
+            const width = typeBar.width;
+            const height = typeBar.height;
+            const frameWidth = width / this.totalFrames;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+            
+            // Draw colored sections for each frame
+            for (let frameNum = 0; frameNum < this.totalFrames; frameNum++) {
+                const frameData = this.videoData.mask_data?.[frameNum];
+                const x = frameNum * frameWidth;
+                const w = frameWidth;
+                
+                let color = 'transparent';
+                
+                if (frameData) {
+                    if (frameData.type === 'empty') {
+                        // Red for empty_id (25% alpha = 50% of annotation alpha)
+                        color = 'rgba(255, 0, 0, 0.25)';
+                    } else if (frameData.type === 'fluid') {
+                        // Green for label_id (25% alpha = 50% of annotation alpha)
+                        color = 'rgba(0, 255, 0, 0.25)';
+                    }
+                    // tracked (transparent) - no color
+                }
+                
+                if (color !== 'transparent') {
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x, 0, w, height);
+                }
+            }
+        });
     }
 
     updateMaskDataFromMetadata(metadata) {
@@ -402,6 +519,9 @@ class AnnotationViewer {
                 modified: false,
             };
         }
+        
+        // Update slider type bar after metadata is loaded
+        this.updateSliderTypeBar();
     }
 
 
@@ -527,6 +647,7 @@ class AnnotationViewer {
         this.updateSaveButtonState();
         this.render();
         this.updateInfoPanel();
+        this.updateSliderTypeBar();
     }
 
     cloneImageData(imageData) {
@@ -572,8 +693,33 @@ class AnnotationViewer {
         // Store dimensions for coordinate conversion
         this.renderRect = { x: displayX, y: displayY, width: displayWidth, height: displayHeight };
 
+        // Check if current frame is empty_id for visual indicator
+        const frameData = this.videoData?.mask_data?.[this.currentFrame];
+        const isEmptyFrame = frameData && frameData.type === 'empty';
+        
+        // Add/remove empty frame indicator class
+        if (isEmptyFrame) {
+            this.canvas.classList.add('empty-frame-indicator');
+        } else {
+            this.canvas.classList.remove('empty-frame-indicator');
+        }
+
         // Draw frame on main canvas (scaled to viewport)
         this.ctx.drawImage(this.frameImage, displayX, displayY, displayWidth, displayHeight);
+        
+        // Draw red outline for empty frames
+        if (isEmptyFrame) {
+            this.ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+            this.ctx.lineWidth = 4;
+            this.ctx.setLineDash([]);
+            const padding = 8; // Padding around frame
+            this.ctx.strokeRect(
+                displayX - padding,
+                displayY - padding,
+                displayWidth + (padding * 2),
+                displayHeight + (padding * 2)
+            );
+        }
 
         // Position and size overlay canvas to match display dimensions (like teef adjustCanvasSize)
         this.overlayCanvas.style.width = `${displayWidth}px`;
@@ -857,9 +1003,26 @@ class AnnotationViewer {
                 modified_frames: modifiedFramesPayload
             };
 
+            const userEmail = this.getUserEmail();
+            if (!userEmail) {
+                // Prompt for email if missing
+                await this.ensureUserEmail();
+                const retryEmail = this.getUserEmail();
+                if (!retryEmail) {
+                    alert('User email is required to save. Please refresh and enter your email.');
+                    return;
+                }
+            }
+
+            // Show blocking loading overlay
+            this.showRetrackLoading('Saving and retracking...');
+
             const allResponse = await fetch('/api/save_changes', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-User-Email': this.getUserEmail()
+                },
                 body: JSON.stringify(payload)
             });
 
@@ -870,24 +1033,25 @@ class AnnotationViewer {
                 // Update version ID for next save
                 this.currentVersionId = result.version_id;
 
-                // Clear modified frames
-                videoModifiedFrames.clear();
-                this.hasUnsavedChanges = false;
-
-                // Show success state
-                const saveBtn = document.getElementById('saveChanges');
-                saveBtn.classList.remove('unsaved');
-                saveBtn.classList.add('success');
-                setTimeout(() => {
-                    saveBtn.classList.remove('success');
-                    this.updateSaveButtonState();
-                }, 2000);
+                // DO NOT clear modified frames yet - wait for retrack to complete
+                // Edits are only committed when retrack succeeds (atomic operation)
+                // Keep edits visible so user can see them until retrack completes
+                // Save button stays in unsaved state until retrack completes
 
                 // Poll retrack status and reload when complete
                 if (result.retrack_queued) {
-                    await this.pollRetrackStatus(studyUid, seriesUid);
+                    // Update loading message and start polling - edits will be cleared only after retrack completes successfully
+                    this.showRetrackLoading('Retracking in progress...');
+                    this.pollRetrackStatus(studyUid, seriesUid);
+                } else {
+                    // No retrack queued (shouldn't happen, but handle gracefully)
+                    this.hideRetrackLoading();
+                    videoModifiedFrames.clear();
+                    this.hasUnsavedChanges = false;
+                    this.updateSaveButtonState();
                 }
             } else {
+                this.hideRetrackLoading();
                 const error = await allResponse.json().catch(() => ({ error: 'Save failed' }));
                 console.error('❌ Failed to save:', error);
                 
@@ -900,9 +1064,8 @@ class AnnotationViewer {
                             `Your version: ${error.your_version || 'unknown'}\nServer version: ${error.current_version || 'unknown'}`
                         );
                     } else if (error.error_code === 'RETRACK_IN_PROGRESS') {
-                        // Retrack is already in progress - just show message and start polling
-                        alert(`Retrack already in progress: ${error.message || 'Please wait for retrack to complete.'}`);
-                        // Start polling retrack status
+                        // Retrack is already in progress - show loading and start polling
+                        this.showRetrackLoading('Retrack already in progress...');
                         await this.pollRetrackStatus(studyUid, seriesUid);
                     } else {
                         // Other 409 errors
@@ -914,6 +1077,7 @@ class AnnotationViewer {
                 }
             }
         } catch (error) {
+            this.hideRetrackLoading();
             console.error('Error saving:', error);
             alert(`Error saving: ${error.message}`);
         }
@@ -930,19 +1094,45 @@ class AnnotationViewer {
             
             if (status.status === 'completed') {
                 console.log('Retrack complete, reloading...');
+                // Keep loading visible during reload
+                this.showRetrackLoading('Reloading retracked masks...');
+                
+                // Clear edits only after retrack completes successfully (atomic operation)
+                const { studyUid, seriesUid } = this.currentVideo;
+                const videoKey = `${studyUid}__${seriesUid}`;
+                const videoModifiedFrames = this.modifiedFrames.get(videoKey);
+                if (videoModifiedFrames) {
+                    videoModifiedFrames.clear();
+                }
+                this.hasUnsavedChanges = false;
+                
+                // Reload from server with cache busting to ensure fresh masks
                 this.frameCache.clear();
                 this.framesArchive = null;
                 this.masksArchive = {};
                 await this.loadVideoData();
-                await this.loadFramesArchive();
-                await this.goToFrame(this.currentFrame);
+                await this.loadFramesArchive(true); // Force cache bust
+                // Force reload current frame to ensure fresh masks are displayed
+                const currentFrameNum = this.currentFrame;
+                this.currentFrame = -1; // Force reload
+                await this.goToFrame(currentFrameNum);
+                
+                // Update save button state after reload
+                this.updateSaveButtonState();
+                this.hideRetrackLoading();
             } else if (status.status === 'failed') {
                 console.error('Retrack failed:', status.error);
+                this.hideRetrackLoading();
                 alert(`Retrack failed: ${status.error || 'Unknown error'}`);
+                // On failure, edits remain in modifiedFrames - user can try again or reset
+                // Keep unsaved state so user knows edits are still pending
+                this.hasUnsavedChanges = true;
+                this.updateSaveButtonState();
             } else if (attempts < maxAttempts) {
                 // Still processing - poll again
                 setTimeout(poll, 1000);
             } else {
+                this.hideRetrackLoading();
                 alert('Retrack timeout - check server status');
             }
         };
@@ -950,42 +1140,21 @@ class AnnotationViewer {
         poll();
     }
 
-    async retrackVideo() {
-        // Retrack is now triggered by save - this is legacy, just call save
-        if (this.hasUnsavedChangesForCurrentVideo()) {
-            await this.saveChanges();
-        } else {
-            alert('No changes to save. Retrack is triggered automatically when you save edits.');
-        }
-    }
 
     resetMask() {
         // Reset to the last saved state (from annotations/ if exists, else output/)
         this.maskImageData = this.cloneImageData(this.originalMaskImageData);
         this.maskType = this.originalMaskType;
         
-        // Check if there was a saved modified mask for this frame
-        const frameData = this.videoData?.mask_data?.[this.currentFrame];
-        const hadSavedModification = frameData?.modified === true;
+        // Clear any unsaved edits for this frame (whether from modifiedFrames or pending retrack)
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        const hadUnsavedEdit = videoModifiedFrames.has(this.currentFrame);
         
-        // If there was a saved modification, resetting is a new modification (unsaved)
-        // If there was no saved modification, resetting clears any unsaved changes
-        if (hadSavedModification) {
-            // Resetting to original is a new modification (different from saved state)
-            this.hasUnsavedChanges = true;
-            // Store in modified frames so it will be saved
-            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-            videoModifiedFrames.set(this.currentFrame, {
-                maskData: this.cloneImageData(this.maskImageData),
-                maskType: this.maskType,
-                is_empty: this.maskType === 'empty'
-            });
-        } else {
-            // No saved modification, so resetting clears unsaved changes
-            this.hasUnsavedChanges = false;
-            // Remove from modified frames if it was there
-            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        if (hadUnsavedEdit) {
+            // Remove from modified frames - resetting clears the unsaved edit
             videoModifiedFrames.delete(this.currentFrame);
+            // Update unsaved changes state
+            this.hasUnsavedChanges = videoModifiedFrames.size > 0;
         }
         
         this.updateSaveButtonState();
@@ -998,9 +1167,13 @@ class AnnotationViewer {
 
         const { studyUid, seriesUid } = this.currentVideo;
         try {
+            const userEmail = this.getUserEmail();
             const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/complete`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-User-Email': userEmail || ''
+                },
             });
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));
@@ -1011,6 +1184,125 @@ class AnnotationViewer {
             alert('Series marked as done on server.');
         } catch (e) {
             alert(`Failed to mark complete: ${e.message}`);
+        }
+    }
+
+    async confirmResetRetrack() {
+        // Hide modal immediately
+        this.hideModal('resetRetrackModal');
+
+        const { studyUid, seriesUid } = this.currentVideo;
+        if (!studyUid || !seriesUid) {
+            alert('No series selected');
+            return;
+        }
+
+        // Show blocking loading overlay
+        this.showRetrackLoading('Resetting retrack data...');
+
+        try {
+            const resp = await fetch(`/proxy/api/reset-retrack/${studyUid}/${seriesUid}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                alert(`Failed to reset retrack data: ${data.error || resp.status}`);
+                return;
+            }
+
+            const result = await resp.json();
+            // Keep loading visible during reload
+            this.showRetrackLoading('Reloading reset masks...');
+
+            // Clear all local edits for this video (atomic operation - edits only persist on retrack success)
+            const videoKey = `${studyUid}__${seriesUid}`;
+            this.modifiedFrames.delete(videoKey);
+            this.hasUnsavedChanges = false;
+            this.updateSaveButtonState();
+            
+            // Reload current series with reset masks (initial tracking) - add cache busting
+            // Clear ALL caches first
+            this.frameCache.clear();
+            this.framesArchive = null;
+            this.masksArchive = {};
+            // videoKey already declared above, no need to redeclare
+            
+            // Reload from server with cache busting
+            await this.loadVideoData();
+            await this.loadFramesArchive(true); // Pass true to force cache bust
+            // Force reload current frame to ensure fresh masks are displayed
+            const currentFrameNum = this.currentFrame;
+            this.currentFrame = -1; // Force reload
+            await this.goToFrame(currentFrameNum);
+            
+            this.hideRetrackLoading();
+            alert(`Retrack data reset successfully. Removed ${result.removed_jobs || 0} queue job(s).`);
+        } catch (e) {
+            this.hideRetrackLoading();
+            console.error('Error resetting retrack data:', e);
+            alert(`Failed to reset retrack data: ${e.message}`);
+        }
+    }
+
+    async confirmResetRetrackAll() {
+        // Hide modal immediately
+        this.hideModal('resetRetrackAllModal');
+
+        // Show blocking loading overlay
+        this.showRetrackLoading('Resetting retrack data for all series...');
+
+        try {
+            const resp = await fetch(`/proxy/api/reset-retrack-all`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                alert(`Failed to reset all retrack data: ${data.error || resp.status}`);
+                return;
+            }
+
+            const result = await resp.json();
+            // Keep loading visible during reload
+            this.showRetrackLoading('Reloading reset masks...');
+
+            // Clear all local edits for current video and reload
+            if (this.currentVideo && this.currentVideo.studyUid && this.currentVideo.seriesUid) {
+                const { studyUid, seriesUid } = this.currentVideo;
+                const videoKey = `${studyUid}__${seriesUid}`;
+                
+                // Clear all local edits
+                this.modifiedFrames.delete(videoKey);
+                this.hasUnsavedChanges = false;
+                this.updateSaveButtonState();
+                
+                // Clear ALL caches first
+                this.frameCache.clear();
+                this.framesArchive = null;
+                this.masksArchive = {};
+                
+                // Reload from server with cache busting
+                await this.loadVideoData();
+                await this.loadFramesArchive(true); // Pass true to force cache bust
+                // Force reload current frame to ensure fresh masks are displayed
+                const currentFrameNum = this.currentFrame;
+                this.currentFrame = -1; // Force reload
+                await this.goToFrame(currentFrameNum);
+            }
+            
+            this.hideRetrackLoading();
+            alert(`Retrack data reset successfully for all series. Reset ${result.reset_series || 0}/${result.total_series || 0} series. Removed ${result.removed_jobs || 0} queue job(s).`);
+        } catch (e) {
+            this.hideRetrackLoading();
+            console.error('Error resetting all retrack data:', e);
+            alert(`Failed to reset all retrack data: ${e.message}`);
         }
     }
 
@@ -1140,15 +1432,6 @@ class AnnotationViewer {
             // For now, assume method is 'dis' (the flow method)
             const method = 'dis'; // TODO: Get from server response or config
             
-            // Add current video to history before loading new one (if exists)
-            if (this.currentVideo && this.currentVideo.studyUid) {
-                this.videoHistory.push({
-                    method: this.currentVideo.method,
-                    studyUid: this.currentVideo.studyUid,
-                    seriesUid: this.currentVideo.seriesUid
-                });
-            }
-            
             // Check if series exists locally before trying to load
             // The client needs to have synced its dataset to include this series
             const checkResponse = await fetch(`/api/video/${method}/${data.study_uid}/${data.series_uid}`);
@@ -1170,20 +1453,6 @@ class AnnotationViewer {
     }
     
     /**
-     * Navigate to previous video from history (client-side stack).
-     */
-    async navigateVideoPrev() {
-        if (this.videoHistory.length === 0) {
-            // No history - try to load next series instead
-            await this.loadNextSeries();
-            return;
-        }
-        
-        const prevVideo = this.videoHistory.pop();
-        await this.loadVideo(prevVideo.method, prevVideo.studyUid, prevVideo.seriesUid);
-    }
-    
-    /**
      * Navigate to next video using server's selection logic.
      */
     async navigateVideoNext() {
@@ -1191,15 +1460,48 @@ class AnnotationViewer {
     }
     
     /**
-     * Get user email from config or prompt (for identification header).
-     * The client backend (client.py) automatically adds X-User-Email header
-     * from config, so we don't need to set it here. This is a placeholder
-     * for future client-side identification if needed.
+     * Mark current series as complete (note user), then get next series.
+     * This replaces the old "next series" button - now it marks complete first.
+     */
+    async markCompleteAndNext() {
+        if (!this.currentVideo || !this.currentVideo.studyUid) {
+            return;
+        }
+        
+        const studyUid = this.currentVideo.studyUid;
+        const seriesUid = this.currentVideo.seriesUid;
+        const userEmail = this.getUserEmail();
+        
+        try {
+            // Mark series as complete (notes the user who completed it)
+            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/complete`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-User-Email': userEmail || ''
+                },
+            });
+            
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                alert(`Failed to mark complete: ${data.error || resp.status}`);
+                return;
+            }
+            
+            // Get next series (server will exclude this completed series)
+            await this.loadNextSeries();
+        } catch (error) {
+            console.error('Error marking complete and loading next:', error);
+            alert(`Failed to mark complete: ${error.message}`);
+        }
+    }
+    
+    /**
+     * Get user email from localStorage (set during init).
+     * This is sent in X-User-Email header to identify the user.
      */
     getUserEmail() {
-        // Client backend handles X-User-Email header automatically via proxy_to_server
-        // Return empty string - header will be added by backend if config.user_email is set
-        return '';
+        return this.userEmail || localStorage.getItem('userEmail') || '';
     }
     
     /**
@@ -1303,7 +1605,7 @@ class AnnotationViewer {
         this.stopActivityPings();
     }
     
-    async loadFramesArchive() {
+    async loadFramesArchive(forceCacheBust = false) {
         const loadingDiv = document.getElementById('loadingIndicator') || (() => {
             const d = document.createElement('div');
             d.id = 'loadingIndicator';
@@ -1316,7 +1618,11 @@ class AnnotationViewer {
 
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
-            const response = await fetch(`/api/frames/${method}/${studyUid}/${seriesUid}`);
+            let url = `/api/frames/${method}/${studyUid}/${seriesUid}`;
+            if (forceCacheBust) {
+                url += `?t=${Date.now()}`;
+            }
+            const response = await fetch(url);
             
             if (!response.ok) {
                 if (response.status === 404) {
@@ -1356,9 +1662,15 @@ class AnnotationViewer {
             }
 
             // Load masks archive (.tar format, no gzip) - get version ID from headers
+            // Add cache busting if forceCacheBust is true
             this.masksArchive = {};
             if (masks_archive_url) {
-                const masksArchiveResponse = await fetch(masks_archive_url);
+                let masksUrl = masks_archive_url;
+                if (forceCacheBust) {
+                    const separator = masks_archive_url.includes('?') ? '&' : '?';
+                    masksUrl = `${masks_archive_url}${separator}t=${Date.now()}`;
+                }
+                const masksArchiveResponse = await fetch(masksUrl);
                 
                 if (!masksArchiveResponse.ok) {
                     console.warn(`Failed to load masks archive: ${masksArchiveResponse.status} ${masksArchiveResponse.statusText}`);
@@ -1446,6 +1758,26 @@ class AnnotationViewer {
 
     hideModal(modalId) {
         document.getElementById(modalId).classList.remove('active');
+    }
+
+    showRetrackLoading(message = 'Processing retrack...') {
+        const loadingModal = document.getElementById('retrackLoadingModal');
+        const loadingText = document.getElementById('retrackLoadingText');
+        if (loadingText) {
+            loadingText.textContent = message;
+        }
+        if (loadingModal) {
+            loadingModal.classList.add('active');
+            // Prevent closing by clicking outside
+            loadingModal.style.pointerEvents = 'auto';
+        }
+    }
+
+    hideRetrackLoading() {
+        const loadingModal = document.getElementById('retrackLoadingModal');
+        if (loadingModal) {
+            loadingModal.classList.remove('active');
+        }
     }
 
     updateVideoInfo() {

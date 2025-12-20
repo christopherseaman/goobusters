@@ -35,6 +35,26 @@ class FrameExtractor:
         """Path to cached .tar archive of frames (no gzip, WebP already compressed)."""
         return self.frame_dir(study_uid, series_uid) / "frames.tar"
 
+    def frames_exist(self, video_path: Path, study_uid: str, series_uid: str) -> bool:
+        """
+        Fast check if frames exist and are up-to-date.
+        Does NOT extract frames - just checks existence.
+        Returns True if frames.tar and manifest.json exist and are current.
+        """
+        manifest_path = self.manifest_path(study_uid, series_uid)
+        tar_path = self.frames_tar_path(study_uid, series_uid)
+        
+        if not manifest_path.exists() or not tar_path.exists():
+            return False
+        
+        try:
+            source_mtime = os.path.getmtime(video_path)
+            with manifest_path.open() as f:
+                manifest = json.load(f)
+            return manifest.get("source_mtime") == source_mtime
+        except (OSError, json.JSONDecodeError, KeyError):
+            return False
+
     def ensure_frames(
         self, video_path: Path, study_uid: str, series_uid: str
     ) -> Path:

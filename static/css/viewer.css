@@ -24,6 +24,28 @@ html, body {
     height: 100%;
     cursor: crosshair;
     z-index: 1;
+    transition: box-shadow 0.3s ease;
+}
+
+/* Empty frame indicator: red outline + pulsing drop-shadow */
+#canvas.empty-frame-indicator {
+    box-shadow: 0 0 20px rgba(255, 0, 0, 0.6),
+                0 0 40px rgba(255, 0, 0, 0.4),
+                0 0 60px rgba(255, 0, 0, 0.2);
+    animation: emptyFramePulse 2s ease-in-out infinite;
+}
+
+@keyframes emptyFramePulse {
+    0%, 100% {
+        box-shadow: 0 0 20px rgba(255, 0, 0, 0.6),
+                    0 0 40px rgba(255, 0, 0, 0.4),
+                    0 0 60px rgba(255, 0, 0, 0.2);
+    }
+    50% {
+        box-shadow: 0 0 30px rgba(255, 0, 0, 0.8),
+                    0 0 60px rgba(255, 0, 0, 0.6),
+                    0 0 90px rgba(255, 0, 0, 0.4);
+    }
 }
 
 #overlayCanvas {
@@ -239,6 +261,7 @@ html, body {
     display: flex;
     align-items: center;
     gap: 16px;
+    position: relative;
 }
 
 .slider-label {
@@ -250,32 +273,59 @@ html, body {
     text-align: center;
 }
 
-#frameSlider {
-    width: 100%;
-    height: 3px;  /* Match track height */
-    -webkit-appearance: none;
-    appearance: none;
-    background: #4CAF50;  /* Fallback green */
-    border-radius: 2px;
-    outline: none;
-    box-shadow: 0 0 10px rgba(76, 175, 80, 0.8), 0 0 20px rgba(76, 175, 80, 0.4);
+/* Background bar for frame type indicators */
+.slider-type-bar {
+    position: absolute;
+    left: 56px; /* After min label */
+    right: 56px; /* Before max label */
+    top: 50%;
+    transform: translateY(-50%);
+    height: 24px; /* Match thumb height for larger click target */
+    pointer-events: none;
+    border-radius: 12px;
+    z-index: 0;
 }
 
-/* The actual track line */
+/* Slider wrapper needs relative positioning */
+.slider-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+#frameSlider {
+    width: 100%;
+    height: 24px;  /* Match thumb height for larger click target */
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;  /* Transparent, type bar shows colors */
+    border-radius: 2px;
+    outline: none;
+    position: relative;
+    z-index: 1;
+    cursor: pointer;
+    margin: 0;
+    padding: 0;
+}
+
+/* The actual track line - show thin line on top of type bar */
 #frameSlider::-webkit-slider-runnable-track {
     width: 100%;
-    height: 3px;
-    background: #4CAF50;  /* Solid green */
+    height: 3px;  /* Thin visible line */
+    background: rgba(76, 175, 80, 0.8);  /* Semi-transparent green line */
     border: none;
     border-radius: 2px;
+    margin-top: 10.5px; /* Center vertically: (24px - 3px) / 2 */
+    box-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
 }
 
 #frameSlider::-moz-range-track {
     width: 100%;
-    height: 3px;
-    background: #4CAF50;  /* Solid green */
+    height: 3px;  /* Thin visible line */
+    background: rgba(76, 175, 80, 0.8);  /* Semi-transparent green line */
     border: none;
     border-radius: 2px;
+    box-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
 }
 
 #frameSlider::-webkit-slider-thumb {
@@ -286,8 +336,10 @@ html, body {
     background: #4CAF50;
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    margin-top: -10.5px; /* Center on 3px track: (24px - 3px) / 2 */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 10px rgba(76, 175, 80, 0.8);
+    margin-top: -10.5px; /* Center on track: (24px - 3px) / 2 */
+    position: relative;
+    z-index: 2;
 }
 
 #frameSlider::-moz-range-thumb {
@@ -297,7 +349,9 @@ html, body {
     border-radius: 50%;
     cursor: pointer;
     border: none;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 10px rgba(76, 175, 80, 0.8);
+    position: relative;
+    z-index: 2;
 }
 
 .frame-info {
@@ -680,6 +734,70 @@ kbd {
 @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+}
+
+/* Retrack loading overlay - blocking with fun hourglass animation */
+.retrack-loading-content {
+    text-align: center;
+    color: #fff;
+    padding: 40px;
+}
+
+.hourglass-container {
+    margin-bottom: 30px;
+}
+
+.hourglass {
+    font-size: 80px;
+    display: inline-block;
+    animation: hourglassFlip 2s ease-in-out infinite;
+    filter: drop-shadow(0 0 20px rgba(255, 255, 255, 0.5));
+}
+
+@keyframes hourglassFlip {
+    0%, 100% {
+        transform: rotate(0deg) scale(1);
+        opacity: 1;
+    }
+    25% {
+        transform: rotate(90deg) scale(1.1);
+        opacity: 0.8;
+    }
+    50% {
+        transform: rotate(180deg) scale(1);
+        opacity: 0.6;
+    }
+    75% {
+        transform: rotate(270deg) scale(1.1);
+        opacity: 0.8;
+    }
+}
+
+.retrack-loading-text {
+    font-size: 20px;
+    font-weight: 600;
+    color: #fff;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+
+/* Prevent interaction with retrack loading modal */
+#retrackLoadingModal {
+    pointer-events: auto;
+    cursor: wait;
+}
+
+#retrackLoadingModal .modal-content {
+    pointer-events: none;
 }
 
 .loading-text {

@@ -14,8 +14,12 @@ project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+import argparse
 import atexit
 import json
+import logging
+import os
+import signal
 import tarfile
 
 import httpx
@@ -59,7 +63,13 @@ class ClientContext:
         self.http_client.close()
 
 
-def create_app(config: Optional[ClientConfig] = None) -> Flask:
+# Cache for video list to avoid expensive operations on every request
+# Module-level so it persists across requests
+_videos_cache: Optional[list[dict]] = None
+_videos_cache_mtime: Optional[float] = None
+
+
+def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False) -> Flask:
     config = config or load_config("client")
     context = ClientContext(config)
 
@@ -69,14 +79,58 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         static_folder=str(STATIC_DIR),
     )
     app.config["CLIENT_CONTEXT"] = context
+    
+    # Initialize client: sync dataset and lazily extract frames for all series
+    # This must complete before serving the viewer (per architecture)
+    if not skip_startup:
+        logger = logging.getLogger(__name__)
+        logger.info("Initializing client: syncing dataset and extracting frames (lazily)...")
+        
+        # Sync dataset (downloads/refreshes MD.ai data)
+        images_dir = context.dataset.sync_dataset()
+        logger.info(f"Dataset synced. Images directory: {images_dir}")
+        
+        # Lazily extract frames for all series (only if missing)
+        series = context.dataset.list_local_series()
+        logger.info(f"Checking and extracting frames for {len(series)} series (lazy)...")
+        
+        extracted = []
+        for idx, info in enumerate(series, 1):
+            # Only extract if frames don't exist or are stale
+            if not context.frames.frames_exist(info.video_path, info.study_uid, info.series_uid):
+                context.frames.ensure_frames(
+                    info.video_path, info.study_uid, info.series_uid
+                )
+                extracted.append(f"{info.study_uid}/{info.series_uid}")
+                if idx % 10 == 0:
+                    logger.info(f"  Extracted frames for {idx}/{len(series)} series...")
+        
+        logger.info(f"Client initialization complete. Extracted frames for {len(extracted)}/{len(series)} series (lazy extraction).")
 
     def _build_videos() -> list[dict]:
         """
         Build the list of locally available series for the viewer.
+        Cached to avoid expensive operations on every request.
         """
+        global _videos_cache, _videos_cache_mtime
+        
+        # Check if cache is still valid
+        # Simple approach: if cache exists and annotations are already loaded, use cache
+        # This avoids expensive glob pattern matching on every request
+        if _videos_cache is not None:
+            # If annotations are already loaded in the dataset manager, cache is likely still valid
+            # (we'll invalidate manually when needed, e.g., after dataset sync)
+            if hasattr(context.dataset, '_annotations_df') and context.dataset._annotations_df is not None:
+                return _videos_cache
+            # If cache exists but annotations not loaded, still use cache
+            # (first request will load annotations and rebuild cache if needed)
+            return _videos_cache
+        
         try:
             series = context.dataset.list_local_series()
         except DatasetNotReady:
+            _videos_cache = []
+            _videos_cache_mtime = None
             return []
 
         labels = [
@@ -84,7 +138,7 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             {"labelId": config.empty_id, "labelName": "Empty"},
         ]
 
-        return [
+        _videos_cache = [
             {
                 "method": config.flow_method,
                 "study_uid": info.study_uid,
@@ -95,21 +149,64 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             }
             for info in series
         ]
+        _videos_cache_mtime = None  # Simplified - no mtime tracking needed
+        return _videos_cache
 
     def _find_series_info(study_uid: str, series_uid: str):
-        for item in _build_videos():
+        """
+        Find series info efficiently - uses cache if available, otherwise builds minimal info.
+        """
+        # Try cache first (fast path)
+        videos = _build_videos()
+        for item in videos:
             if item["study_uid"] == study_uid and item["series_uid"] == series_uid:
                 return item
-        return None
+        
+        # If not in cache, try to get minimal info without full list scan
+        # This is a fallback for when cache is invalidated
+        try:
+            video_path = context.dataset.resolve_video(study_uid, series_uid)
+            if not video_path.exists():
+                return None
+            
+            # Get minimal info from dataset manager without full scan
+            images_dir = context.dataset._ensure_images_dir()
+            annotations_df = context.dataset._ensure_annotations()
+            studies_lookup = context.dataset._studies_lookup or {}
+            
+            # Find this specific series in annotations
+            series_annotations = annotations_df[
+                (annotations_df["StudyInstanceUID"] == study_uid) &
+                (annotations_df["SeriesInstanceUID"] == series_uid)
+            ]
+            if series_annotations.empty:
+                return None
+            
+            study_info = studies_lookup.get(study_uid, {})
+            labels = [
+                {"labelId": config.label_id, "labelName": "Fluid"},
+                {"labelId": config.empty_id, "labelName": "Empty"},
+            ]
+            
+            return {
+                "method": config.flow_method,
+                "study_uid": study_uid,
+                "series_uid": series_uid,
+                "exam_number": int(study_info.get("number")) if study_info.get("number") not in (None, "") else None,
+                "series_number": int(study_info.get("SeriesNumber") or study_info.get("seriesNumber") or 0) if study_info.get("SeriesNumber") or study_info.get("seriesNumber") else None,
+                "labels": labels,
+            }
+        except (DatasetNotReady, FileNotFoundError, Exception):
+            return None
 
     # --------------------------------------------------------------------- Routes
     @app.route("/healthz")
     def healthcheck():
         return jsonify({
-            "client_ready": context.dataset.dataset_ready(),
-            "server_url": config.server_url,
-            "video_cache": str(config.video_cache_path),
-            "frames_cache": str(config.frames_path),
+                "client_ready": context.dataset.dataset_ready(),
+                "server_url": config.server_url,
+                "video_cache": str(config.video_cache_path),
+                "frames_cache": str(config.frames_path),
         })
 
     @app.route("/")
@@ -140,6 +237,9 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
     def api_video(method: str, study_uid: str, series_uid: str):
         """
         Return minimal metadata for a given series to drive the viewer.
+        
+        This endpoint should return quickly. Frame extraction happens asynchronously
+        in /api/frames endpoint if needed.
         """
         info = _find_series_info(study_uid, series_uid)
         if not info:
@@ -147,19 +247,32 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
         try:
             video_path = context.dataset.resolve_video(study_uid, series_uid)
-            context.frames.ensure_frames(video_path, study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError, FrameExtractionError) as exc:
+        except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
 
+        # Try to get frame count from manifest first (fast)
         manifest_path = context.frames.manifest_path(study_uid, series_uid)
         frame_count = 0
         if manifest_path.exists():
-            with manifest_path.open() as f:
-                manifest = json.load(f)
-                frame_count = manifest.get("frame_count", 0)
+            try:
+                with manifest_path.open() as f:
+                    manifest = json.load(f)
+                    frame_count = manifest.get("frame_count", 0)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        # If no manifest, try to get count from video file directly (fast, no extraction)
         if frame_count == 0:
-            frame_dir = context.frames.frame_dir(study_uid, series_uid)
-            frame_count = len(list(frame_dir.glob("frame_*.webp")))
+            try:
+                import cv2
+                cap = cv2.VideoCapture(str(video_path))
+                if cap.isOpened():
+                    # Get frame count from video properties (fast)
+                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    cap.release()
+            except Exception:
+                # If we can't get count, return 0 - frames will be extracted in /api/frames
+                pass
 
         return jsonify({
             "total_frames": frame_count,
@@ -176,7 +289,9 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
     def api_frames(method: str, study_uid: str, series_uid: str):
         """
         Return URLs for frame and mask archives used by the legacy viewer JS.
-        Frames are packaged on demand into a tar.gz with WebP frames.
+        
+        Frames should already exist from client startup initialization.
+        This endpoint only checks existence and returns URLs - it does NOT extract frames.
         """
         info = _find_series_info(study_uid, series_uid)
         if not info:
@@ -184,9 +299,15 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
         try:
             video_path = context.dataset.resolve_video(study_uid, series_uid)
-            context.frames.ensure_frames(video_path, study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError, FrameExtractionError) as exc:
+        except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
+
+        # Fast check: frames should already exist from startup
+        if not context.frames.frames_exist(video_path, study_uid, series_uid):
+            return jsonify({
+                "error": "Frames not found. Client startup should have extracted frames. Run /api/dataset/sync to extract frames.",
+                "error_code": "FRAMES_NOT_EXTRACTED"
+            }), 404
 
         frames_archive_url = f"/api/frames_archive/{study_uid}/{series_uid}.tar"
         masks_archive_url = f"/proxy/api/masks/{study_uid}/{series_uid}"
@@ -199,12 +320,15 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
     def frames_archive(study_uid: str, series_uid: str):
         """
         Serve cached .tar archive of WebP frames (no gzip - WebP already compressed).
-        Archive is prebuilt during frame extraction.
+        Archive is prebuilt during frame extraction (via /api/dataset/sync).
         """
         try:
             video_path = context.dataset.resolve_video(study_uid, series_uid)
-            context.frames.ensure_frames(video_path, study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError, FrameExtractionError):
+        except (DatasetNotReady, FileNotFoundError):
+            abort(404)
+
+        # Fast check: frames should already exist from sync
+        if not context.frames.frames_exist(video_path, study_uid, series_uid):
             abort(404)
 
         tar_path = context.frames.frames_tar_path(study_uid, series_uid)
@@ -229,6 +353,11 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         This is intentionally blocking so callers know that, on success, both
         dataset and frames are ready for use.
         """
+        # Invalidate cache before syncing (dataset will change)
+        global _videos_cache, _videos_cache_mtime
+        _videos_cache = None
+        _videos_cache_mtime = None
+        
         images_dir = context.dataset.sync_dataset()
 
         extracted = []
@@ -472,8 +601,12 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             "Content-Type": "application/x-tar",
             "X-Previous-Version-ID": previous_version_id or "",
         }
-        # Identification for last editor
-        if config.user_email:
+        # Identification for last editor - prefer X-User-Email from request (frontend)
+        # Server accepts either X-Editor or X-User-Email
+        user_email = request.headers.get("X-User-Email")
+        if user_email:
+            headers["X-User-Email"] = user_email
+        elif config.user_email:
             headers["X-Editor"] = config.user_email
 
         try:
@@ -523,63 +656,84 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         Forward requests to the centralized tracking server with MD.ai auth header.
         Preserves custom headers like X-Previous-Version-ID and X-Editor.
         """
-        url = f"{config.server_url.rstrip('/')}/{subpath}"
-        headers = {
-            key: value
-            for key, value in request.headers
-            if key.lower() not in {"host", "content-length", "connection", "authorization"}
-        }
-
-        # Add X-User-Email from config if available and not already set
-        if (
-            config.user_email
-            and "X-User-Email" not in headers
-            and "X-Editor" not in headers
-        ):
-            headers["X-User-Email"] = config.user_email
-
-        files = None
-        if request.files:
-            files = {
-                name: (file.filename, file.stream, file.mimetype)
-                for name, file in request.files.items()
+        try:
+            url = f"{config.server_url.rstrip('/')}/{subpath}"
+            headers = {
+                key: value
+                for key, value in request.headers
+                if key.lower() not in {"host", "content-length", "connection", "authorization"}
             }
 
-        # Handle binary data (e.g., .tgz archives) - don't convert to JSON
-        data = None
-        json_payload = None
-        if request.is_json and not request.data:
-            # Only use JSON if it's actually JSON and no binary data
-            json_payload = request.get_json(silent=True)
-        else:
-            # Binary data (e.g., .tgz archives for POST /api/masks)
-            data = request.get_data()
+            # Add X-User-Email from request header (set by frontend) or config
+            # Frontend sends X-User-Email from localStorage, which takes precedence
+            if "X-User-Email" not in headers:
+                # Check if frontend sent it
+                frontend_email = request.headers.get("X-User-Email")
+                if frontend_email:
+                    headers["X-User-Email"] = frontend_email
+                elif config.user_email:
+                    # Fallback to config if frontend didn't send it
+                    headers["X-User-Email"] = config.user_email
 
-        resp = context.http_client.request(
-            request.method,
-            url,
-            params=request.args,
-            data=data,
-            json=json_payload,
-            files=files,
-            headers=headers,
-            timeout=60,
-        )
+            files = None
+            if request.files:
+                files = {
+                    name: (file.filename, file.stream, file.mimetype)
+                    for name, file in request.files.items()
+                }
 
-        excluded_headers = {
-            "content-length",
-            "content-encoding",
-            "transfer-encoding",
-            "connection",
-        }
-        response_headers = {
-            key: value
-            for key, value in resp.headers.items()
-            if key.lower() not in excluded_headers
-        }
-        return Response(
-            resp.content, status=resp.status_code, headers=response_headers
-        )
+            # Handle binary data (e.g., .tgz archives) - don't convert to JSON
+            data = None
+            json_payload = None
+            if request.is_json and not request.data:
+                # Only use JSON if it's actually JSON and no binary data
+                json_payload = request.get_json(silent=True)
+            else:
+                # Binary data (e.g., .tgz archives for POST /api/masks)
+                data = request.get_data()
+
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Proxying {request.method} {subpath} to {url}")
+
+            resp = context.http_client.request(
+                request.method,
+                url,
+                params=request.args,
+                data=data,
+                json=json_payload,
+                files=files,
+                headers=headers,
+                timeout=60,
+            )
+
+            logger.debug(f"Proxy response: {resp.status_code} for {subpath}")
+
+            excluded_headers = {
+                "content-length",
+                "content-encoding",
+                "transfer-encoding",
+                "connection",
+            }
+            response_headers = {
+                key: value
+                for key, value in resp.headers.items()
+                if key.lower() not in excluded_headers
+            }
+            return Response(
+                resp.content, status=resp.status_code, headers=response_headers
+            )
+        except Exception as exc:
+            import traceback
+            logger = logging.getLogger(__name__)
+            error_msg = f"Error proxying {request.method} {subpath} to server: {exc}"
+            logger.error(error_msg, exc_info=True)
+            print(f"ERROR in proxy: {error_msg}", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
+            return jsonify({
+                "error": "Proxy error",
+                "error_message": str(exc),
+                "path": subpath
+            }), 502
 
     # Close resources when the process exits (avoid closing per-request)
     atexit.register(context.close)
@@ -587,10 +741,219 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
     return app
 
 
+def get_pid_file(config: ClientConfig) -> Path:
+    """Get path to PID file."""
+    pid_dir = config.video_cache_path.parent / "state"
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    return pid_dir / "client.pid"
+
+
+def read_pid(pid_file: Path) -> Optional[int]:
+    """Read PID from file if it exists and process is still running."""
+    if not pid_file.exists():
+        return None
+    
+    try:
+        pid = int(pid_file.read_text().strip())
+        # Check if process is still running
+        os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
+        return pid
+    except (ValueError, OSError, ProcessLookupError):
+        # PID file exists but process is dead - remove stale file
+        pid_file.unlink(missing_ok=True)
+        return None
+
+
+def write_pid(pid_file: Path) -> None:
+    """Write current process PID to file."""
+    pid_file.write_text(str(os.getpid()))
+
+
+def update_latest_log_symlink(log_file: Path) -> None:
+    """Create or update symlink log/latest pointing to the current log file."""
+    log_dir = log_file.parent
+    latest_link = log_dir / "latest"
+    
+    # Remove existing symlink if it exists
+    if latest_link.exists() or latest_link.is_symlink():
+        try:
+            latest_link.unlink()
+        except OSError:
+            pass  # Ignore errors removing old symlink
+    
+    # Create new symlink
+    try:
+        latest_link.symlink_to(log_file.name)
+    except OSError as e:
+        # Log but don't fail if symlink creation fails
+        # Use print since logger might not be set up yet
+        import sys
+        print(f"Warning: Failed to create latest log symlink: {e}", file=sys.stderr)
+
+
+def kill_existing(pid_file: Path) -> bool:
+    """Kill existing process if PID file exists and process is running. Returns True if killed."""
+    pid = read_pid(pid_file)
+    if pid is None:
+        return False
+    
+    try:
+        os.kill(pid, signal.SIGTERM)
+        # Wait a bit for graceful shutdown
+        import time
+        for _ in range(10):  # Wait up to 1 second
+            time.sleep(0.1)
+            try:
+                os.kill(pid, 0)
+            except (OSError, ProcessLookupError):
+                # Process is dead
+                pid_file.unlink(missing_ok=True)
+                return True
+        # Still running, force kill
+        os.kill(pid, signal.SIGKILL)
+        pid_file.unlink(missing_ok=True)
+        return True
+    except (OSError, ProcessLookupError):
+        # Process already dead
+        pid_file.unlink(missing_ok=True)
+        return False
+
+
+def daemonize(log_file: Path, pid_file: Path) -> None:
+    """Detach process and run in background."""
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # Parent process - print log location and exit
+            print(f"Log file: {log_file}")
+            print(f"PID file: {pid_file}")
+            os._exit(0)
+    except OSError as e:
+        sys.stderr.write(f"Fork failed: {e}\n")
+        sys.exit(1)
+    
+    # Child process continues
+    os.setsid()  # Create new session
+    
+    # Second fork
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # Parent process - exit
+            os._exit(0)
+    except OSError as e:
+        sys.stderr.write(f"Second fork failed: {e}\n")
+        sys.exit(1)
+    
+    # Redirect standard file descriptors to /dev/null
+    os.chdir("/")
+    os.umask(0)
+    
+    # Redirect stdin, stdout, stderr to /dev/null
+    with open("/dev/null", "r") as devnull:
+        os.dup2(devnull.fileno(), sys.stdin.fileno())
+    with open("/dev/null", "w") as devnull:
+        os.dup2(devnull.fileno(), sys.stdout.fileno())
+        os.dup2(devnull.fileno(), sys.stderr.fileno())
+    
+    # Close file descriptors (except 0, 1, 2 which are now /dev/null)
+    import resource
+    maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if maxfd == resource.RLIM_INFINITY:
+        maxfd = 1024
+    
+    for fd in range(3, maxfd):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Goobusters client backend")
+    parser.add_argument(
+        "-d", "--daemon",
+        action="store_true",
+        help="Run as daemon (detached process)"
+    )
+    parser.add_argument(
+        "-k", "--kill",
+        action="store_true",
+        help="Kill existing client process before starting"
+    )
+    args = parser.parse_args()
+    
     config = load_config("client")
-    app = create_app(config)
-    app.run(host="0.0.0.0", port=config.client_port)
+    pid_file = get_pid_file(config)
+    
+    # Set up logging
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    
+    # Create log directory
+    log_dir = Path(__file__).parent.parent / "client" / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Log filename: YYMMDD-HHMMSS.log
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+    log_file = log_dir / f"{timestamp}.log"
+    
+    # Create/update symlink to latest log
+    update_latest_log_symlink(log_file)
+    
+    # Kill existing process if requested
+    if args.kill:
+        if kill_existing(pid_file):
+            print("Killed existing client process")
+        else:
+            print("No existing client process found")
+    
+    # Check if client is already running
+    existing_pid = read_pid(pid_file)
+    if existing_pid is not None:
+        print(f"Client is already running (PID: {existing_pid})")
+        print(f"Use -k to kill it, or check PID file: {pid_file}")
+        sys.exit(1)
+    
+    # Daemonize if requested (must be before logging setup)
+    if args.daemon:
+        daemonize(log_file, pid_file)
+    
+    # File handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.INFO)
+    file_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+    
+    # Console handler (if not daemonized)
+    if not args.daemon:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(file_formatter)
+        logger.addHandler(console_handler)
+    
+    # Write PID file
+    write_pid(pid_file)
+    
+    # Log startup
+    logger.info("=" * 60)
+    logger.info("Starting Goobusters Client")
+    logger.info(f"PID: {os.getpid()}")
+    logger.info(f"PID file: {pid_file}")
+    logger.info(f"Log file: {log_file}")
+    logger.info("=" * 60)
+    
+    try:
+        app = create_app(config)
+        logger.info(f"Client ready on 0.0.0.0:{config.client_port}")
+        app.run(host="0.0.0.0", port=config.client_port)
+    finally:
+        # Clean up PID file on exit
+        pid_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -70,8 +70,17 @@ class RetrackQueue:
         if not self.queue_file.exists():
             return []
 
-        with self.queue_file.open() as f:
-            data = json.load(f)
+        try:
+            with self.queue_file.open() as f:
+                content = f.read().strip()
+                if not content:
+                    # Empty file - return empty list
+                    return []
+                data = json.loads(content)
+        except (json.JSONDecodeError, ValueError) as e:
+            # Corrupted or invalid JSON - log and return empty list
+            print(f"[RETRACK QUEUE] Warning: Failed to load queue file {self.queue_file}: {e}. Returning empty queue.")
+            return []
 
         return [RetrackJob.from_dict(item) for item in data]
 
@@ -216,6 +225,36 @@ class RetrackQueue:
                 return False
 
         return False
+
+    def reset_stale_processing_jobs(self) -> int:
+        """
+        Reset any jobs stuck in 'processing' status back to 'pending'.
+        
+        This should be called on server startup to recover from crashes
+        or unexpected shutdowns where jobs were marked as processing but
+        never completed.
+        
+        Returns the number of jobs reset.
+        """
+        with self._lock:
+            jobs = self._load_queue()
+            reset_count = 0
+            
+            for job in jobs:
+                if job.status == "processing":
+                    job.status = "pending"
+                    job.started_at = None  # Clear start time
+                    reset_count += 1
+            
+            if reset_count > 0:
+                self._save_queue(jobs)
+            
+            return reset_count
+
+    def clear_queue(self) -> None:
+        """Clear all jobs from the queue."""
+        with self._lock:
+            self._save_queue([])
 
     def get_queue_position(
         self, study_uid: str, series_uid: str, version_id: str

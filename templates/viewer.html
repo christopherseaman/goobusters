@@ -36,8 +36,7 @@
 
     <!-- Floating control buttons (top-right) -->
     <div class="control-buttons top-right" id="controlButtons">
-        <button class="control-btn" id="prevVideo" title="Previous Video">⏪</button>
-        <button class="control-btn" id="nextVideo" title="Next Video">⏩</button>
+        <button class="control-btn" id="markComplete" title="Mark Complete & Get Next Series">✅</button>
         <button class="control-btn" id="infoBtn" title="Info">ℹ️</button>
         <button class="control-btn" id="navBtn" title="Navigation">🎬</button>
         <button class="control-btn" id="resetMask" title="Reset">↺</button>
@@ -45,8 +44,7 @@
 
     <!-- Save button (bottom-left) -->
     <div class="save-button bottom-left">
-        <button class="tool-btn" id="saveChanges" title="Save">💾</button>
-        <button class="tool-btn" id="retrackBtn" title="Re-track">⚡</button>
+        <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
         <div class="frame-counter" id="frameCounter">0 / 0</div>
     </div>
 
@@ -62,6 +60,7 @@
     <div class="slider-container" id="sliderContainer">
         <div class="slider-wrapper">
             <span class="slider-label" id="sliderMin">0</span>
+            <canvas id="sliderTypeBar" class="slider-type-bar"></canvas>
             <input type="range" id="frameSlider" min="0" max="100" value="0">
             <span class="slider-label" id="sliderMax">0</span>
         </div>
@@ -162,6 +161,16 @@
                     <div><kbd>⌘S</kbd> Save changes</div>
                 </div>
             </div>
+
+            <div class="nav-section">
+                <h3>Advanced</h3>
+                <button class="modal-btn warning" id="resetRetrackBtn" style="width: 100%; margin-top: 10px;">
+                    🔄 Reset Retrack Data (Current Series)
+                </button>
+                <button class="modal-btn warning" id="resetRetrackAllBtn" style="width: 100%; margin-top: 10px;">
+                    🔄 Reset Retrack Data (All Series)
+                </button>
+            </div>
         </div>
     </div>
 
@@ -193,6 +202,62 @@
             <div class="button-row">
                 <button class="modal-btn warning" id="resetAndReload">🔄 Reset & Reload</button>
                 <button class="modal-btn" id="cancelConflict">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reset retrack confirmation modal -->
+    <div class="modal" id="resetRetrackModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeResetRetrack">✕</button>
+            <h2>Reset Retrack Data?</h2>
+            <div class="info-section">
+                <p><strong>This will permanently remove:</strong></p>
+                <ul style="text-align: left; margin: 15px 0;">
+                    <li>All retracked masks and data</li>
+                    <li>Retrack queue jobs for this series</li>
+                    <li>Version history (resets to initial tracking)</li>
+                    <li>Uploaded mask archives</li>
+                </ul>
+                <p style="color: #ff9800; font-weight: bold;">This action cannot be undone!</p>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn warning" id="confirmResetRetrack">🔄 Reset</button>
+                <button class="modal-btn" id="cancelResetRetrack">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reset all retrack confirmation modal -->
+    <div class="modal" id="resetRetrackAllModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeResetRetrackAll">✕</button>
+            <h2>Reset Retrack Data for ALL Series?</h2>
+            <div class="info-section">
+                <p><strong>This will permanently remove for ALL series:</strong></p>
+                <ul style="text-align: left; margin: 15px 0;">
+                    <li>All retracked masks and data</li>
+                    <li>All retrack queue jobs</li>
+                    <li>All version history (resets to initial tracking)</li>
+                    <li>All uploaded mask archives</li>
+                </ul>
+                <p style="color: #ff9800; font-weight: bold;">This action cannot be undone!</p>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn warning" id="confirmResetRetrackAll">🔄 Reset All</button>
+                <button class="modal-btn" id="cancelResetRetrackAll">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocking loading overlay for retrack operations -->
+    <div class="modal" id="retrackLoadingModal" style="z-index: 10000; background: rgba(0, 0, 0, 0.85);">
+        <div class="modal-content" style="background: transparent; border: none; box-shadow: none; max-width: 300px;">
+            <div class="retrack-loading-content">
+                <div class="hourglass-container">
+                    <div class="hourglass">⏳</div>
+                </div>
+                <div class="retrack-loading-text" id="retrackLoadingText">Processing retrack...</div>
             </div>
         </div>
     </div>

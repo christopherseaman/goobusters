@@ -92,21 +92,21 @@ def generate_masks_for_all_series(
     from lib.trackable_series import get_trackable_series
 
     trackable_series_set = get_trackable_series(config)
-
+    
     logger.info(
         f"Found {len(trackable_series_set)} series with free fluid annotations and existing videos (same logic as track.py)"
     )
-
+    
     mask_root = Path(config.mask_storage_path)
     flow_method = config.flow_method
-
+    
     untracked = []
     for series in all_series:
         # Only attempt series that track.py would process (have annotations + video exists)
         if (series.study_uid, series.series_uid) not in trackable_series_set:
             # Skip series without annotations - don't mark as failed, just skip
             continue
-
+        
         # Check if tracking completed by looking for the server's archive file
         # Archive is built as the LAST step of tracking, so it's the completion marker
         # Only check for masks.tar (server format), not masks.tar.gz (track.py format)
@@ -122,7 +122,7 @@ def generate_masks_for_all_series(
                 f"Skipping failed series: {series.study_uid}/{series.series_uid}"
             )
             continue
-
+        
         # Series needs tracking if server's archive doesn't exist (server never completed tracking)
         if not archive_tgz.exists():
             untracked.append(series)
