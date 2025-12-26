@@ -6,8 +6,8 @@ selection logic. This module is shared by the Flask API and background workers.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Optional
@@ -16,6 +16,11 @@ import mdai
 import pandas as pd
 
 from lib.config import ServerConfig
+from lib.mask_archive import (
+    get_mask_count,
+    get_version_id,
+    mask_series_dir,
+)
 from track import find_annotations_file, find_images_dir
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -39,64 +44,137 @@ def parse_time(value: Optional[str]) -> Optional[datetime]:
 
 @dataclass
 class SeriesMetadata:
+    """Minimal series metadata. Most fields derived from filesystem or annotations."""
+
     study_uid: str
     series_uid: str
     exam_number: Optional[int]
     series_number: Optional[int]
     dataset_name: str
     video_path: str
-    status: str = "pending"  # pending | in_progress | completed
-    tracking_status: str = "never_run"  # never_run | pending | completed | failed
-    current_version_id: Optional[str] = None
-    last_editor: Optional[str] = None
-    last_viewed_at: Optional[str] = None
-    last_activity_at: Optional[str] = None
-    last_activity_by: Optional[str] = None
-    mask_count: int = 0
-
-    def touch_view(self, user_email: Optional[str]) -> None:
-        now = isoformat(utc_now())
-        self.last_viewed_at = now
-        if user_email:
-            self.last_activity_by = user_email
-
-    def touch_activity(self, user_email: Optional[str]) -> None:
-        now = isoformat(utc_now())
-        self.last_activity_at = now
-        if user_email:
-            self.last_activity_by = user_email
+    status: str = "pending"  # pending | completed (user completion status only)
 
 
 class SeriesManager:
     def __init__(self, config: ServerConfig):
         self.config = config
-        self.state_root = config.server_state_path
-        self.series_root = self.state_root / "series"
-        self.activity_log = self.state_root / "activity_log.json"
-        self.index_file = self.state_root / "series_index.json"
-        self.series_root.mkdir(parents=True, exist_ok=True)
+        self.mask_root = Path(config.mask_storage_path)
+        self.flow_method = config.flow_method
         self._lock = Lock()
-        self._ensure_index()
-
-    # ------------------------------------------------------------------ Helpers
-    def _series_key(self, study_uid: str, series_uid: str) -> str:
-        return f"{study_uid}__{series_uid}"
-
-    def _series_dir(self, study_uid: str, series_uid: str) -> Path:
-        return self.series_root / self._series_key(study_uid, series_uid)
-
-    def _metadata_path(self, study_uid: str, series_uid: str) -> Path:
-        return self._series_dir(study_uid, series_uid) / "metadata.json"
-
-    def _activity_path(self, study_uid: str, series_uid: str) -> Path:
-        return self._series_dir(study_uid, series_uid) / "activity.json"
-
-    # --------------------------------------------------------------- Bootstrapping
-    def _ensure_index(self) -> None:
-        if self.index_file.exists():
-            return
+        # In-memory index: populated from MD.ai annotations on startup
+        self._index: list[SeriesMetadata] = []
         self._build_index_from_annotations()
 
+    # ------------------------------------------------------------------ Helpers
+    def _series_output_dir(self, study_uid: str, series_uid: str) -> Path:
+        """Get the series output directory (parent of retrack/)."""
+        return mask_series_dir(
+            self.mask_root, self.flow_method, study_uid, series_uid
+        )
+
+    def _status_path(self, study_uid: str, series_uid: str) -> Path:
+        """Get status.json path in series output directory (user completion status and activity)."""
+        return self._series_output_dir(study_uid, series_uid) / "status.json"
+
+    def _frametype_path(self, study_uid: str, series_uid: str) -> Path:
+        """Get frametype.json path (prefer retrack, fallback to initial)."""
+        output_dir = self._series_output_dir(study_uid, series_uid)
+        retrack_frametype = output_dir / "retrack" / "frametype.json"
+        if retrack_frametype.exists():
+            return retrack_frametype
+        return output_dir / "frametype.json"
+
+    # --------------------------------------------------------------- Filesystem helpers
+    def _get_version_id(self, study_uid: str, series_uid: str) -> Optional[str]:
+        """Get version_id for a series (frametype first, then masks.tar metadata)."""
+        frametype_path = self._frametype_path(study_uid, series_uid)
+        if frametype_path.exists():
+            try:
+                with frametype_path.open() as f:
+                    data = json.load(f)
+                    if "_version_id" in data:
+                        return data.get("_version_id") or None
+            except (json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+        # Fallback: read from masks.tar metadata (if built)
+        archive_path = self._get_archive_path(study_uid, series_uid)
+        return get_version_id(archive_path)
+
+    def _get_archive_path(self, study_uid: str, series_uid: str) -> Path:
+        """Get masks.tar path (prefer retrack, fallback to initial)."""
+        output_dir = self._series_output_dir(study_uid, series_uid)
+        retrack_archive = output_dir / "retrack" / "masks.tar"
+        if retrack_archive.exists():
+            return retrack_archive
+        return output_dir / "masks.tar"
+
+    def _get_mask_count(self, study_uid: str, series_uid: str) -> int:
+        """Get mask_count from masks.tar metadata.json."""
+        archive_path = self._get_archive_path(study_uid, series_uid)
+        return get_mask_count(archive_path)
+
+    def _get_tracking_status(self, study_uid: str, series_uid: str) -> str:
+        """Compute tracking_status from filesystem (no persistence)."""
+        output_dir = self._series_output_dir(study_uid, series_uid)
+
+        # Check for retracking in progress
+        retrack_temp_dir = output_dir / "retrack" / "masks_temp"
+        if retrack_temp_dir.exists() and list(retrack_temp_dir.glob("*.webp")):
+            return "retracking"
+
+        # Check for retracked archive
+        retrack_archive = output_dir / "retrack" / "masks.tar"
+        if retrack_archive.exists():
+            return "completed"
+
+        # Check for initial tracking archive (server creates masks.tar, track.py creates masks.tar.gz)
+        initial_archive_tar = output_dir / "masks.tar"
+        initial_archive_targz = output_dir / "masks.tar.gz"
+        if initial_archive_tar.exists() or initial_archive_targz.exists():
+            return "completed"
+
+        return "never_run"
+
+    def _read_status(self, study_uid: str, series_uid: str) -> dict:
+        """Read status.json: contains status and activity tracking."""
+        status_path = self._status_path(study_uid, series_uid)
+        if status_path.exists():
+            try:
+                with status_path.open() as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, KeyError):
+                pass
+        return {"status": "pending", "activity": {}}
+
+    def _write_status(
+        self,
+        study_uid: str,
+        series_uid: str,
+        status: Optional[str] = None,
+        user_email: Optional[str] = None,
+    ) -> None:
+        """Update status.json with status and/or activity."""
+        status_path = self._status_path(study_uid, series_uid)
+        data = self._read_status(study_uid, series_uid)
+
+        if status is not None:
+            data["status"] = status
+        if user_email is not None:
+            if "activity" not in data:
+                data["activity"] = {}
+            data["activity"][user_email] = isoformat(utc_now())
+
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        with status_path.open("w") as f:
+            json.dump(data, f, indent=2)
+
+    def _get_status(self, study_uid: str, series_uid: str) -> str:
+        """Get user completion status from status.json."""
+        data = self._read_status(study_uid, series_uid)
+        return data.get("status", "pending")
+
+    # --------------------------------------------------------------- Bootstrapping
     def _build_index_from_annotations(self) -> None:
         try:
             annotations_path = find_annotations_file(
@@ -123,9 +201,10 @@ class SeriesManager:
         }
 
         records: list[dict] = []
-        for (study_uid, series_uid), video_df in annotations_df.groupby(
-            ["StudyInstanceUID", "SeriesInstanceUID"]
-        ):
+        for (study_uid, series_uid), video_df in annotations_df.groupby([
+            "StudyInstanceUID",
+            "SeriesInstanceUID",
+        ]):
             exam_number = None
             series_number = None
             dataset_name = video_df.iloc[0].get("dataset", "Unknown")
@@ -135,10 +214,9 @@ class SeriesManager:
                 exam_number = study_info.get("number")
 
             # Series number may live under different keys depending on export
-            raw_series_number = (
-                video_df.iloc[0].get("SeriesNumber")
-                or video_df.iloc[0].get("seriesNumber")
-            )
+            raw_series_number = video_df.iloc[0].get(
+                "SeriesNumber"
+            ) or video_df.iloc[0].get("seriesNumber")
             if raw_series_number is not None:
                 try:
                     series_number = int(raw_series_number)
@@ -149,247 +227,201 @@ class SeriesManager:
             metadata = SeriesMetadata(
                 study_uid=study_uid,
                 series_uid=series_uid,
-                exam_number=int(exam_number) if exam_number not in (None, "") else None,
+                exam_number=int(exam_number)
+                if exam_number not in (None, "")
+                else None,
                 series_number=series_number,
                 dataset_name=str(dataset_name),
                 video_path=str(video_path),
             )
-            self._write_metadata(metadata)
-            records.append(asdict(metadata))
+            records.append(metadata)
 
-        with self.index_file.open("w") as f:
-            json.dump(records, f, indent=2)
+        # Store in-memory index
+        self._index = records
 
     # ------------------------------------------------------------- CRUD operations
-    def _write_metadata(self, metadata: SeriesMetadata) -> None:
-        series_dir = self._series_dir(metadata.study_uid, metadata.series_uid)
-        series_dir.mkdir(parents=True, exist_ok=True)
-        path = series_dir / "metadata.json"
-        with path.open("w") as f:
-            json.dump(asdict(metadata), f, indent=2)
-
-    def _read_metadata(self, study_uid: str, series_uid: str) -> SeriesMetadata:
-        path = self._metadata_path(study_uid, series_uid)
-        if not path.exists():
-            raise FileNotFoundError(f"No metadata for {study_uid}/{series_uid}")
-        with path.open() as f:
-            payload = json.load(f)
-        return SeriesMetadata(**payload)
-
-    def _compute_tracking_status(self, study_uid: str, series_uid: str) -> str:
-        """
-        Compute tracking_status from on-disk checks and persisted metadata.
-        Retracked masks take precedence over initial tracking masks.
-        
-        Archive files are the source of truth - if an archive exists, status is "completed".
-        Only trust persisted "failed" status if no archive exists.
-        """
-        mask_root = Path(self.config.mask_storage_path)
-        flow_method = self.config.flow_method
-        output_dir = mask_root / flow_method / f"{study_uid}_{series_uid}"
-        
-        # Check for retracking in progress (retrack/masks_temp exists - temporary staging)
-        retrack_temp_dir = output_dir / "retrack" / "masks_temp"
-        if retrack_temp_dir.exists() and list(retrack_temp_dir.glob("*.webp")):
-            return "retracking"
-        
-        # Check for retracked archive (completion marker - built as LAST step)
-        # Archive files are the source of truth - if they exist, status is completed
-        retrack_archive = output_dir / "retrack" / "masks.tar"
-        if retrack_archive.exists():
-            return "completed"
-        
-        # Check for initial tracking archive (completion marker)
-        # Only check for masks.tar (server format), not masks.tar.gz (track.py format)
-        # The server must generate its own masks, not rely on track.py output
-        initial_archive_tgz = output_dir / "masks.tar"
-        if initial_archive_tgz.exists():
-            return "completed"
-        
-        # No archive found - check if we have a persisted "failed" status
-        # Only trust persisted "failed" if no archive exists (archive is source of truth)
-        try:
-            metadata = self._read_metadata(study_uid, series_uid)
-            if metadata.tracking_status == "failed":
-                return "failed"
-        except FileNotFoundError:
-            # Metadata doesn't exist yet
-            pass
-        
-        # No masks found - check if we have a persisted "failed" status
-        try:
-            metadata = self._read_metadata(study_uid, series_uid)
-            if metadata.tracking_status == "failed":
-                return "failed"
-        except FileNotFoundError:
-            pass
-        
-        # No masks found and not marked as failed
-        return "never_run"
+    def _read_metadata_from_index(
+        self, study_uid: str, series_uid: str
+    ) -> Optional[SeriesMetadata]:
+        """Read series metadata from in-memory index."""
+        for metadata in self._index:
+            if (
+                metadata.study_uid == study_uid
+                and metadata.series_uid == series_uid
+            ):
+                return metadata
+        return None
 
     def list_series(self) -> list[SeriesMetadata]:
-        items: list[SeriesMetadata] = []
-        for metadata_path in self.series_root.glob("*/metadata.json"):
-            with metadata_path.open() as f:
-                payload = json.load(f)
-            metadata = SeriesMetadata(**payload)
-            # Compute status from disk (source of truth)
-            metadata.tracking_status = self._compute_tracking_status(
+        """List all series from in-memory index, with status from filesystem."""
+        items = []
+        for metadata in self._index:
+            # Get status from filesystem (reads per-series status.json on demand)
+            metadata.status = self._get_status(
                 metadata.study_uid, metadata.series_uid
             )
             items.append(metadata)
         return items
 
     def get_series(self, study_uid: str, series_uid: str) -> SeriesMetadata:
-        metadata = self._read_metadata(study_uid, series_uid)
-        # Compute status from disk (source of truth)
-        metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
+        """Get series metadata with status from filesystem."""
+        metadata = self._read_metadata_from_index(study_uid, series_uid)
+        if not metadata:
+            raise FileNotFoundError(f"No metadata for {study_uid}/{series_uid}")
+        metadata.status = self._get_status(study_uid, series_uid)
         return metadata
 
-    def mark_complete(self, study_uid: str, series_uid: str, user_email: Optional[str] = None) -> SeriesMetadata:
+    def mark_complete(
+        self, study_uid: str, series_uid: str, user_email: Optional[str] = None
+    ) -> SeriesMetadata:
+        """Mark series as completed by user."""
         with self._lock:
-            metadata = self._read_metadata(study_uid, series_uid)
-            metadata.status = "completed"
-            if user_email:
-                metadata.last_editor = user_email
-                # Also update activity to note completion
-                metadata.touch_activity(user_email)
-            self._write_metadata(metadata)
-            return metadata
+            self._write_status(
+                study_uid, series_uid, status="completed", user_email=user_email
+            )
+            return self.get_series(study_uid, series_uid)
 
     def reopen(self, study_uid: str, series_uid: str) -> SeriesMetadata:
+        """Reopen series (mark as pending)."""
         with self._lock:
-            metadata = self._read_metadata(study_uid, series_uid)
-            metadata.status = "pending"
-            self._write_metadata(metadata)
-            return metadata
+            self._write_status(study_uid, series_uid, status="pending")
+            return self.get_series(study_uid, series_uid)
 
-    def mark_activity(self, study_uid: str, series_uid: str, user_email: Optional[str]) -> SeriesMetadata:
+    def mark_activity(
+        self, study_uid: str, series_uid: str, user_email: Optional[str]
+    ) -> SeriesMetadata:
+        """Record user activity on series."""
         with self._lock:
-            metadata = self._read_metadata(study_uid, series_uid)
-            metadata.touch_activity(user_email)
-            self._append_activity_event(study_uid, series_uid, "activity", user_email)
-            self._write_metadata(metadata)
-            return metadata
+            if user_email:
+                self._write_status(study_uid, series_uid, user_email=user_email)
+            return self.get_series(study_uid, series_uid)
 
-    def record_view(self, study_uid: str, series_uid: str, user_email: Optional[str]) -> SeriesMetadata:
-        with self._lock:
-            metadata = self._read_metadata(study_uid, series_uid)
-            metadata.touch_view(user_email)
-            self._append_activity_event(study_uid, series_uid, "view", user_email)
-            self._write_metadata(metadata)
-            return metadata
-
-    def update_version(self, study_uid: str, series_uid: str, version_id: str, editor: str) -> SeriesMetadata:
-        with self._lock:
-            metadata = self._read_metadata(study_uid, series_uid)
-            metadata.current_version_id = version_id
-            metadata.last_editor = editor
-            metadata.touch_activity(editor)
-            self._write_metadata(metadata)
-            return metadata
-
-    def update_tracking_status(self, study_uid: str, series_uid: str, status: str, mask_count: int = 0) -> SeriesMetadata:
-        """
-        Update tracking status and persist it to metadata.json.
-        
-        For "failed" status, this is persisted so the series won't be retried.
-        For "completed" status, the archive file is the source of truth, but we update mask_count.
-        """
-        with self._lock:
-            metadata = self._read_metadata(study_uid, series_uid)
-            # Persist "failed" status so series without annotations aren't retried
-            if status == "failed":
-                metadata.tracking_status = "failed"
-            # Update mask_count if provided
-            if mask_count > 0:
-                metadata.mask_count = mask_count
-            self._write_metadata(metadata)
-            # For non-failed statuses, recompute from disk (archive files are source of truth)
-            if status != "failed":
-                metadata.tracking_status = self._compute_tracking_status(study_uid, series_uid)
-            return metadata
+    def record_view(
+        self, study_uid: str, series_uid: str, user_email: Optional[str]
+    ) -> SeriesMetadata:
+        """Record that a user viewed/selected this series (same as mark_activity)."""
+        return self.mark_activity(study_uid, series_uid, user_email)
 
     # ----------------------------------------------------------- Activity helpers
-    def _append_activity_event(self, study_uid: str, series_uid: str, event_type: str, user_email: Optional[str]) -> None:
-        path = self._activity_path(study_uid, series_uid)
-        events = []
-        if path.exists():
-            with path.open() as f:
-                events = json.load(f)
-        events.append(
-            {
-                "event": event_type,
-                "at": isoformat(utc_now()),
-                "user": user_email,
-            }
-        )
-        with path.open("w") as f:
-            json.dump(events[-50:], f, indent=2)  # keep last 50 events
+    def activity_history(
+        self, study_uid: str, series_uid: str
+    ) -> dict[str, str]:
+        """Get activity history: dict of user_email -> last_activity_at."""
+        data = self._read_status(study_uid, series_uid)
+        return data.get("activity", {})
 
-    def activity_history(self, study_uid: str, series_uid: str) -> list[dict]:
-        path = self._activity_path(study_uid, series_uid)
-        if not path.exists():
-            return []
-        with path.open() as f:
-            return json.load(f)
+    # ----------------------------------------------------------- Public helpers
+    def get_version_id(self, study_uid: str, series_uid: str) -> Optional[str]:
+        """Get version_id from frametype.json (tied to tracking revision)."""
+        return self._get_version_id(study_uid, series_uid)
+
+    def get_tracking_status(self, study_uid: str, series_uid: str) -> str:
+        """Get tracking_status from filesystem."""
+        return self._get_tracking_status(study_uid, series_uid)
+
+    def get_mask_count(self, study_uid: str, series_uid: str) -> int:
+        """Get mask_count from masks.tar metadata.json."""
+        return self._get_mask_count(study_uid, series_uid)
 
     # -------------------------------------------------------------- Selection logic
-    def select_next_series(self, user_email: Optional[str] = None) -> Optional[SeriesMetadata]:
+    def select_next_series(
+        self, user_email: Optional[str] = None
+    ) -> Optional[SeriesMetadata]:
         """
         Get the series for a user to work on.
-        
-        Logic (prefer returning same series if user was recently active):
-        1. Filter out completed series
-        2. Prefer series where:
-           - Current user was recently active (within threshold)
-           - Others have NOT been active since (or no other activity)
-           - Series is not complete
-        3. If no such series, fall back to:
-           - Series where others were last active (prefer oldest activity)
-           - Series where current user was last active (prefer oldest view)
+
+        Logic: Prefer series where most recent activity is from another user (not current user).
+        This ensures users work on different series and don't conflict.
+
+        Note: In-progress series (active by another user) are still available, just sorted lower.
         """
-        # Get threshold with fallback if attribute doesn't exist (for backwards compatibility)
-        threshold_minutes = getattr(self.config, 'recent_view_threshold_minutes', 60)
-        threshold = utc_now() - timedelta(minutes=threshold_minutes)
+        # Debug: check index size
+        import logging
+        import sys
+
+        logger = logging.getLogger(__name__)
+        logger.debug(f"select_next_series: Index has {len(self._index)} series")
+        print(
+            f"DEBUG: select_next_series: Index has {len(self._index)} series",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        all_series = self.list_series()
+        logger.debug(
+            f"select_next_series: list_series() returned {len(all_series)} series"
+        )
+        print(
+            f"DEBUG: select_next_series: list_series() returned {len(all_series)} series",
+            file=sys.stderr,
+            flush=True,
+        )
+
         candidates: list[SeriesMetadata] = []
-        for metadata in self.list_series():
-            if metadata.status == "completed":
+        status_counts = {"completed": 0, "pending": 0, "other": 0}
+        for metadata in all_series:
+            status = metadata.status
+            if status == "completed":
+                status_counts["completed"] += 1
                 continue
+            if status == "pending":
+                status_counts["pending"] += 1
+            else:
+                status_counts["other"] += 1
             candidates.append(metadata)
 
         if not candidates:
+            # Debug: log why no candidates
+            import logging
+            import sys
+
+            logger = logging.getLogger(__name__)
+            warning_msg = (
+                f"select_next_series: No candidates. Total series: {len(all_series)}, "
+                f"Status breakdown: {status_counts}"
+            )
+            logger.warning(warning_msg)
+            print(warning_msg, file=sys.stderr, flush=True)
             return None
 
         def sort_key(item: SeriesMetadata):
-            # Check if current user was last active
-            is_current_user_last = (
-                user_email and 
-                item.last_activity_by and 
-                item.last_activity_by == user_email
-            )
-            
-            last_activity = parse_time(item.last_activity_at) or datetime.fromtimestamp(0, tz=timezone.utc)
-            last_view = parse_time(item.last_viewed_at) or datetime.fromtimestamp(0, tz=timezone.utc)
-            
-            # Check if current user was recently active (within threshold)
-            is_recently_active_by_user = (
-                is_current_user_last and
-                last_activity > threshold
-            )
-            
-            # Primary sort: prefer series where current user was recently active
-            # This means refreshing returns the same series if user was just viewing it
-            if is_recently_active_by_user:
-                # Current user was recently active - prefer this (sorts first)
-                # Among these, prefer most recent activity (descending = newest first)
-                return (0, -last_activity.timestamp())
-            elif is_current_user_last:
-                # Current user was last active but not recently - prefer oldest view
-                return (1, last_view.timestamp())
+            data = self._read_status(item.study_uid, item.series_uid)
+            activity = data.get("activity", {})
+
+            # Find most recent activity from current user (higher priority = lower sort value)
+            current_user_time = None
+            if user_email and user_email in activity:
+                timestamp = parse_time(activity[user_email])
+                if timestamp:
+                    current_user_time = timestamp
+
+            # Find most recent activity from other users (lower priority = higher sort value)
+            most_recent_other_time = None
+            for other_user, timestamp_str in activity.items():
+                if other_user == user_email:
+                    continue  # Skip current user
+                timestamp = parse_time(timestamp_str)
+                if timestamp and (
+                    most_recent_other_time is None
+                    or timestamp > most_recent_other_time
+                ):
+                    most_recent_other_time = timestamp
+
+            # Sorting logic:
+            # 1. Series with recent activity by current user (highest priority) -> negative timestamp (sorted first)
+            # 2. Series with no activity (medium priority) -> 0.0
+            # 3. Series with recent activity by others (lowest priority) -> positive timestamp (sorted last)
+            if current_user_time:
+                # Recent activity by current user -> highest priority (negative = sorted first)
+                return -current_user_time.timestamp()
+            elif most_recent_other_time:
+                # Recent activity by others -> lowest priority (positive = sorted last)
+                return most_recent_other_time.timestamp()
             else:
-                # Other user was last active (or no activity) - prefer oldest activity
-                return (2, last_activity.timestamp())
+                # No activity -> medium priority
+                return 0.0
 
         selected = sorted(candidates, key=sort_key)[0]
-        return self.record_view(selected.study_uid, selected.series_uid, user_email)
+        return self.record_view(
+            selected.study_uid, selected.series_uid, user_email
+        )

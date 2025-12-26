@@ -21,6 +21,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from lib.config import ServerConfig
+from lib.mask_archive import mask_series_dir
 from server.storage.series_manager import SeriesManager
 from server.tracking_worker import run_tracking_for_series
 from track import find_annotations_file, find_images_dir
@@ -76,7 +77,7 @@ def generate_masks_for_all_series(
     logger.info("Generating masks for all series on startup...")
 
     # Ensure series index is built
-    series_manager._ensure_index()
+    # Index is built in SeriesManager.__init__, no need to call _ensure_index()
 
     # Get all series
     all_series = series_manager.list_series()
@@ -94,7 +95,7 @@ def generate_masks_for_all_series(
     trackable_series_set = get_trackable_series(config)
     
     logger.info(
-        f"Found {len(trackable_series_set)} series with free fluid annotations and existing videos (same logic as track.py)"
+        f"Found {len(trackable_series_set)} series with free fluid annotations and existing videos"
     )
     
     mask_root = Path(config.mask_storage_path)
@@ -107,24 +108,23 @@ def generate_masks_for_all_series(
             # Skip series without annotations - don't mark as failed, just skip
             continue
         
-        # Check if tracking completed by looking for the server's archive file
-        # Archive is built as the LAST step of tracking, so it's the completion marker
-        # Only check for masks.tar (server format), not masks.tar.gz (track.py format)
-        # The server must generate its own masks, not rely on track.py output
-        output_dir = (
-            mask_root / flow_method / f"{series.study_uid}_{series.series_uid}"
-        )
-        archive_tgz = output_dir / "masks.tar"
-
+        # Check if tracking already completed by looking for mask archive
+        # track.py creates masks.tar.gz, server creates masks.tar
+        # If either exists, tracking is complete
+        output_dir = mask_series_dir(mask_root, flow_method, series.study_uid, series.series_uid)
+        archive_tar = output_dir / "masks.tar"
+        archive_targz = output_dir / "masks.tar.gz"
+        
         # Skip series that have already failed (don't retry them)
-        if series.tracking_status == "failed":
+        tracking_status = series_manager.get_tracking_status(series.study_uid, series.series_uid)
+        if tracking_status == "failed":
             logger.debug(
                 f"Skipping failed series: {series.study_uid}/{series.series_uid}"
-            )
+        )
             continue
         
-        # Series needs tracking if server's archive doesn't exist (server never completed tracking)
-        if not archive_tgz.exists():
+        # Series needs tracking if no archive exists (neither track.py nor server has completed)
+        if not archive_tar.exists() and not archive_targz.exists():
             untracked.append(series)
 
     if not untracked:
@@ -137,7 +137,7 @@ def generate_masks_for_all_series(
     # For now, sequential is safer and easier to debug
     for idx, series in enumerate(untracked, 1):
         logger.info(
-            f"[{idx}/{len(untracked)}] {series.study_uid}/{series.series_uid}"
+            f"[{idx}/{len(untracked)}] Starting tracking for {series.study_uid}/{series.series_uid}"
         )
 
         try:
@@ -147,9 +147,12 @@ def generate_masks_for_all_series(
                 config,
                 series_manager,
             )
+            logger.info(
+                f"[{idx}/{len(untracked)}] ✓ Completed tracking for {series.study_uid}/{series.series_uid}"
+            )
         except Exception as exc:
             logger.error(
-                f"  ✗ Failed: {series.study_uid}/{series.series_uid} - {exc}",
+                f"[{idx}/{len(untracked)}] ✗ Failed tracking for {series.study_uid}/{series.series_uid}: {exc}",
                 exc_info=True,
             )
             # Continue with other series even if one fails
@@ -158,7 +161,7 @@ def generate_masks_for_all_series(
     completed = sum(
         1
         for s in series_manager.list_series()
-        if s.tracking_status == "completed"
+        if series_manager.get_tracking_status(s.study_uid, s.series_uid) == "completed"
     )
     logger.info(
         f"Mask generation complete. {completed}/{total} series have masks."
@@ -211,11 +214,28 @@ def initialize_server(
                 "Run with skip_download=False or ensure data exists."
             ) from exc
 
-    # Step 2: Build series index (if not already built)
-    logger.info("Building series index...")
-    series_manager._ensure_index()
+    # Step 2: Verify series index is built (built in SeriesManager.__init__)
     series_count = len(series_manager.list_series())
-    logger.info(f"Series index built. Found {series_count} series.")
+    logger.info(f"Series index ready. Found {series_count} series.")
+    
+    # Step 2.5: Initialize status.json files for all series (if not exist)
+    logger.info("Initializing status.json files for all series...")
+    initialized_count = 0
+    error_count = 0
+    for series in series_manager.list_series():
+        try:
+            status_path = series_manager._status_path(series.study_uid, series.series_uid)
+            if not status_path.exists():
+                # Create default status.json
+                series_manager._write_status(series.study_uid, series.series_uid)
+                initialized_count += 1
+        except Exception as exc:
+            error_count += 1
+            logger.warning(f"Failed to initialize status.json for {series.study_uid}/{series.series_uid}: {exc}")
+    if initialized_count > 0:
+        logger.info(f"Initialized {initialized_count} status.json files.")
+    if error_count > 0:
+        logger.warning(f"Failed to initialize {error_count} status.json files.")
 
     # Step 3: Generate masks for all series
     if not skip_mask_generation:

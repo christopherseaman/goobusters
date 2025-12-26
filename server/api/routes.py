@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from dataclasses import asdict
@@ -14,6 +15,7 @@ from lib.mask_archive import (
     build_mask_metadata,
     extract_mask_archive,
     iso_now,
+    mask_series_dir,
     MaskArchiveError,
 )
 from lib.uploaded_masks import convert_uploaded_masks_to_annotations_df
@@ -25,12 +27,6 @@ from server.tracking_worker import trigger_lazy_tracking
 def _serialize_series(metadata: SeriesMetadata) -> dict:
     payload = asdict(metadata)
     return payload
-
-
-def _mask_series_dir(
-    mask_root: Path, flow_method: str, study_uid: str, series_uid: str
-) -> Path:
-    return mask_root / flow_method / f"{study_uid}_{series_uid}"
 
 
 def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
@@ -70,13 +66,28 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     def status() -> Response:
         series = series_manager.list_series()
         completed = sum(
-            1 for item in series if item.tracking_status == "completed"
+            1
+            for item in series
+            if series_manager.get_tracking_status(
+                item.study_uid, item.series_uid
+            )
+            == "completed"
         )
-        failed = sum(1 for item in series if item.tracking_status == "failed")
+        failed = sum(
+            1
+            for item in series
+            if series_manager.get_tracking_status(
+                item.study_uid, item.series_uid
+            )
+            == "failed"
+        )
         pending = sum(
             1
             for item in series
-            if item.tracking_status in {"never_run", "pending"}
+            if series_manager.get_tracking_status(
+                item.study_uid, item.series_uid
+            )
+            in {"never_run", "pending"}
         )
         return jsonify({
             "ready": True,
@@ -236,7 +247,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         import io
 
         try:
-            series = series_manager.get_series(study_uid, series_uid)
+            _ = series_manager.get_series(
+                study_uid, series_uid
+            )  # Ensure series exists
         except FileNotFoundError:
             return jsonify({
                 "error": "Series not found",
@@ -255,7 +268,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             }), 500
 
         # Check status FIRST - if failed, return immediately (no expensive checks)
-        tracking_status = series.tracking_status
+        tracking_status = series_manager.get_tracking_status(
+            study_uid, series_uid
+        )
         if tracking_status == "failed":
             return (
                 jsonify({
@@ -266,7 +281,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 500,
             )
 
-        mask_dir = _mask_series_dir(
+        mask_dir = mask_series_dir(
             mask_root, flow_method, study_uid, series_uid
         )
 
@@ -297,10 +312,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             from lib.trackable_series import is_series_trackable
 
             if not is_series_trackable(study_uid, series_uid, config):
-                # Series not trackable - mark as failed and return error
-                series_manager.update_tracking_status(
-                    study_uid, series_uid, "failed"
-                )
+                # Series not trackable - tracking status computed from filesystem
                 return (
                     jsonify({
                         "status": "failed",
@@ -310,6 +322,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     500,
                 )
 
+            tracking_status = series_manager.get_tracking_status(
+                study_uid, series_uid
+            )
             if tracking_status == "never_run":
                 # Trigger lazy tracking in background
                 # Note: Worker will mark as "failed" if tracking fails, preventing retries
@@ -346,7 +361,31 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         # Retracked archive takes precedence and is in main output directory (not retrack/).
         # Archives are built exactly once by the tracking/retrack workers; this endpoint never re-tars on demand.
         # For retrack, tarball is in main output directory (overwrites initial tracking's tarball)
+        # Check for masks.tar (server format)
         archive_path = mask_dir / "masks.tar"
+        
+        # If masks.tar doesn't exist but masks/ directory exists (from track.py), build it
+        if not archive_path.exists():
+            masks_dir_path = mask_dir / "masks"
+            if masks_dir_path.exists() and list(masks_dir_path.glob("*.webp")):
+                from server.tracking_worker import build_mask_archive_from_directory
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Building masks.tar from existing masks/ directory for {study_uid}/{series_uid}")
+                try:
+                    build_mask_archive_from_directory(
+                        study_uid, series_uid, masks_dir_path, mask_dir, config, series_manager
+                    )
+                except Exception as exc:
+                    import traceback
+                    logger.error(f"Failed to build masks.tar from masks/ directory: {exc}")
+                    traceback.print_exc()
+                    # If build fails, return error
+                    return jsonify({
+                        "status": "failed",
+                        "error_code": "ARCHIVE_BUILD_ERROR",
+                        "error_message": f"Failed to build mask archive from masks/ directory: {str(exc)}",
+                    }), 500
         
         # If retrack/ subdirectory exists, the tarball in main output directory is from retrack
         # Otherwise, it's from initial tracking. Both use the same path.
@@ -403,9 +442,14 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     # Fallback: synthesize minimal headers when metadata.json is missing.
                     # This should not happen for new archives; treat as degraded state.
                     metadata = {
-                        "version_id": series.current_version_id,
+                        "version_id": series_manager.get_version_id(
+                            study_uid, series_uid
+                        )
+                        or "",
                         "generated_at": iso_now(),
-                        "mask_count": 0,
+                        "mask_count": series_manager.get_mask_count(
+                            study_uid, series_uid
+                        ),
                     }
         except Exception as exc:
             import traceback
@@ -414,9 +458,14 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             traceback.print_exc()
             # Fallback to minimal metadata
             metadata = {
-                "version_id": series.current_version_id or "",
+                "version_id": series_manager.get_version_id(
+                    study_uid, series_uid
+                )
+                or "",
                 "generated_at": iso_now(),
-                "mask_count": 0,
+                "mask_count": series_manager.get_mask_count(
+                    study_uid, series_uid
+                ),
             }
 
         headers = {
@@ -434,7 +483,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         Accept edited masks as .tar archive, validate version, and queue retrack.
         """
         try:
-            series = series_manager.get_series(study_uid, series_uid)
+            _ = series_manager.get_series(
+                study_uid, series_uid
+            )  # Ensure series exists
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
 
@@ -464,8 +515,13 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
 
         # Validate version ID
-        current_version = series.current_version_id
-        if previous_version_id != current_version:
+        # Normalize: treat None and empty string as equivalent (initial state)
+        current_version = series_manager.get_version_id(study_uid, series_uid)
+        previous_normalized = (
+            previous_version_id if previous_version_id else None
+        )
+        current_normalized = current_version if current_version else None
+        if previous_normalized != current_normalized:
             return (
                 jsonify({
                     "error_code": "VERSION_MISMATCH",
@@ -504,7 +560,10 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
 
             # Copy extracted files to permanent location
             for item in extract_path.iterdir():
-                shutil.copy2(item, uploaded_masks_dir / item.name)
+                dest = uploaded_masks_dir / item.name
+                # Skip if source and destination are the same file (prevents SameFileError)
+                if item.resolve() != dest.resolve():
+                    shutil.copy2(item, dest)
 
             # Enqueue retrack job
             job = retrack_queue.enqueue(
@@ -520,9 +579,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             # The version ID will be set in retrack_worker.py when the job completes
 
             # Update tracking status to indicate retrack in progress
-            series_manager.update_tracking_status(
-                study_uid, series_uid, "retracking"
-            )
+            # Tracking status is computed from filesystem (checks for retrack/masks_temp)
 
             queue_position = retrack_queue.get_queue_position(
                 study_uid, series_uid, job.new_version_id
@@ -539,7 +596,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     def retrack_status(study_uid: str, series_uid: str):
         """Get retrack status for a series."""
         try:
-            series = series_manager.get_series(study_uid, series_uid)
+            _ = series_manager.get_series(
+                study_uid, series_uid
+            )  # Ensure series exists
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
 
@@ -551,7 +610,10 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
 
         if not job:
             # No retrack job found
-            if series.tracking_status == "retracking":
+            if (
+                series_manager.get_tracking_status(study_uid, series_uid)
+                == "retracking"
+            ):
                 return jsonify({
                     "status": "processing",
                     "error_code": "RETRACK_PROCESSING",
@@ -589,7 +651,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     def reset_retrack(study_uid: str, series_uid: str):
         """
         Reset all retrack data for a series, returning it to initial tracking state.
-        
+
         This removes:
         - retrack/ subdirectory
         - retrack queue jobs for this series
@@ -598,15 +660,19 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         - retrack tarball (if it overwrote initial tracking's tarball)
         """
         try:
-            series = series_manager.get_series(study_uid, series_uid)
+            _ = series_manager.get_series(
+                study_uid, series_uid
+            )  # Ensure series exists
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
 
         # Remove retrack output directory
         mask_root = Path(config.mask_storage_path)
-        mask_dir = _mask_series_dir(mask_root, config.flow_method, study_uid, series_uid)
+        mask_dir = mask_series_dir(
+            mask_root, config.flow_method, study_uid, series_uid
+        )
         retrack_dir = mask_dir / "retrack"
-        
+
         retrack_existed = retrack_dir.exists()
         if retrack_existed:
             shutil.rmtree(retrack_dir)
@@ -621,21 +687,43 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         retrack_queue = RetrackQueue(queue_file)
         jobs = retrack_queue._load_queue()
         original_count = len(jobs)
-        jobs = [j for j in jobs if not (j.study_uid == study_uid and j.series_uid == series_uid)]
+        jobs = [
+            j
+            for j in jobs
+            if not (j.study_uid == study_uid and j.series_uid == series_uid)
+        ]
         removed_count = original_count - len(jobs)
         if removed_count > 0:
             retrack_queue._save_queue(jobs)
-            print(f"[RESET] Removed {removed_count} retrack queue job(s) for {study_uid}/{series_uid}")
+            print(
+                f"[RESET] Removed {removed_count} retrack queue job(s) for {study_uid}/{series_uid}"
+            )
 
-        # Reset version_id to None
-        series_manager.update_version(study_uid, series_uid, None, "system")
-        print(f"[RESET] Reset version_id to None")
+        # Reset version_id in frametype.json to None (if it exists)
+        frametype_path = mask_dir / "frametype.json"
+        if frametype_path.exists():
+            try:
+                with frametype_path.open("r+") as f:
+                    data = json.load(f)
+                    data["_version_id"] = None
+                    f.seek(0)
+                    f.truncate()
+                    json.dump(data, f, indent=2)
+                print(f"[RESET] Reset version_id in frametype.json to None")
+            except (json.JSONDecodeError, OSError):
+                pass
 
         # Clean up uploaded_masks directories for this series (atomic operation - only persist on retrack success)
-        uploaded_masks_base = config.server_state_path / "uploaded_masks" / f"{study_uid}_{series_uid}"
+        uploaded_masks_base = (
+            config.server_state_path
+            / "uploaded_masks"
+            / f"{study_uid}_{series_uid}"
+        )
         if uploaded_masks_base.exists():
             shutil.rmtree(uploaded_masks_base)
-            print(f"[RESET] Removed uploaded_masks directory: {uploaded_masks_base}")
+            print(
+                f"[RESET] Removed uploaded_masks directory: {uploaded_masks_base}"
+            )
 
         # Reset tracking status to completed (from initial tracking)
         # Get mask count from initial tracking if available
@@ -643,23 +731,56 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         mask_count = 0
         if masks_dir.exists():
             mask_count = len(list(masks_dir.glob("*.webp")))
-        
-        # Regenerate masks.tar from initial tracking masks/ directory
-        # (retrack may have overwritten it, so we need to rebuild it)
+
+        # ALWAYS regenerate masks.tar from initial tracking masks/ directory and frametype.json
+        # This ensures we overwrite any retracked tarball that may have been written to the main output directory
+        # Use initial tracking's frametype.json from main output directory (not retrack/)
         if masks_dir.exists() and mask_count > 0:
             try:
-                from lib.mask_archive import build_mask_archive, build_mask_metadata
-                metadata = build_mask_metadata(series, masks_dir, config.flow_method)
+                from lib.mask_archive import (
+                    build_mask_archive,
+                    build_mask_metadata,
+                )
+
+                # Verify we're using initial tracking's frametype.json (not retrack's)
+                # mask_dir is the base output directory, frametype.json is at mask_dir / "frametype.json"
+                frametype_path = mask_dir / "frametype.json"
+                if not frametype_path.exists():
+                    print(
+                        f"[RESET] Warning: Initial tracking frametype.json not found at {frametype_path}"
+                    )
+                # build_mask_metadata looks for frametype.json at masks_dir.parent (which is mask_dir)
+                # This ensures we use initial tracking's frametype.json, not retrack's
+                # version_id is read from frametype.json (will be None after reset above)
+                series_info = series_manager.get_series(study_uid, series_uid)
+                metadata = build_mask_metadata(
+                    series_info,
+                    masks_dir,
+                    config.flow_method,
+                )
+                # Write to main output directory (overwrites any retracked tarball)
+                # mask_dir is the base output directory, masks_dir is mask_dir / "masks"
                 archive_path = mask_dir / "masks.tar"
                 archive_bytes = build_mask_archive(masks_dir, metadata)
                 with archive_path.open("wb") as f:
                     f.write(archive_bytes)
-                print(f"[RESET] Regenerated masks.tar from initial tracking masks")
+                print(
+                    f"[RESET] Regenerated masks.tar from initial tracking (masks: {mask_count}, frametype: {frametype_path})"
+                )
             except Exception as exc:
-                print(f"[RESET] Warning: Failed to regenerate masks.tar: {exc}")
-        
-        series_manager.update_tracking_status(study_uid, series_uid, "completed", mask_count)
-        print(f"[RESET] Reset tracking status to completed with {mask_count} masks")
+                import traceback
+
+                print(f"[RESET] ERROR: Failed to regenerate masks.tar: {exc}")
+                traceback.print_exc()
+        else:
+            print(
+                f"[RESET] Warning: Cannot regenerate masks.tar - masks_dir does not exist or is empty: {masks_dir}"
+            )
+
+        # Tracking status is computed from filesystem (checks for masks.tar)
+        print(
+            f"[RESET] Regenerated masks.tar - tracking status will be 'completed'"
+        )
 
         return jsonify({
             "success": True,
@@ -672,7 +793,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     def reset_retrack_all():
         """
         Reset all retrack data for ALL series, returning them to initial tracking state.
-        
+
         This removes for each series:
         - retrack/ subdirectory
         - retrack queue jobs
@@ -684,7 +805,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         total_series = len(all_series)
         total_jobs_removed = 0
         total_reset = 0
-        
+
         # Clear all retrack queue jobs
         queue_file = config.server_state_path / "retrack_queue.json"
         retrack_queue = RetrackQueue(queue_file)
@@ -693,52 +814,98 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         jobs = []  # Clear all jobs
         retrack_queue._save_queue(jobs)
         total_jobs_removed = original_job_count
-        print(f"[RESET ALL] Removed {total_jobs_removed} retrack queue job(s) for all series")
-        
+        print(
+            f"[RESET ALL] Removed {total_jobs_removed} retrack queue job(s) for all series"
+        )
+
         # Reset each series
+        mask_root = Path(config.mask_storage_path)
+        flow_method = config.flow_method
         for series in all_series:
             try:
-                mask_dir = _mask_series_dir(mask_root, flow_method, series.study_uid, series.series_uid)
+                mask_dir = mask_series_dir(
+                    mask_root, flow_method, series.study_uid, series.series_uid
+                )
                 retrack_dir = mask_dir / "retrack"
-                
+
                 if retrack_dir.exists():
                     shutil.rmtree(retrack_dir)
-                    print(f"[RESET ALL] Removed retrack directory: {retrack_dir}")
-                
-                # Reset version_id to None
-                series_manager.update_version(series.study_uid, series.series_uid, None, "system")
-                
+                    print(
+                        f"[RESET ALL] Removed retrack directory: {retrack_dir}"
+                    )
+
+                # Reset version_id in frametype.json to None (if it exists)
+                frametype_path = mask_dir / "frametype.json"
+                if frametype_path.exists():
+                    try:
+                        import json
+
+                        with frametype_path.open("r+") as f:
+                            data = json.load(f)
+                            data["_version_id"] = None
+                            f.seek(0)
+                            f.truncate()
+                            json.dump(data, f, indent=2)
+                    except (json.JSONDecodeError, OSError):
+                        pass
+
                 # Clean up uploaded_masks directories
-                uploaded_masks_base = config.server_state_path / "uploaded_masks" / f"{series.study_uid}_{series.series_uid}"
+                uploaded_masks_base = (
+                    config.server_state_path
+                    / "uploaded_masks"
+                    / f"{series.study_uid}_{series.series_uid}"
+                )
                 if uploaded_masks_base.exists():
                     shutil.rmtree(uploaded_masks_base)
-                
-                # Regenerate masks.tar from initial tracking masks/ directory
+
+                # ALWAYS regenerate masks.tar from initial tracking masks/ directory and frametype.json
+                # This ensures we overwrite any retracked tarball that may have been written to the main output directory
+                # Use initial tracking's frametype.json from main output directory (not retrack/)
                 masks_dir = mask_dir / "masks"
                 mask_count = 0
                 if masks_dir.exists():
                     mask_count = len(list(masks_dir.glob("*.webp")))
-                
+
                 if masks_dir.exists() and mask_count > 0:
                     try:
-                        from lib.mask_archive import build_mask_archive, build_mask_metadata
-                        metadata = build_mask_metadata(series, masks_dir, config.flow_method)
+                        from lib.mask_archive import (
+                            build_mask_archive,
+                            build_mask_metadata,
+                        )
+
+                        # build_mask_metadata looks for frametype.json at masks_dir.parent (which is mask_dir)
+                        # This ensures we use initial tracking's frametype.json, not retrack's
+                        metadata = build_mask_metadata(
+                            series, masks_dir, config.flow_method
+                        )
+                        # Write to main output directory (overwrites any retracked tarball)
+                        # mask_dir is the base output directory, masks_dir is mask_dir / "masks"
                         archive_path = mask_dir / "masks.tar"
                         archive_bytes = build_mask_archive(masks_dir, metadata)
                         with archive_path.open("wb") as f:
                             f.write(archive_bytes)
                     except Exception as exc:
-                        print(f"[RESET ALL] Warning: Failed to regenerate masks.tar for {series.study_uid}/{series.series_uid}: {exc}")
-                
-                series_manager.update_tracking_status(series.study_uid, series.series_uid, "completed", mask_count)
+                        import traceback
+
+                        print(
+                            f"[RESET ALL] ERROR: Failed to regenerate masks.tar for {series.study_uid}/{series.series_uid}: {exc}"
+                        )
+                        traceback.print_exc()
+
+                # Tracking status is computed from filesystem (checks for masks.tar)
                 total_reset += 1
             except Exception as exc:
-                print(f"[RESET ALL] Error resetting {series.study_uid}/{series.series_uid}: {exc}")
+                print(
+                    f"[RESET ALL] Error resetting {series.study_uid}/{series.series_uid}: {exc}"
+                )
                 import traceback
+
                 traceback.print_exc()
-        
-        print(f"[RESET ALL] Reset retrack data for {total_reset}/{total_series} series")
-        
+
+        print(
+            f"[RESET ALL] Reset retrack data for {total_reset}/{total_series} series"
+        )
+
         return jsonify({
             "success": True,
             "message": f"Reset retrack data for all series",

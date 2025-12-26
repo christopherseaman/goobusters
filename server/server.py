@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import signal
 import sys
 from datetime import datetime
@@ -23,6 +24,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from lib.config import ServerConfig, load_config
+from lib.mask_archive import mask_series_dir
 
 # Now we can import server modules using absolute imports
 # (they work because project_root is in sys.path)
@@ -78,119 +80,55 @@ def cleanup_retrack_queue(
     retrack_queue = RetrackQueue(queue_file)
 
     if clear_queue:
-        # Before clearing, revert any temporary version IDs back to previous versions
+        # Before clearing, revert any version IDs that were written by incomplete retrack jobs
+        # If a retrack job was processing, it may have written new_version_id to frametype.json
+        # We need to revert it back to the version that existed before the retrack started
         jobs = retrack_queue._load_queue()
         for job in jobs:
-            if job.previous_version_id is not None:
+            # Only revert if job was processing (may have written version_id)
+            # For pending jobs, frametype.json hasn't been updated yet
+            if job.status == "processing":
                 try:
-                    series_manager.update_version(
-                        job.study_uid,
-                        job.series_uid,
-                        job.previous_version_id,
-                        job.editor,
+                    from lib.mask_archive import mask_series_dir
+                    output_dir = mask_series_dir(
+                        Path(config.mask_storage_path), config.flow_method, job.study_uid, job.series_uid
                     )
-                except FileNotFoundError:
-                    pass  # Series metadata doesn't exist, skip
-
-        # After clearing queue, fix any orphaned version IDs
-        # If a series has a version ID but no active job, check if it matches the archive
-        # If not, sync it from the archive (archive is source of truth)
-        import tarfile
-        import json
-        from pathlib import Path
-
-        mask_root = Path(config.mask_storage_path)
-        flow_method = config.flow_method
-
-        # Check all series metadata for orphaned version IDs
-        for metadata_file in series_manager.series_root.glob("*/metadata.json"):
-            try:
-                with metadata_file.open() as f:
-                    metadata_data = json.load(f)
-                    study_uid = metadata_data.get("study_uid")
-                    series_uid = metadata_data.get("series_uid")
-                    current_version_id = metadata_data.get("current_version_id")
-
-                    if not study_uid or not series_uid:
-                        continue
-
-                    # Check if there's an active job for this series
-                    has_active_job = retrack_queue.has_active_job(
-                        study_uid, series_uid
-                    )
-                    if has_active_job:
-                        continue  # Skip, job will handle version
-
-                    # Check if version matches archive (archive is source of truth)
-                    output_dir = (
-                        mask_root / flow_method / f"{study_uid}_{series_uid}"
-                    )
-                    retrack_archive = output_dir / "retrack" / "masks.tar"
-                    initial_archive = output_dir / "masks.tar"
-
-                    archive_path = (
-                        retrack_archive
-                        if retrack_archive.exists()
-                        else (
-                            initial_archive
-                            if initial_archive.exists()
-                            else None
-                        )
-                    )
-
-                    if archive_path:
-                        # Read version from archive and sync if different (archive is source of truth)
+                    # Check retrack frametype.json (where new_version_id would have been written)
+                    retrack_frametype_path = output_dir / "retrack" / "frametype.json"
+                    if retrack_frametype_path.exists():
+                        # Remove retrack directory entirely (cleanup)
+                        retrack_dir = output_dir / "retrack"
+                        if retrack_dir.exists():
+                            shutil.rmtree(retrack_dir)
+                    # Revert main frametype.json to previous_version_id (the version before retrack started)
+                    # This only matters if retrack completed and overwrote the main frametype.json
+                    frametype_path = output_dir / "frametype.json"
+                    if frametype_path.exists() and job.previous_version_id is not None:
                         try:
-                            with tarfile.open(archive_path, "r") as tar:
-                                metadata_file_obj = tar.extractfile(
-                                    "metadata.json"
-                                )
-                                if metadata_file_obj:
-                                    archive_metadata = json.load(
-                                        metadata_file_obj
-                                    )
-                                    archive_version = archive_metadata.get(
-                                        "version_id"
-                                    )
-                                    # Sync version from archive (even if archive_version is None/null)
-                                    if archive_version != current_version_id:
-                                        if archive_version:
-                                            # Archive has a version - update metadata
-                                            series_manager.update_version(
-                                                study_uid,
-                                                series_uid,
-                                                archive_version,
-                                                metadata_data.get("last_editor")
-                                                or "system",
-                                            )
-                                        else:
-                                            # Archive has null version - clear metadata version
-                                            with metadata_file.open("r+") as f:
-                                                metadata_data = json.load(f)
-                                                metadata_data[
-                                                    "current_version_id"
-                                                ] = None
-                                                f.seek(0)
-                                                f.truncate()
-                                                json.dump(
-                                                    metadata_data, f, indent=2
-                                                )
-                        except Exception:
-                            pass  # Archive might be corrupt, skip
-                    elif current_version_id:
-                        # No archive exists but version ID is set - clear it (orphaned from failed/cleared retrack)
-                        # We need to directly modify the metadata file since update_version doesn't accept None
-                        with metadata_file.open("r+") as f:
-                            metadata_data = json.load(f)
-                            metadata_data["current_version_id"] = None
-                            f.seek(0)
-                            f.truncate()
-                            json.dump(metadata_data, f, indent=2)
-            except Exception:
-                pass  # Skip invalid metadata files
+                            with frametype_path.open("r+") as f:
+                                data = json.load(f)
+                                # Only revert if current version matches the new_version_id from the failed job
+                                # This means the retrack completed but we're clearing it
+                                if data.get("_version_id") == job.new_version_id:
+                                    data["_version_id"] = job.previous_version_id
+                                    f.seek(0)
+                                    f.truncate()
+                                    json.dump(data, f, indent=2)
+                        except (json.JSONDecodeError, OSError):
+                            pass
+                except FileNotFoundError:
+                    pass  # Series doesn't exist, skip
+
+        # Cleanup: Remove old server_state/series/ directory (no longer used)
+        # Version ID is now stored in output/{flow_method}/{study_uid}_{series_uid}/version.json
+        series_root_old = config.server_state_path / "series"
+        if series_root_old.exists():
+            import shutil
+            shutil.rmtree(series_root_old)
+            logger.info("Removed old server_state/series/ directory (migrated to filesystem-based storage)")
 
         retrack_queue.clear_queue()
-        print("Cleared retrack queue and fixed orphaned version IDs")
+        print("Cleared retrack queue")
     else:
         reset_count = retrack_queue.reset_stale_processing_jobs()
         if reset_count > 0:
@@ -279,6 +217,31 @@ def get_pid_file(config: ServerConfig) -> Path:
     """Get path to PID file."""
     config.server_state_path.mkdir(parents=True, exist_ok=True)
     return config.server_state_path / "server.pid"
+
+
+def _cleanup_server_state(config: ServerConfig, was_killed: bool) -> None:
+    """Clean up old server_state files after successful startup."""
+    import shutil
+    
+    state_path = config.server_state_path
+    
+    # Remove old series_index.json (index is now in-memory)
+    old_index = state_path / "series_index.json"
+    if old_index.exists():
+        old_index.unlink()
+        logger.info("Removed old series_index.json (index is now in-memory)")
+    
+    # Clean up uploaded_masks directory (temporary uploads, should be empty after retrack completes)
+    uploaded_masks_dir = state_path / "uploaded_masks"
+    if uploaded_masks_dir.exists():
+        try:
+            shutil.rmtree(uploaded_masks_dir)
+            logger.info("Cleaned up uploaded_masks directory")
+        except OSError as e:
+            logger.warning(f"Failed to clean uploaded_masks directory: {e}")
+    
+    # Keep: retrack_queue.json (persists jobs across restarts)
+    # Keep: server.pid (process management)
 
 
 def read_pid(pid_file: Path) -> Optional[int]:
@@ -515,6 +478,10 @@ def main() -> None:
 
     try:
         app = create_app(config, skip_startup=False)
+        
+        # Clean up old server_state files after successful startup
+        _cleanup_server_state(config, args.kill)
+        
         logger.info(
             f"Server ready on {config.server_host}:{config.server_port}"
         )

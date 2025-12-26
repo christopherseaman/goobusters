@@ -10,9 +10,16 @@ import json
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional, Optional
 
 MASK_METADATA_FILENAME = "metadata.json"
+
+
+def mask_series_dir(
+    mask_root: Path, flow_method: str, study_uid: str, series_uid: str
+) -> Path:
+    """Get the output directory path for a series' masks."""
+    return mask_root / flow_method / f"{study_uid}_{series_uid}"
 
 
 class MaskArchiveError(RuntimeError):
@@ -82,7 +89,7 @@ def extract_mask_archive(archive_bytes: bytes, destination: Path) -> None:
     except tarfile.ReadError:
         buffer.seek(0)
         tar = tarfile.open(fileobj=buffer, mode="r:gz")
-    
+
     with tar:
         tar.extractall(
             path=destination,
@@ -93,6 +100,37 @@ def extract_mask_archive(archive_bytes: bytes, destination: Path) -> None:
 def iso_now() -> str:
     """Return current UTC time as ISO format string."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_mask_metadata(archive_path: Path) -> dict:
+    """
+    Read metadata.json from a mask archive (masks.tar).
+    Returns empty dict if archive doesn't exist or metadata is missing.
+    """
+    if not archive_path.exists():
+        return {}
+    
+    try:
+        with tarfile.open(archive_path, "r") as tar:
+            metadata_file = tar.extractfile(MASK_METADATA_FILENAME)
+            if metadata_file:
+                return json.load(metadata_file)
+    except (tarfile.ReadError, KeyError, json.JSONDecodeError):
+        pass
+    
+    return {}
+
+
+def get_version_id(archive_path: Path) -> Optional[str]:
+    """Get version_id from masks.tar metadata.json. Returns None if not found."""
+    metadata = read_mask_metadata(archive_path)
+    return metadata.get("version_id") or None
+
+
+def get_mask_count(archive_path: Path) -> int:
+    """Get mask_count from masks.tar metadata.json. Returns 0 if not found."""
+    metadata = read_mask_metadata(archive_path)
+    return metadata.get("mask_count", 0)
 
 
 def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
@@ -108,6 +146,10 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
 
     Retracking uses frames where is_annotation=true, loading the actual mask files.
     Includes EMPTY_ID frames with has_mask=false per spec.
+
+    Note: This function uses masks_path.parent to locate frametype.json.
+    For retrack, masks_path should be retrack/masks/, so frametype.json will be found at retrack/frametype.json.
+    For initial tracking, masks_path should be masks/, so frametype.json will be found at the main output dir/frametype.json.
     """
     from lib.config import load_config
     import json
@@ -116,6 +158,9 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
     frames_by_number: dict[int, dict] = {}
 
     # Prefer frametype.json if present (authoritative per-frame metadata)
+    # masks_path.parent resolves correctly:
+    # - For retrack: masks_path = retrack/masks/ -> parent = retrack/ -> frametype.json at retrack/frametype.json
+    # - For initial: masks_path = masks/ -> parent = main output dir -> frametype.json at main output dir/frametype.json
     output_dir = masks_path.parent
     frametype_path = output_dir / "frametype.json"
 
@@ -177,12 +222,12 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
 
         # Then refine using input_annotations.json for LABEL_ID / EMPTY_ID
         input_annotations_path = output_dir / "input_annotations.json"
-        
+
         if input_annotations_path.exists():
             try:
                 with input_annotations_path.open() as f:
                     input_data = json.load(f)
-                
+
                 if isinstance(input_data, str):
                     input_data = json.loads(input_data)
 
@@ -234,10 +279,24 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
     # Count masks (frames with has_mask=True)
     mask_count = sum(1 for f in frames if f.get("has_mask", False))
 
+    # Get version_id from frametype.json (tied to tracking revision)
+    version_id = None
+    if frametype_path.exists():
+        try:
+            with frametype_path.open() as f:
+                frametype_data = json.load(f)
+                version_id = frametype_data.get("_version_id")
+        except (json.JSONDecodeError, KeyError):
+            pass
+    
+    # Get study_uid and series_uid
+    study_uid = series.get("study_uid") if isinstance(series, dict) else series.study_uid
+    series_uid = series.get("series_uid") if isinstance(series, dict) else series.series_uid
+
     metadata = {
-        "study_uid": series.study_uid,
-        "series_uid": series.series_uid,
-        "version_id": series.current_version_id,
+        "study_uid": study_uid,
+        "series_uid": series_uid,
+        "version_id": version_id,
         "flow_method": flow_method,
         "generated_at": iso_now(),
         "frame_count": len(frames),

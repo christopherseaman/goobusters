@@ -1,37 +1,67 @@
 """
 Background worker for lazy tracking of series on first request.
 
-Runs optical flow tracking for a single series when masks are first requested,
-using the same logic as track.py but for individual series.
+Runs optical flow tracking for a single series when masks are first requested.
+Performs the same optical flow computation as initial tracking but processes
+one series at a time on-demand rather than all series at startup.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import sys
 from pathlib import Path
-
-import cv2
-import mdai
-import pandas as pd
+from typing import Optional
 
 # Add project root to Python path for imports
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from lib.config import ServerConfig
-from lib.mask_archive import (
+import mdai  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from lib.config import ServerConfig  # noqa: E402
+from lib.mask_archive import (  # noqa: E402
     build_mask_archive,
     build_mask_metadata,
+    mask_series_dir,
     MaskArchiveError,
 )
-from lib.multi_frame_tracker import process_video_with_multi_frame_tracking
-from lib.optical import create_identity_file, copy_annotations_to_output
-from lib.opticalflowprocessor import OpticalFlowProcessor
-from server.storage.series_manager import SeriesManager
-from track import find_annotations_file, find_images_dir
+from lib.multi_frame_tracker import process_video_with_multi_frame_tracking  # noqa: E402
+from lib.optical import create_identity_file, copy_annotations_to_output  # noqa: E402
+from lib.opticalflowprocessor import OpticalFlowProcessor  # noqa: E402
+from server.storage.series_manager import SeriesManager  # noqa: E402
+from track import find_annotations_file, find_images_dir  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+
+def build_mask_archive_from_directory(
+    study_uid: str,
+    series_uid: str,
+    masks_dir: Path,
+    output_dir: Path,
+    config: ServerConfig,
+    series_manager: SeriesManager,
+) -> None:
+    """
+    Build masks.tar archive from existing masks/ directory.
+
+    Used when masks already exist (e.g., from track.py) and we just need to
+    build the server format archive with metadata.json.
+    """
+    series = series_manager.get_series(study_uid, series_uid)
+    metadata = build_mask_metadata(series, masks_dir, config.flow_method)
+    archive_path = output_dir / "masks.tar"
+    archive_bytes = build_mask_archive(masks_dir, metadata)
+    with archive_path.open("wb") as f:
+        f.write(archive_bytes)
+    logger.info(
+        f"Built masks.tar from existing masks for {study_uid}/{series_uid}"
+    )
 
 
 def run_tracking_pipeline(
@@ -42,6 +72,8 @@ def run_tracking_pipeline(
     annotations_blob: dict,
     config: ServerConfig,
     is_retrack: bool = False,
+    new_version_id: Optional[str] = None,
+    version_id: Optional[str] = None,
 ) -> Path:
     """
     Shared tracking pipeline used by both initial tracking and retrack.
@@ -49,6 +81,10 @@ def run_tracking_pipeline(
 
     Args:
         is_retrack: If True, write to retrack subdirectory to avoid overwriting original masks
+        new_version_id: Version ID to write to frametype.json (for retrack).
+                       For initial tracking, this is None (no version yet).
+                       For retrack, this is the newly generated version_id (different from previous).
+        version_id: Backward-compat alias for new_version_id (do not use in new code).
     """
     # Determine images dir and video path (matches track.py behavior)
     images_dir = find_images_dir(
@@ -88,10 +124,11 @@ def run_tracking_pipeline(
 
     # Build output dir
     # For retrack, write to retrack subdirectory to avoid overwriting original masks
-    base_output_dir = (
-        Path(config.mask_storage_path)
-        / config.flow_method
-        / f"{study_uid}_{series_uid}"
+    base_output_dir = mask_series_dir(
+        Path(config.mask_storage_path),
+        config.flow_method,
+        study_uid,
+        series_uid,
     )
     if is_retrack:
         series_output_dir = base_output_dir / "retrack"
@@ -137,6 +174,9 @@ def run_tracking_pipeline(
         str(series_output_dir), annotations_df, annotations_blob
     )
 
+    # Resolve version id (support legacy keyword "version_id")
+    resolved_version_id = new_version_id or version_id
+
     # Initialize optical flow processor
     flow_processor = OpticalFlowProcessor(config.flow_method)
 
@@ -156,6 +196,7 @@ def run_tracking_pipeline(
         upload_to_mdai=False,
         project_id=config.project_id,
         dataset_id=config.dataset_id,
+        version_id=resolved_version_id,
     )
 
     # Clean up GPU memory after processing
@@ -174,7 +215,11 @@ def run_tracking_for_series(
     Run optical flow tracking for a single series.
 
     This is the lazy tracking trigger - called when masks are first requested.
-    Uses the same logic as track.py but for a single series.
+    Performs optical flow computation using the configured flow method (Farneback/DIS/RAFT)
+    to track annotations across video frames, generating mask files for each frame.
+
+    If masks already exist for all frames (from track.py or previous run), skips tracking
+    and just builds metadata.json and masks.tar.
 
     Args:
         study_uid: Study Instance UID
@@ -183,16 +228,71 @@ def run_tracking_for_series(
         series_manager: SeriesManager instance
     """
     try:
-        # Update status to pending
-        series_manager.update_tracking_status(study_uid, series_uid, "pending")
+        # Check if masks already exist for all frames - if so, skip tracking
+        output_dir = mask_series_dir(
+            Path(config.mask_storage_path),
+            config.flow_method,
+            study_uid,
+            series_uid,
+        )
+        masks_dir = output_dir / "masks"
+        frametype_path = output_dir / "frametype.json"
+
+        if masks_dir.exists() and frametype_path.exists():
+            import json
+
+            try:
+                with frametype_path.open() as f:
+                    frametype_data = json.load(f)
+
+                # Get all frame numbers that should have masks
+                expected_frames = set()
+                for key, info in frametype_data.items():
+                    if key == "_version_id":
+                        continue
+                    try:
+                        frame_num = int(key)
+                        if isinstance(info, dict) and info.get(
+                            "has_mask", False
+                        ):
+                            expected_frames.add(frame_num)
+                    except (ValueError, TypeError):
+                        continue
+
+                # Check if all expected mask files exist
+                if expected_frames:
+                    existing_masks = {
+                        int(f.stem.split("_")[1])
+                        for f in masks_dir.glob("frame_*_mask.webp")
+                        if len(f.stem.split("_")) >= 2
+                        and f.stem.split("_")[1].isdigit()
+                    }
+
+                    if expected_frames.issubset(existing_masks):
+                        # All masks exist - skip tracking, just build metadata and archive
+                        logger.info(
+                            f"Masks already exist for all {len(expected_frames)} frames. "
+                            f"Skipping tracking and building metadata/archive for {study_uid}/{series_uid}"
+                        )
+
+                        # Build mask archive and metadata
+                        build_mask_archive_from_directory(
+                            study_uid,
+                            series_uid,
+                            masks_dir,
+                            output_dir,
+                            config,
+                            series_manager,
+                        )
+                        return
+            except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+                # If we can't read frametype.json or check masks, proceed with tracking
+                logger.debug(
+                    f"Could not verify existing masks, proceeding with tracking: {exc}"
+                )
 
         # Find annotations file and images directory
         annotations_path = find_annotations_file(
-            str(config.data_dir),
-            config.project_id,
-            config.dataset_id,
-        )
-        images_dir = find_images_dir(
             str(config.data_dir),
             config.project_id,
             config.dataset_id,
@@ -272,29 +372,23 @@ def run_tracking_for_series(
                 f"Expected masks directory not found: {masks_dir}"
             )
 
-        # Count masks for metadata
-        mask_count = len(list(masks_dir.glob("*.webp")))
-
         # Build mask archive and metadata (completion marker)
-        series = series_manager.get_series(study_uid, series_uid)
         try:
-            metadata = build_mask_metadata(
-                series, masks_dir, config.flow_method
+            build_mask_archive_from_directory(
+                study_uid,
+                series_uid,
+                masks_dir,
+                output_dir,
+                config,
+                series_manager,
             )
-            archive_path = output_dir / "masks.tar"
-            archive_bytes = build_mask_archive(masks_dir, metadata)
-            with archive_path.open("wb") as f:
-                f.write(archive_bytes)
         except (MaskArchiveError, Exception) as exc:
             # Log error but don't fail tracking - masks are still valid
             print(
                 f"Warning: Failed to build mask archive for {study_uid}/{series_uid}: {exc}"
             )
 
-        # Update series metadata
-        series_manager.update_tracking_status(
-            study_uid, series_uid, "completed", mask_count
-        )
+        # Tracking status is computed from filesystem (masks.tar existence), no need to update
 
     except Exception as exc:
         # Update status to failed
@@ -305,7 +399,7 @@ def run_tracking_for_series(
             f"ERROR in tracking worker for {study_uid}/{series_uid}: {error_msg}"
         )
         traceback.print_exc()
-        series_manager.update_tracking_status(study_uid, series_uid, "failed")
+        # Tracking status is computed from filesystem (masks.tar won't exist on failure), no need to update
         raise
 
 

@@ -175,30 +175,18 @@ class AnnotationViewer {
         if (resetAndReload) resetAndReload.addEventListener('click', () => this.handleResetAndReload());
 
         // Reset retrack modal (current series)
+        // Reset retrack buttons (no modals - direct action)
         const resetRetrackBtn = document.getElementById('resetRetrackBtn');
-        const closeResetRetrack = document.getElementById('closeResetRetrack');
-        const cancelResetRetrack = document.getElementById('cancelResetRetrack');
-        const confirmResetRetrack = document.getElementById('confirmResetRetrack');
         if (resetRetrackBtn) resetRetrackBtn.addEventListener('click', () => {
             this.hideModal('navModal');
-            this.showModal('resetRetrackModal');
+            this.confirmResetRetrack();
         });
-        if (closeResetRetrack) closeResetRetrack.addEventListener('click', () => this.hideModal('resetRetrackModal'));
-        if (cancelResetRetrack) cancelResetRetrack.addEventListener('click', () => this.hideModal('resetRetrackModal'));
-        if (confirmResetRetrack) confirmResetRetrack.addEventListener('click', () => this.confirmResetRetrack());
 
-        // Reset retrack all modal (all series)
         const resetRetrackAllBtn = document.getElementById('resetRetrackAllBtn');
-        const closeResetRetrackAll = document.getElementById('closeResetRetrackAll');
-        const cancelResetRetrackAll = document.getElementById('cancelResetRetrackAll');
-        const confirmResetRetrackAll = document.getElementById('confirmResetRetrackAll');
         if (resetRetrackAllBtn) resetRetrackAllBtn.addEventListener('click', () => {
             this.hideModal('navModal');
-            this.showModal('resetRetrackAllModal');
+            this.confirmResetRetrackAll();
         });
-        if (closeResetRetrackAll) closeResetRetrackAll.addEventListener('click', () => this.hideModal('resetRetrackAllModal'));
-        if (cancelResetRetrackAll) cancelResetRetrackAll.addEventListener('click', () => this.hideModal('resetRetrackAllModal'));
-        if (confirmResetRetrackAll) confirmResetRetrackAll.addEventListener('click', () => this.confirmResetRetrackAll());
 
         // Video selection (server-driven)
         // Keep videoSelect for manual selection if needed, but wire Next/Prev to server
@@ -1098,8 +1086,8 @@ class AnnotationViewer {
                 this.showRetrackLoading('Reloading retracked masks...');
                 
                 // Clear edits only after retrack completes successfully (atomic operation)
-                const { studyUid, seriesUid } = this.currentVideo;
-                const videoKey = `${studyUid}__${seriesUid}`;
+                const { studyUid, seriesUid, method } = this.currentVideo;
+                const videoKey = this.getVideoKey(method, studyUid, seriesUid);
                 const videoModifiedFrames = this.modifiedFrames.get(videoKey);
                 if (videoModifiedFrames) {
                     videoModifiedFrames.clear();
@@ -1188,9 +1176,6 @@ class AnnotationViewer {
     }
 
     async confirmResetRetrack() {
-        // Hide modal immediately
-        this.hideModal('resetRetrackModal');
-
         const { studyUid, seriesUid } = this.currentVideo;
         if (!studyUid || !seriesUid) {
             alert('No series selected');
@@ -1211,6 +1196,7 @@ class AnnotationViewer {
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));
                 alert(`Failed to reset retrack data: ${data.error || resp.status}`);
+                this.hideRetrackLoading();
                 return;
             }
 
@@ -1229,18 +1215,35 @@ class AnnotationViewer {
             this.frameCache.clear();
             this.framesArchive = null;
             this.masksArchive = {};
-            // videoKey already declared above, no need to redeclare
             
-            // Reload from server with cache busting
-            await this.loadVideoData();
-            await this.loadFramesArchive(true); // Pass true to force cache bust
-            // Force reload current frame to ensure fresh masks are displayed
+            // Reload current series directly (don't call loadNextSeries - stay on current series)
+            // The user was just active on this series, so it should be returned by /api/series/next
+            // But to be safe, reload the current series directly first, then verify with /api/series/next
             const currentFrameNum = this.currentFrame;
-            this.currentFrame = -1; // Force reload
+            await this.loadVideoData();
+            await this.loadFramesArchive(true);
+            this.currentFrame = -1;
             await this.goToFrame(currentFrameNum);
             
+            // Verify we're on the right series by calling /api/series/next (should return current series)
+            // This ensures activity is recorded and the series is marked as most recently active
+            const seriesResp = await fetch('/proxy/api/series/next', {
+                headers: {
+                    'X-User-Email': this.getUserEmail() || ''
+                }
+            });
+            if (seriesResp.ok) {
+                const seriesData = await seriesResp.json();
+                if (seriesData.study_uid && seriesData.series_uid) {
+                    // If server returns a different series, it means activity tracking isn't working correctly
+                    // But we've already reloaded the current series, so just log a warning
+                    if (seriesData.study_uid !== studyUid || seriesData.series_uid !== seriesUid) {
+                        console.warn(`Server returned different series after reset: ${seriesData.study_uid}/${seriesData.series_uid} vs current ${studyUid}/${seriesUid}`);
+                    }
+                }
+            }
+            
             this.hideRetrackLoading();
-            alert(`Retrack data reset successfully. Removed ${result.removed_jobs || 0} queue job(s).`);
         } catch (e) {
             this.hideRetrackLoading();
             console.error('Error resetting retrack data:', e);
@@ -1249,9 +1252,6 @@ class AnnotationViewer {
     }
 
     async confirmResetRetrackAll() {
-        // Hide modal immediately
-        this.hideModal('resetRetrackAllModal');
-
         // Show blocking loading overlay
         this.showRetrackLoading('Resetting retrack data for all series...');
 
@@ -1266,6 +1266,7 @@ class AnnotationViewer {
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));
                 alert(`Failed to reset all retrack data: ${data.error || resp.status}`);
+                this.hideRetrackLoading();
                 return;
             }
 
@@ -1273,7 +1274,7 @@ class AnnotationViewer {
             // Keep loading visible during reload
             this.showRetrackLoading('Reloading reset masks...');
 
-            // Clear all local edits for current video and reload
+            // Clear all local edits for current video
             if (this.currentVideo && this.currentVideo.studyUid && this.currentVideo.seriesUid) {
                 const { studyUid, seriesUid } = this.currentVideo;
                 const videoKey = `${studyUid}__${seriesUid}`;
@@ -1288,17 +1289,31 @@ class AnnotationViewer {
                 this.framesArchive = null;
                 this.masksArchive = {};
                 
-                // Reload from server with cache busting
-                await this.loadVideoData();
-                await this.loadFramesArchive(true); // Pass true to force cache bust
-                // Force reload current frame to ensure fresh masks are displayed
+                // Reload current series directly (don't call loadNextSeries - stay on current series)
                 const currentFrameNum = this.currentFrame;
-                this.currentFrame = -1; // Force reload
+                await this.loadVideoData();
+                await this.loadFramesArchive(true);
+                this.currentFrame = -1;
                 await this.goToFrame(currentFrameNum);
+                
+                // Verify we're on the right series by calling /api/series/next (should return current series)
+                const seriesResp = await fetch('/proxy/api/series/next', {
+                    headers: {
+                        'X-User-Email': this.getUserEmail() || ''
+                    }
+                });
+                if (seriesResp.ok) {
+                    const seriesData = await seriesResp.json();
+                    if (seriesData.study_uid && seriesData.series_uid) {
+                        // If server returns a different series, it means activity tracking isn't working correctly
+                        if (seriesData.study_uid !== studyUid || seriesData.series_uid !== seriesUid) {
+                            console.warn(`Server returned different series after reset all: ${seriesData.study_uid}/${seriesData.series_uid} vs current ${studyUid}/${seriesUid}`);
+                        }
+                    }
+                }
             }
             
             this.hideRetrackLoading();
-            alert(`Retrack data reset successfully for all series. Reset ${result.reset_series || 0}/${result.total_series || 0} series. Removed ${result.removed_jobs || 0} queue job(s).`);
         } catch (e) {
             this.hideRetrackLoading();
             console.error('Error resetting all retrack data:', e);
@@ -1585,6 +1600,7 @@ class AnnotationViewer {
         this.frameCache.clear();
         this.framesArchive = null;
         this.masksArchive = {};
+        this.currentVersionId = null; // Reset version ID - will be set from server response
         this.currentVideo = { method, studyUid, seriesUid };
         // Load video data first so we know which frames are modified
         await this.loadVideoData();

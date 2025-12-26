@@ -63,13 +63,9 @@ class ClientContext:
         self.http_client.close()
 
 
-# Cache for video list to avoid expensive operations on every request
-# Module-level so it persists across requests
-_videos_cache: Optional[list[dict]] = None
-_videos_cache_mtime: Optional[float] = None
-
-
-def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False) -> Flask:
+def create_app(
+    config: Optional[ClientConfig] = None, skip_startup: bool = False
+) -> Flask:
     config = config or load_config("client")
     context = ClientContext(config)
 
@@ -79,58 +75,52 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         static_folder=str(STATIC_DIR),
     )
     app.config["CLIENT_CONTEXT"] = context
-    
+
     # Initialize client: sync dataset and lazily extract frames for all series
     # This must complete before serving the viewer (per architecture)
     if not skip_startup:
         logger = logging.getLogger(__name__)
-        logger.info("Initializing client: syncing dataset and extracting frames (lazily)...")
-        
+        logger.info(
+            "Initializing client: syncing dataset and extracting frames (lazily)..."
+        )
+
         # Sync dataset (downloads/refreshes MD.ai data)
         images_dir = context.dataset.sync_dataset()
         logger.info(f"Dataset synced. Images directory: {images_dir}")
-        
+
         # Lazily extract frames for all series (only if missing)
         series = context.dataset.list_local_series()
-        logger.info(f"Checking and extracting frames for {len(series)} series (lazy)...")
-        
+        logger.info(
+            f"Checking and extracting frames for {len(series)} series (lazy)..."
+        )
+
         extracted = []
         for idx, info in enumerate(series, 1):
             # Only extract if frames don't exist or are stale
-            if not context.frames.frames_exist(info.video_path, info.study_uid, info.series_uid):
+            if not context.frames.frames_exist(
+                info.video_path, info.study_uid, info.series_uid
+            ):
                 context.frames.ensure_frames(
                     info.video_path, info.study_uid, info.series_uid
                 )
                 extracted.append(f"{info.study_uid}/{info.series_uid}")
                 if idx % 10 == 0:
-                    logger.info(f"  Extracted frames for {idx}/{len(series)} series...")
-        
-        logger.info(f"Client initialization complete. Extracted frames for {len(extracted)}/{len(series)} series (lazy extraction).")
+                    logger.info(
+                        f"  Extracted frames for {idx}/{len(series)} series..."
+                    )
+
+        logger.info(
+            f"Client initialization complete. Extracted frames for {len(extracted)}/{len(series)} series (lazy extraction)."
+        )
 
     def _build_videos() -> list[dict]:
         """
         Build the list of locally available series for the viewer.
-        Cached to avoid expensive operations on every request.
+        No caching - always fetch fresh from server API.
         """
-        global _videos_cache, _videos_cache_mtime
-        
-        # Check if cache is still valid
-        # Simple approach: if cache exists and annotations are already loaded, use cache
-        # This avoids expensive glob pattern matching on every request
-        if _videos_cache is not None:
-            # If annotations are already loaded in the dataset manager, cache is likely still valid
-            # (we'll invalidate manually when needed, e.g., after dataset sync)
-            if hasattr(context.dataset, '_annotations_df') and context.dataset._annotations_df is not None:
-                return _videos_cache
-            # If cache exists but annotations not loaded, still use cache
-            # (first request will load annotations and rebuild cache if needed)
-            return _videos_cache
-        
         try:
             series = context.dataset.list_local_series()
         except DatasetNotReady:
-            _videos_cache = []
-            _videos_cache_mtime = None
             return []
 
         labels = [
@@ -138,7 +128,7 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
             {"labelId": config.empty_id, "labelName": "Empty"},
         ]
 
-        _videos_cache = [
+        return [
             {
                 "method": config.flow_method,
                 "study_uid": info.study_uid,
@@ -149,8 +139,6 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
             }
             for info in series
         ]
-        _videos_cache_mtime = None  # Simplified - no mtime tracking needed
-        return _videos_cache
 
     def _find_series_info(study_uid: str, series_uid: str):
         """
@@ -159,41 +147,53 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         # Try cache first (fast path)
         videos = _build_videos()
         for item in videos:
-            if item["study_uid"] == study_uid and item["series_uid"] == series_uid:
+            if (
+                item["study_uid"] == study_uid
+                and item["series_uid"] == series_uid
+            ):
                 return item
-        
+
         # If not in cache, try to get minimal info without full list scan
         # This is a fallback for when cache is invalidated
         try:
             video_path = context.dataset.resolve_video(study_uid, series_uid)
             if not video_path.exists():
                 return None
-            
+
             # Get minimal info from dataset manager without full scan
             images_dir = context.dataset._ensure_images_dir()
             annotations_df = context.dataset._ensure_annotations()
             studies_lookup = context.dataset._studies_lookup or {}
-            
+
             # Find this specific series in annotations
             series_annotations = annotations_df[
-                (annotations_df["StudyInstanceUID"] == study_uid) &
-                (annotations_df["SeriesInstanceUID"] == series_uid)
+                (annotations_df["StudyInstanceUID"] == study_uid)
+                & (annotations_df["SeriesInstanceUID"] == series_uid)
             ]
             if series_annotations.empty:
                 return None
-            
+
             study_info = studies_lookup.get(study_uid, {})
             labels = [
                 {"labelId": config.label_id, "labelName": "Fluid"},
                 {"labelId": config.empty_id, "labelName": "Empty"},
             ]
-            
+
             return {
                 "method": config.flow_method,
                 "study_uid": study_uid,
                 "series_uid": series_uid,
-                "exam_number": int(study_info.get("number")) if study_info.get("number") not in (None, "") else None,
-                "series_number": int(study_info.get("SeriesNumber") or study_info.get("seriesNumber") or 0) if study_info.get("SeriesNumber") or study_info.get("seriesNumber") else None,
+                "exam_number": int(study_info.get("number"))
+                if study_info.get("number") not in (None, "")
+                else None,
+                "series_number": int(
+                    study_info.get("SeriesNumber")
+                    or study_info.get("seriesNumber")
+                    or 0
+                )
+                if study_info.get("SeriesNumber")
+                or study_info.get("seriesNumber")
+                else None,
                 "labels": labels,
             }
         except (DatasetNotReady, FileNotFoundError, Exception):
@@ -203,10 +203,10 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
     @app.route("/healthz")
     def healthcheck():
         return jsonify({
-                "client_ready": context.dataset.dataset_ready(),
-                "server_url": config.server_url,
-                "video_cache": str(config.video_cache_path),
-                "frames_cache": str(config.frames_path),
+            "client_ready": context.dataset.dataset_ready(),
+            "server_url": config.server_url,
+            "video_cache": str(config.video_cache_path),
+            "frames_cache": str(config.frames_path),
         })
 
     @app.route("/")
@@ -237,7 +237,7 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
     def api_video(method: str, study_uid: str, series_uid: str):
         """
         Return minimal metadata for a given series to drive the viewer.
-        
+
         This endpoint should return quickly. Frame extraction happens asynchronously
         in /api/frames endpoint if needed.
         """
@@ -265,6 +265,7 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         if frame_count == 0:
             try:
                 import cv2
+
                 cap = cv2.VideoCapture(str(video_path))
                 if cap.isOpened():
                     # Get frame count from video properties (fast)
@@ -289,7 +290,7 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
     def api_frames(method: str, study_uid: str, series_uid: str):
         """
         Return URLs for frame and mask archives used by the legacy viewer JS.
-        
+
         Frames should already exist from client startup initialization.
         This endpoint only checks existence and returns URLs - it does NOT extract frames.
         """
@@ -306,7 +307,7 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         if not context.frames.frames_exist(video_path, study_uid, series_uid):
             return jsonify({
                 "error": "Frames not found. Client startup should have extracted frames. Run /api/dataset/sync to extract frames.",
-                "error_code": "FRAMES_NOT_EXTRACTED"
+                "error_code": "FRAMES_NOT_EXTRACTED",
             }), 404
 
         frames_archive_url = f"/api/frames_archive/{study_uid}/{series_uid}.tar"
@@ -353,11 +354,6 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         This is intentionally blocking so callers know that, on success, both
         dataset and frames are ready for use.
         """
-        # Invalidate cache before syncing (dataset will change)
-        global _videos_cache, _videos_cache_mtime
-        _videos_cache = None
-        _videos_cache_mtime = None
-        
         images_dir = context.dataset.sync_dataset()
 
         extracted = []
@@ -525,7 +521,9 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         previous_version_id = data.get("previous_version_id") or ""
 
         if not study_uid or not series_uid or not method:
-            return jsonify({"error": "method, study_uid and series_uid required"}), 400
+            return jsonify({
+                "error": "method, study_uid and series_uid required"
+            }), 400
 
         if not modified_frames:
             return jsonify({"error": "No modified frames provided"}), 400
@@ -557,28 +555,31 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
                     filename = f"frame_{frame_num:06d}_mask.webp"
                     mask_path = mask_dir / filename
                     mask_b64 = frame_data.get("mask_data") or ""
-                    
+
                     # Use shared helper for base64→WebP conversion
                     from lib.mask_utils import decode_base64_mask_to_webp
-                    if not decode_base64_mask_to_webp(mask_b64, mask_path, quality=85):
+
+                    if not decode_base64_mask_to_webp(
+                        mask_b64, mask_path, quality=85
+                    ):
                         continue
 
-                frames_meta.append(
-                    {
-                        "frame_number": frame_num,
-                        "has_mask": has_mask,
-                        "is_annotation": True,
-                        "label_id": label_id,
-                        "filename": filename,
-                    }
-                )
+                frames_meta.append({
+                    "frame_number": frame_num,
+                    "has_mask": has_mask,
+                    "is_annotation": True,
+                    "label_id": label_id,
+                    "filename": filename,
+                })
 
             if not frames_meta:
-                return jsonify({"error": "No valid masks generated from modified_frames"}), 400
+                return jsonify({
+                    "error": "No valid masks generated from modified_frames"
+                }), 400
 
             # Use shared helper for ISO timestamp
             from lib.mask_archive import iso_now
-            
+
             metadata = {
                 "study_uid": study_uid,
                 "series_uid": series_uid,
@@ -652,27 +653,21 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
         methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     )
     def proxy_to_server(subpath: str):
-        """
-        Forward requests to the centralized tracking server with MD.ai auth header.
-        Preserves custom headers like X-Previous-Version-ID and X-Editor.
-        """
+        """Forward requests to the centralized tracking server."""
         try:
             url = f"{config.server_url.rstrip('/')}/{subpath}"
             headers = {
                 key: value
                 for key, value in request.headers
-                if key.lower() not in {"host", "content-length", "connection", "authorization"}
+                if key.lower()
+                not in {"host", "content-length", "connection", "authorization"}
             }
 
-            # Add X-User-Email from request header (set by frontend) or config
-            # Frontend sends X-User-Email from localStorage, which takes precedence
             if "X-User-Email" not in headers:
-                # Check if frontend sent it
                 frontend_email = request.headers.get("X-User-Email")
                 if frontend_email:
                     headers["X-User-Email"] = frontend_email
                 elif config.user_email:
-                    # Fallback to config if frontend didn't send it
                     headers["X-User-Email"] = config.user_email
 
             files = None
@@ -682,14 +677,11 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
                     for name, file in request.files.items()
                 }
 
-            # Handle binary data (e.g., .tgz archives) - don't convert to JSON
             data = None
             json_payload = None
             if request.is_json and not request.data:
-                # Only use JSON if it's actually JSON and no binary data
                 json_payload = request.get_json(silent=True)
             else:
-                # Binary data (e.g., .tgz archives for POST /api/masks)
                 data = request.get_data()
 
             logger = logging.getLogger(__name__)
@@ -724,15 +716,18 @@ def create_app(config: Optional[ClientConfig] = None, skip_startup: bool = False
             )
         except Exception as exc:
             import traceback
+
             logger = logging.getLogger(__name__)
-            error_msg = f"Error proxying {request.method} {subpath} to server: {exc}"
+            error_msg = (
+                f"Error proxying {request.method} {subpath} to server: {exc}"
+            )
             logger.error(error_msg, exc_info=True)
             print(f"ERROR in proxy: {error_msg}", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
             return jsonify({
                 "error": "Proxy error",
                 "error_message": str(exc),
-                "path": subpath
+                "path": subpath,
             }), 502
 
     # Close resources when the process exits (avoid closing per-request)
@@ -752,7 +747,7 @@ def read_pid(pid_file: Path) -> Optional[int]:
     """Read PID from file if it exists and process is still running."""
     if not pid_file.exists():
         return None
-    
+
     try:
         pid = int(pid_file.read_text().strip())
         # Check if process is still running
@@ -773,14 +768,14 @@ def update_latest_log_symlink(log_file: Path) -> None:
     """Create or update symlink log/latest pointing to the current log file."""
     log_dir = log_file.parent
     latest_link = log_dir / "latest"
-    
+
     # Remove existing symlink if it exists
     if latest_link.exists() or latest_link.is_symlink():
         try:
             latest_link.unlink()
         except OSError:
             pass  # Ignore errors removing old symlink
-    
+
     # Create new symlink
     try:
         latest_link.symlink_to(log_file.name)
@@ -788,7 +783,11 @@ def update_latest_log_symlink(log_file: Path) -> None:
         # Log but don't fail if symlink creation fails
         # Use print since logger might not be set up yet
         import sys
-        print(f"Warning: Failed to create latest log symlink: {e}", file=sys.stderr)
+
+        print(
+            f"Warning: Failed to create latest log symlink: {e}",
+            file=sys.stderr,
+        )
 
 
 def kill_existing(pid_file: Path) -> bool:
@@ -796,11 +795,12 @@ def kill_existing(pid_file: Path) -> bool:
     pid = read_pid(pid_file)
     if pid is None:
         return False
-    
+
     try:
         os.kill(pid, signal.SIGTERM)
         # Wait a bit for graceful shutdown
         import time
+
         for _ in range(10):  # Wait up to 1 second
             time.sleep(0.1)
             try:
@@ -831,10 +831,10 @@ def daemonize(log_file: Path, pid_file: Path) -> None:
     except OSError as e:
         sys.stderr.write(f"Fork failed: {e}\n")
         sys.exit(1)
-    
+
     # Child process continues
     os.setsid()  # Create new session
-    
+
     # Second fork
     try:
         pid = os.fork()
@@ -844,24 +844,25 @@ def daemonize(log_file: Path, pid_file: Path) -> None:
     except OSError as e:
         sys.stderr.write(f"Second fork failed: {e}\n")
         sys.exit(1)
-    
+
     # Redirect standard file descriptors to /dev/null
     os.chdir("/")
     os.umask(0)
-    
+
     # Redirect stdin, stdout, stderr to /dev/null
     with open("/dev/null", "r") as devnull:
         os.dup2(devnull.fileno(), sys.stdin.fileno())
     with open("/dev/null", "w") as devnull:
         os.dup2(devnull.fileno(), sys.stdout.fileno())
         os.dup2(devnull.fileno(), sys.stderr.fileno())
-    
+
     # Close file descriptors (except 0, 1, 2 which are now /dev/null)
     import resource
+
     maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
     if maxfd == resource.RLIM_INFINITY:
         maxfd = 1024
-    
+
     for fd in range(3, maxfd):
         try:
             os.close(fd)
@@ -872,54 +873,57 @@ def daemonize(log_file: Path, pid_file: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Goobusters client backend")
     parser.add_argument(
-        "-d", "--daemon",
+        "-d",
+        "--daemon",
         action="store_true",
-        help="Run as daemon (detached process)"
+        help="Run as daemon (detached process)",
     )
     parser.add_argument(
-        "-k", "--kill",
+        "-k",
+        "--kill",
         action="store_true",
-        help="Kill existing client process before starting"
+        help="Kill existing client process before starting",
     )
     args = parser.parse_args()
-    
+
     config = load_config("client")
     pid_file = get_pid_file(config)
-    
+
     # Set up logging
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    
+
     # Create log directory
     log_dir = Path(__file__).parent.parent / "client" / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Log filename: YYMMDD-HHMMSS.log
     from datetime import datetime
+
     timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
     log_file = log_dir / f"{timestamp}.log"
-    
+
     # Create/update symlink to latest log
     update_latest_log_symlink(log_file)
-    
+
     # Kill existing process if requested
     if args.kill:
         if kill_existing(pid_file):
             print("Killed existing client process")
         else:
             print("No existing client process found")
-    
+
     # Check if client is already running
     existing_pid = read_pid(pid_file)
     if existing_pid is not None:
         print(f"Client is already running (PID: {existing_pid})")
         print(f"Use -k to kill it, or check PID file: {pid_file}")
         sys.exit(1)
-    
+
     # Daemonize if requested (must be before logging setup)
     if args.daemon:
         daemonize(log_file, pid_file)
-    
+
     # File handler
     file_handler = logging.FileHandler(log_file)
     file_handler.setLevel(logging.INFO)
@@ -928,17 +932,17 @@ def main() -> None:
     )
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
-    
+
     # Console handler (if not daemonized)
     if not args.daemon:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(file_formatter)
         logger.addHandler(console_handler)
-    
+
     # Write PID file
     write_pid(pid_file)
-    
+
     # Log startup
     logger.info("=" * 60)
     logger.info("Starting Goobusters Client")
@@ -946,7 +950,7 @@ def main() -> None:
     logger.info(f"PID file: {pid_file}")
     logger.info(f"Log file: {log_file}")
     logger.info("=" * 60)
-    
+
     try:
         app = create_app(config)
         logger.info(f"Client ready on 0.0.0.0:{config.client_port}")
