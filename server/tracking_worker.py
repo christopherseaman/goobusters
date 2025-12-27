@@ -48,11 +48,13 @@ def build_mask_archive_from_directory(
     series_manager: SeriesManager,
 ) -> None:
     """
-    Build masks.tar archive from existing masks/ directory.
+    Build masks.tar and frames.tar archives from existing directories.
 
     Used when masks already exist (e.g., from track.py) and we just need to
-    build the server format archive with metadata.json.
+    build the server format archives with metadata.json.
     """
+    import tarfile
+
     series = series_manager.get_series(study_uid, series_uid)
     metadata = build_mask_metadata(series, masks_dir, config.flow_method)
     archive_path = output_dir / "masks.tar"
@@ -62,6 +64,19 @@ def build_mask_archive_from_directory(
     logger.info(
         f"Built masks.tar from existing masks for {study_uid}/{series_uid}"
     )
+
+    # Also create frames.tar if frames/ exists but frames.tar doesn't
+    frames_dir = output_dir / "frames"
+    frames_tar_path = output_dir / "frames.tar"
+    if frames_dir.exists() and not frames_tar_path.exists():
+        frame_files = list(frames_dir.glob("*.webp"))
+        if frame_files:
+            with tarfile.open(frames_tar_path, mode="w") as tar:
+                for frame_path in sorted(frame_files):
+                    tar.add(frame_path, arcname=f"frames/{frame_path.name}")
+            logger.info(
+                f"Built frames.tar from existing frames for {study_uid}/{series_uid}"
+            )
 
 
 def run_tracking_pipeline(
@@ -73,7 +88,6 @@ def run_tracking_pipeline(
     config: ServerConfig,
     is_retrack: bool = False,
     new_version_id: Optional[str] = None,
-    version_id: Optional[str] = None,
 ) -> Path:
     """
     Shared tracking pipeline used by both initial tracking and retrack.
@@ -84,7 +98,6 @@ def run_tracking_pipeline(
         new_version_id: Version ID to write to frametype.json (for retrack).
                        For initial tracking, this is None (no version yet).
                        For retrack, this is the newly generated version_id (different from previous).
-        version_id: Backward-compat alias for new_version_id (do not use in new code).
     """
     # Determine images dir and video path (matches track.py behavior)
     images_dir = find_images_dir(
@@ -174,8 +187,8 @@ def run_tracking_pipeline(
         str(series_output_dir), annotations_df, annotations_blob
     )
 
-    # Resolve version id (support legacy keyword "version_id")
-    resolved_version_id = new_version_id or version_id
+    # Use new_version_id (no backward compat needed - all callers use new_version_id)
+    resolved_version_id = new_version_id
 
     # Initialize optical flow processor
     flow_processor = OpticalFlowProcessor(config.flow_method)

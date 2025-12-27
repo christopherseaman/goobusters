@@ -8,7 +8,7 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, request, send_file
 
 from lib.mask_archive import (
     build_mask_archive,
@@ -433,40 +433,21 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     "error_code": "ARCHIVE_PARSE_ERROR",
                 }), 500
 
-        try:
-            with tar:
-                metadata_file = tar.extractfile("metadata.json")
-                if metadata_file:
-                    metadata = json.load(metadata_file)
-                else:
-                    # Fallback: synthesize minimal headers when metadata.json is missing.
-                    # This should not happen for new archives; treat as degraded state.
-                    metadata = {
-                        "version_id": series_manager.get_version_id(
-                            study_uid, series_uid
-                        )
-                        or "",
-                        "generated_at": iso_now(),
-                        "mask_count": series_manager.get_mask_count(
-                            study_uid, series_uid
-                        ),
-                    }
-        except Exception as exc:
-            import traceback
-
-            print(f"Error extracting metadata from archive: {exc}")
-            traceback.print_exc()
-            # Fallback to minimal metadata
-            metadata = {
-                "version_id": series_manager.get_version_id(
-                    study_uid, series_uid
-                )
-                or "",
-                "generated_at": iso_now(),
-                "mask_count": series_manager.get_mask_count(
-                    study_uid, series_uid
-                ),
-            }
+        with tar:
+            metadata_file = tar.extractfile("metadata.json")
+            if not metadata_file:
+                return jsonify({
+                    "error": "metadata.json not found in mask archive",
+                    "error_code": "MISSING_METADATA",
+                }), 500
+            
+            try:
+                metadata = json.load(metadata_file)
+            except json.JSONDecodeError as exc:
+                return jsonify({
+                    "error": f"Failed to parse metadata.json: {exc}",
+                    "error_code": "METADATA_PARSE_ERROR",
+                }), 500
 
         headers = {
             "Content-Type": "application/x-tar",
@@ -476,6 +457,107 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             "X-Generated-At": metadata.get("generated_at", iso_now()),
         }
         return Response(archive_bytes, headers=headers)
+
+    @bp.get("/api/frames_archive/<study_uid>/<series_uid>.tar")
+    def frames_archive(study_uid: str, series_uid: str):
+        """
+        Serve frames.tar (WebP frames, no gzip) from tracking output.
+        """
+        base_dir = mask_series_dir(
+            mask_root, config.flow_method, study_uid, series_uid
+        )
+        tar_path = base_dir / "frames.tar"
+
+        if not tar_path.exists():
+            return jsonify({"error": "frames.tar not found"}), 404
+
+        return send_file(
+            tar_path,
+            mimetype="application/x-tar",
+            as_attachment=False,
+            download_name=f"{study_uid}_{series_uid}_frames.tar",
+        )
+
+    def _get_total_frames(study_uid: str, series_uid: str) -> int:
+        """Get total frame count from frames directory or frametype.json."""
+        base_dir = mask_series_dir(
+            mask_root, config.flow_method, study_uid, series_uid
+        )
+        frames_dir = base_dir / "frames"
+        
+        # Count frames in frames directory (most reliable)
+        if frames_dir.exists():
+            frame_files = list(frames_dir.glob("frame_*.webp"))
+            if frame_files:
+                return len(frame_files)
+        
+        # Fallback: get from frametype.json
+        frametype_path = base_dir / "frametype.json"
+        if frametype_path.exists():
+            try:
+                with frametype_path.open() as f:
+                    frametype_data = json.load(f)
+                    # frametype.json keys are frame numbers (as strings)
+                    # Exclude metadata keys
+                    frame_keys = [
+                        k for k in frametype_data.keys()
+                        if k != "_version_id" and k.isdigit()
+                    ]
+                    if frame_keys:
+                        # Total frames = max frame number + 1 (0-indexed)
+                        return max(int(k) for k in frame_keys) + 1
+            except (json.JSONDecodeError, ValueError, KeyError):
+                pass
+        
+        return 0
+
+    @bp.get("/api/video/<method>/<study_uid>/<series_uid>")
+    def video(method: str, study_uid: str, series_uid: str):
+        """
+        Return video metadata including total_frames for the viewer.
+        """
+        try:
+            series = series_manager.get_series(study_uid, series_uid)
+        except FileNotFoundError:
+            return jsonify({"error": "Series not found"}), 404
+        
+        total_frames = _get_total_frames(study_uid, series_uid)
+        
+        # Construct labels from config (same format as client)
+        labels = [
+            {"labelId": config.label_id, "labelName": "Fluid"},
+            {"labelId": config.empty_id, "labelName": "Empty"},
+        ]
+        
+        return jsonify({
+            "total_frames": total_frames,
+            "method": method,
+            "study_uid": study_uid,
+            "series_uid": series_uid,
+            "exam_number": series.exam_number,
+            "labels": labels,
+            "masks_annotations": [],
+            "modified_frames": {},
+        })
+
+    @bp.get("/api/frames/<method>/<study_uid>/<series_uid>")
+    def frames(method: str, study_uid: str, series_uid: str):
+        """
+        Return URLs for frame and mask archives for the viewer.
+        Frames and masks are generated by the server tracking pipeline.
+        """
+        total_frames = _get_total_frames(study_uid, series_uid)
+        
+        # Frames archive URL (server-produced frames.tar)
+        frames_archive_url = f"/api/frames_archive/{study_uid}/{series_uid}.tar"
+        masks_archive_url = f"/api/masks/{study_uid}/{series_uid}"
+        return jsonify(
+            {
+                "frames_archive_url": frames_archive_url,
+                "masks_archive_url": masks_archive_url,
+                "total_frames": total_frames,
+            }
+        )
 
     @bp.post("/api/masks/<study_uid>/<series_uid>")
     def post_masks(study_uid: str, series_uid: str):

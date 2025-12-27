@@ -1634,7 +1634,7 @@ class AnnotationViewer {
 
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
-            let url = `/api/frames/${method}/${studyUid}/${seriesUid}`;
+            let url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
             if (forceCacheBust) {
                 url += `?t=${Date.now()}`;
             }
@@ -1650,8 +1650,18 @@ class AnnotationViewer {
             
             const { frames_archive_url, masks_archive_url } = await response.json();
 
+            // Rewrite to proxy if server returned /api/... paths
+            let framesUrl = frames_archive_url;
+            if (framesUrl && framesUrl.startsWith("/api/")) {
+                framesUrl = `/proxy${framesUrl}`;
+            }
+            let masksUrl = masks_archive_url;
+            if (masksUrl && masksUrl.startsWith("/api/")) {
+                masksUrl = `/proxy${masksUrl}`;
+            }
+
             // Load frames archive (.tar format, no gzip)
-            const framesArchiveResponse = await fetch(frames_archive_url);
+            const framesArchiveResponse = await fetch(framesUrl);
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesTarData = new Uint8Array(framesArrayBuffer);
 
@@ -1680,11 +1690,10 @@ class AnnotationViewer {
             // Load masks archive (.tar format, no gzip) - get version ID from headers
             // Add cache busting if forceCacheBust is true
             this.masksArchive = {};
-            if (masks_archive_url) {
-                let masksUrl = masks_archive_url;
+            if (masksUrl) {
                 if (forceCacheBust) {
-                    const separator = masks_archive_url.includes('?') ? '&' : '?';
-                    masksUrl = `${masks_archive_url}${separator}t=${Date.now()}`;
+                    const separator = masksUrl.includes('?') ? '&' : '?';
+                    masksUrl = `${masksUrl}${separator}t=${Date.now()}`;
                 }
                 const masksArchiveResponse = await fetch(masksUrl);
                 

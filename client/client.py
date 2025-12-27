@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import signal
-import tarfile
 
 import httpx
 from flask import (
@@ -39,12 +38,8 @@ from lib.config import ClientConfig, load_config
 
 # Support running as a module (`python -m client.client`) or as a script
 if __package__:
-    from .frame_extractor import FrameExtractionError, FrameExtractor
     from .mdai_client import DatasetNotReady, MDaiDatasetManager
 else:  # pragma: no cover - fallback for direct script execution
-    # Add project root to import path, then import without the package prefix
-    # (already done above, but keeping for clarity)
-    from frame_extractor import FrameExtractionError, FrameExtractor  # type: ignore
     from mdai_client import DatasetNotReady, MDaiDatasetManager  # type: ignore
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +51,7 @@ class ClientContext:
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
         self.dataset = MDaiDatasetManager(config)
-        self.frames = FrameExtractor(config.frames_path)
+        # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
         self.http_client = httpx.Client(timeout=60)
 
     def close(self) -> None:
@@ -76,42 +71,14 @@ def create_app(
     )
     app.config["CLIENT_CONTEXT"] = context
 
-    # Initialize client: sync dataset and lazily extract frames for all series
-    # This must complete before serving the viewer (per architecture)
+    # Initialize client: sync dataset (frames served from server outputs)
+    # This must complete before serving the viewer
     if not skip_startup:
         logger = logging.getLogger(__name__)
-        logger.info(
-            "Initializing client: syncing dataset and extracting frames (lazily)..."
-        )
-
-        # Sync dataset (downloads/refreshes MD.ai data)
+        logger.info("Initializing client: syncing dataset...")
         images_dir = context.dataset.sync_dataset()
         logger.info(f"Dataset synced. Images directory: {images_dir}")
-
-        # Lazily extract frames for all series (only if missing)
-        series = context.dataset.list_local_series()
-        logger.info(
-            f"Checking and extracting frames for {len(series)} series (lazy)..."
-        )
-
-        extracted = []
-        for idx, info in enumerate(series, 1):
-            # Only extract if frames don't exist or are stale
-            if not context.frames.frames_exist(
-                info.video_path, info.study_uid, info.series_uid
-            ):
-                context.frames.ensure_frames(
-                    info.video_path, info.study_uid, info.series_uid
-                )
-                extracted.append(f"{info.study_uid}/{info.series_uid}")
-                if idx % 10 == 0:
-                    logger.info(
-                        f"  Extracted frames for {idx}/{len(series)} series..."
-                    )
-
-        logger.info(
-            f"Client initialization complete. Extracted frames for {len(extracted)}/{len(series)} series (lazy extraction)."
-        )
+        logger.info("Client initialization complete.")
 
     def _build_videos() -> list[dict]:
         """
@@ -236,10 +203,7 @@ def create_app(
     @app.get("/api/video/<method>/<study_uid>/<series_uid>")
     def api_video(method: str, study_uid: str, series_uid: str):
         """
-        Return minimal metadata for a given series to drive the viewer.
-
-        This endpoint should return quickly. Frame extraction happens asynchronously
-        in /api/frames endpoint if needed.
+        Return video metadata including total_frames from server.
         """
         info = _find_series_info(study_uid, series_uid)
         if not info:
@@ -250,33 +214,20 @@ def create_app(
         except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
 
-        # Try to get frame count from manifest first (fast)
-        manifest_path = context.frames.manifest_path(study_uid, series_uid)
-        frame_count = 0
-        if manifest_path.exists():
-            try:
-                with manifest_path.open() as f:
-                    manifest = json.load(f)
-                    frame_count = manifest.get("frame_count", 0)
-            except (OSError, json.JSONDecodeError):
-                pass
-
-        # If no manifest, try to get count from video file directly (fast, no extraction)
-        if frame_count == 0:
-            try:
-                import cv2
-
-                cap = cv2.VideoCapture(str(video_path))
-                if cap.isOpened():
-                    # Get frame count from video properties (fast)
-                    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    cap.release()
-            except Exception:
-                # If we can't get count, return 0 - frames will be extracted in /api/frames
-                pass
+        # Get total_frames from server
+        try:
+            server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
+            resp = context.http_client.get(server_url, timeout=10)
+            if resp.status_code == 200:
+                server_data = resp.json()
+                total_frames = server_data.get("total_frames", 0)
+            else:
+                total_frames = 0
+        except Exception:
+            total_frames = 0
 
         return jsonify({
-            "total_frames": frame_count,
+            "total_frames": total_frames,
             "method": config.flow_method,
             "study_uid": study_uid,
             "series_uid": series_uid,
@@ -298,85 +249,25 @@ def create_app(
         if not info:
             return jsonify({"error": "Series not found locally"}), 404
 
-        try:
-            video_path = context.dataset.resolve_video(study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError) as exc:
-            return jsonify({"error": str(exc)}), 404
-
-        # Fast check: frames should already exist from startup
-        if not context.frames.frames_exist(video_path, study_uid, series_uid):
-            return jsonify({
-                "error": "Frames not found. Client startup should have extracted frames. Run /api/dataset/sync to extract frames.",
-                "error_code": "FRAMES_NOT_EXTRACTED",
-            }), 404
-
-        frames_archive_url = f"/api/frames_archive/{study_uid}/{series_uid}.tar"
+        frames_archive_url = f"/proxy/api/frames_archive/{study_uid}/{series_uid}.tar"
         masks_archive_url = f"/proxy/api/masks/{study_uid}/{series_uid}"
         return jsonify({
             "frames_archive_url": frames_archive_url,
             "masks_archive_url": masks_archive_url,
         })
 
-    @app.get("/api/frames_archive/<study_uid>/<series_uid>.tar")
-    def frames_archive(study_uid: str, series_uid: str):
-        """
-        Serve cached .tar archive of WebP frames (no gzip - WebP already compressed).
-        Archive is prebuilt during frame extraction (via /api/dataset/sync).
-        """
-        try:
-            video_path = context.dataset.resolve_video(study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError):
-            abort(404)
-
-        # Fast check: frames should already exist from sync
-        if not context.frames.frames_exist(video_path, study_uid, series_uid):
-            abort(404)
-
-        tar_path = context.frames.frames_tar_path(study_uid, series_uid)
-        if not tar_path.exists():
-            abort(404)
-
-        return send_file(
-            tar_path,
-            mimetype="application/x-tar",
-            as_attachment=True,
-            download_name=f"{study_uid}_{series_uid}_frames.tar",
-        )
-
     @app.post("/api/dataset/sync")
     def sync_dataset():
         """
-        Blockingly:
-        - Download/refresh the MD.ai dataset
-        - Discover all local series
-        - Extract frames for each series
-
-        This is intentionally blocking so callers know that, on success, both
-        dataset and frames are ready for use.
+        Download/refresh the MD.ai dataset. Frames are produced by the server
+        tracking pipeline; the client no longer extracts or caches frames.
         """
         images_dir = context.dataset.sync_dataset()
-
-        extracted = []
         series = context.dataset.list_local_series()
-        for info in series:
-            try:
-                context.frames.ensure_frames(
-                    info.video_path, info.study_uid, info.series_uid
-                )
-                extracted.append(f"{info.study_uid}/{info.series_uid}")
-            except Exception as exc:  # pragma: no cover - surfaced to caller
-                return (
-                    jsonify({
-                        "error": f"Failed to extract frames for {info.study_uid}/{info.series_uid}: {exc}",
-                        "images_dir": str(images_dir),
-                    }),
-                    500,
-                )
-
         return jsonify({
             "images_dir": str(images_dir),
             "series_count": len(series),
-            "frames_extracted_for": extracted,
+            "frames_extracted_for": [],  # no local extraction
         })
 
     @app.get("/api/local/series")
@@ -394,9 +285,6 @@ def create_app(
                 "series_number": info.series_number,
                 "dataset_name": info.dataset_name,
                 "video_path": str(info.video_path),
-                "frames_dir": str(
-                    context.frames.frame_dir(info.study_uid, info.series_uid)
-                ),
             }
             for info in series
         ]

@@ -222,12 +222,12 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
 
         # Then refine using input_annotations.json for LABEL_ID / EMPTY_ID
         input_annotations_path = output_dir / "input_annotations.json"
-
+        
         if input_annotations_path.exists():
             try:
                 with input_annotations_path.open() as f:
                     input_data = json.load(f)
-
+                
                 if isinstance(input_data, str):
                     input_data = json.loads(input_data)
 

@@ -62,32 +62,17 @@ def _merge_annotations(original_df, uploaded_df, study_uid, series_uid):
     return merged
 
 
-def _add_label_names(annotations_df, original_annotations_df):
-    """Ensure labelName is populated for all rows using original annotations."""
-    if (
-        "labelId" not in original_annotations_df.columns
-        or "labelName" not in original_annotations_df.columns
-    ):
-        raise ValueError(
-            "Original annotations must have 'labelId' and 'labelName' columns"
-        )
-
-    label_map = (
-        original_annotations_df[["labelId", "labelName"]]
-        .dropna(subset=["labelId", "labelName"])
-        .drop_duplicates()
-        .set_index("labelId")["labelName"]
-        .to_dict()
-    )
-
-    # If labelName missing column, create it
-    if "labelName" not in annotations_df.columns:
-        annotations_df["labelName"] = annotations_df["labelId"].map(label_map)
-    else:
-        # Fill any NaN labelName from labelId map
-        annotations_df["labelName"] = annotations_df["labelName"].fillna(
-            annotations_df["labelId"].map(label_map)
-        )
+def _add_label_names(annotations_df, config):
+    """Ensure labelName is populated for all rows using config mappings."""
+    # Build label map from config (source of truth)
+    label_map = {
+        config.label_id: "Fluid",
+        config.empty_id: "Empty",
+    }
+    
+    # Always set labelName from labelId mapping (overwrite any existing values)
+    # This ensures labelName is always correct based on labelId, regardless of what was in the uploaded data
+    annotations_df["labelName"] = annotations_df["labelId"].map(label_map)
 
     if annotations_df["labelName"].isna().any():
         missing_frames = (
@@ -104,7 +89,7 @@ def _add_label_names(annotations_df, original_annotations_df):
         )
         raise ValueError(
             f"Could not find labelName for labelIds: {missing_label_ids}; "
-            f"frames: {missing_frames}"
+            f"frames: {missing_frames}. Only {config.label_id} (Fluid) and {config.empty_id} (Empty) are supported."
         )
 
 
@@ -189,7 +174,7 @@ def process_retrack_job(
         )
 
         # Add labelName and video_path (fills all labelName values or raises with details)
-        _add_label_names(filtered_annotations, original_annotations_df)
+        _add_label_names(filtered_annotations, config)
 
         images_dir = find_images_dir(
             str(config.data_dir), config.project_id, config.dataset_id
