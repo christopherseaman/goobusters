@@ -32,44 +32,45 @@ from server.tracking_worker import run_tracking_pipeline
 from track import find_annotations_file, find_images_dir
 
 
-def _merge_annotations(original_df, uploaded_df, study_uid, series_uid):
-    """Merge original annotations with uploaded masks."""
-    modified_frames = set(uploaded_df["frameNumber"].unique())
-
-    # Remove original annotations for modified frames
-    original_filtered = original_df[
-        ~original_df["frameNumber"].isin(modified_frames)
-    ].copy()
-
+def _merge_annotations(uploaded_df, study_uid, series_uid):
+    """Process uploaded masks (client sends ALL annotation frames)."""
+    # Client now sends ALL annotation frames (label_id and empty_id), so uploaded_df
+    # contains the complete set of annotations. No merge with original needed.
+    
     # Ensure compatible schemas
-    if "mask" not in original_filtered.columns:
-        original_filtered["mask"] = None
+    if "mask" not in uploaded_df.columns:
+        uploaded_df["mask"] = None
     if "data" not in uploaded_df.columns:
         uploaded_df["data"] = None
 
-    # Merge
-    merged = pd.concat([original_filtered, uploaded_df], ignore_index=True)
-    merged = merged.sort_values("frameNumber").reset_index(drop=True)
-
     # Set required identifiers
-    merged["StudyInstanceUID"] = merged.get(
+    uploaded_df["StudyInstanceUID"] = uploaded_df.get(
         "StudyInstanceUID", study_uid
     ).fillna(study_uid)
-    merged["SeriesInstanceUID"] = merged.get(
+    uploaded_df["SeriesInstanceUID"] = uploaded_df.get(
         "SeriesInstanceUID", series_uid
     ).fillna(series_uid)
+
+    # Sort by frame number
+    merged = uploaded_df.sort_values("frameNumber").reset_index(drop=True)
 
     return merged
 
 
 def _add_label_names(annotations_df, config):
     """Ensure labelName is populated for all rows using config mappings."""
+    # Normalize labelId types to match config (handle string/int mismatches)
+    # Convert both labelId column and config values to strings for consistent comparison
+    annotations_df["labelId"] = annotations_df["labelId"].astype(str)
+    label_id_str = str(config.label_id)
+    empty_id_str = str(config.empty_id)
+
     # Build label map from config (source of truth)
     label_map = {
-        config.label_id: "Fluid",
-        config.empty_id: "Empty",
+        label_id_str: "Fluid",
+        empty_id_str: "Empty",
     }
-    
+
     # Always set labelName from labelId mapping (overwrite any existing values)
     # This ensures labelName is always correct based on labelId, regardless of what was in the uploaded data
     annotations_df["labelName"] = annotations_df["labelId"].map(label_map)
@@ -124,22 +125,7 @@ def process_retrack_job(
         original_annotations_df = pd.DataFrame(original_data["annotations"])
         original_studies_df = pd.DataFrame(original_data.get("studies", []))
 
-        # Filter for this series and LABEL_ID/EMPTY_ID only
-        series_annotations = original_annotations_df[
-            (original_annotations_df["StudyInstanceUID"] == job.study_uid)
-            & (original_annotations_df["SeriesInstanceUID"] == job.series_uid)
-            & (
-                (original_annotations_df["labelId"] == config.label_id)
-                | (original_annotations_df["labelId"] == config.empty_id)
-            )
-        ].copy()
-
-        if series_annotations.empty:
-            raise ValueError(
-                f"No original annotations with label_id {config.label_id} or {config.empty_id} found"
-            )
-
-        # Load uploaded masks
+        # Load uploaded masks (client now sends ALL annotation frames)
         uploaded_masks_path = Path(job.uploaded_masks_path)
         if not uploaded_masks_path.exists():
             raise FileNotFoundError(
@@ -168,12 +154,13 @@ def process_retrack_job(
         uploaded_filtered["StudyInstanceUID"] = job.study_uid
         uploaded_filtered["SeriesInstanceUID"] = job.series_uid
 
-        # Merge annotations
+        # Client sends ALL annotation frames, so use uploaded directly (no merge needed)
         filtered_annotations = _merge_annotations(
-            series_annotations, uploaded_filtered, job.study_uid, job.series_uid
+            uploaded_filtered, job.study_uid, job.series_uid
         )
 
         # Add labelName and video_path (fills all labelName values or raises with details)
+        # _add_label_names normalizes types and handles the mapping
         _add_label_names(filtered_annotations, config)
 
         images_dir = find_images_dir(
@@ -188,7 +175,7 @@ def process_retrack_job(
             "labels": original_data.get("labels", []),
         }
 
-        # Pass new_version_id to tracking pipeline so it's written to frametype.json
+        # Pass version_id to tracking pipeline so it's written to frametype.json
         # This is the newly generated version_id (different from job.previous_version_id)
         output_dir = run_tracking_pipeline(
             job.study_uid,
@@ -198,7 +185,7 @@ def process_retrack_job(
             annotations_blob,
             config,
             is_retrack=True,
-            new_version_id=job.new_version_id,
+            version_id=job.new_version_id,
         )
 
         # Build mask archive (version_id is also written to masks.tar metadata.json for client)
@@ -209,8 +196,7 @@ def process_retrack_job(
         try:
             # build_mask_metadata reads version_id from frametype.json
             metadata = build_mask_metadata(
-                series,
-                masks_dir, config.flow_method
+                series, masks_dir, config.flow_method
             )
             archive_path = output_dir.parent / "masks.tar"
             archive_bytes = build_mask_archive(masks_dir, metadata)

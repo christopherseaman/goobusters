@@ -87,7 +87,7 @@ def run_tracking_pipeline(
     annotations_blob: dict,
     config: ServerConfig,
     is_retrack: bool = False,
-    new_version_id: Optional[str] = None,
+    version_id: Optional[str] = None,
 ) -> Path:
     """
     Shared tracking pipeline used by both initial tracking and retrack.
@@ -95,9 +95,9 @@ def run_tracking_pipeline(
 
     Args:
         is_retrack: If True, write to retrack subdirectory to avoid overwriting original masks
-        new_version_id: Version ID to write to frametype.json (for retrack).
-                       For initial tracking, this is None (no version yet).
-                       For retrack, this is the newly generated version_id (different from previous).
+        version_id: Version ID to write to frametype.json (for retrack).
+                   For initial tracking, this is None (no version yet).
+                   For retrack, this is the version_id for the retracked masks.
     """
     # Determine images dir and video path (matches track.py behavior)
     images_dir = find_images_dir(
@@ -187,8 +187,8 @@ def run_tracking_pipeline(
         str(series_output_dir), annotations_df, annotations_blob
     )
 
-    # Use new_version_id (no backward compat needed - all callers use new_version_id)
-    resolved_version_id = new_version_id
+    # Use version_id (renamed from new_version_id for consistency)
+    resolved_version_id = version_id
 
     # Initialize optical flow processor
     flow_processor = OpticalFlowProcessor(config.flow_method)

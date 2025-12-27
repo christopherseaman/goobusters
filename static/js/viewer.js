@@ -193,9 +193,9 @@ class AnnotationViewer {
         const videoSelect = document.getElementById('videoSelect');
         if (videoSelect) {
             videoSelect.addEventListener('change', (e) => {
-                const [method, studyUid, seriesUid] = e.target.value.split('|');
-                this.loadVideo(method, studyUid, seriesUid);
-            });
+            const [method, studyUid, seriesUid] = e.target.value.split('|');
+            this.loadVideo(method, studyUid, seriesUid);
+        });
         }
 
         document.getElementById('markComplete').addEventListener('click', () => this.markCompleteAndNext());
@@ -279,7 +279,7 @@ class AnnotationViewer {
                     // If at end of video, restart from beginning; otherwise toggle play/pause
                     if (this.currentFrame >= this.totalFrames - 1) {
                         this.goToFrame(0);
-                        this.togglePlayPause();
+                    this.togglePlayPause();
                     } else {
                         this.togglePlayPause();
                     }
@@ -431,23 +431,34 @@ class AnnotationViewer {
             // Clear canvas
             ctx.clearRect(0, 0, width, height);
             
+            // Get unsaved edits to check for modified frames
+            const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+            
             // Draw colored sections for each frame
             for (let frameNum = 0; frameNum < this.totalFrames; frameNum++) {
-                const frameData = this.videoData.mask_data?.[frameNum];
                 const x = frameNum * frameWidth;
                 const w = frameWidth;
                 
                 let color = 'transparent';
                 
-                if (frameData) {
-                    if (frameData.type === 'empty') {
-                        // Red for empty_id (25% alpha = 50% of annotation alpha)
-                        color = 'rgba(255, 0, 0, 0.25)';
-                    } else if (frameData.type === 'fluid') {
-                        // Green for label_id (25% alpha = 50% of annotation alpha)
-                        color = 'rgba(0, 255, 0, 0.25)';
+                // Check unsaved edits first (takes precedence)
+                if (videoModifiedFrames.has(frameNum)) {
+                    const modified = videoModifiedFrames.get(frameNum);
+                    if (modified.maskType === 'empty') {
+                        color = 'rgba(255, 0, 0, 0.25)';  // Red for empty
+                    } else if (modified.maskType === 'human' || modified.maskType === 'fluid') {
+                        color = 'rgba(0, 255, 0, 0.25)';  // Green for fluid
                     }
-                    // tracked (transparent) - no color
+                } else {
+                    // Check saved frame data
+                    const frameData = this.videoData.mask_data?.[frameNum];
+                    if (frameData) {
+                        if (frameData.type === 'empty') {
+                            color = 'rgba(255, 0, 0, 0.25)';  // Red for empty_id
+                        } else if (frameData.type === 'fluid') {
+                            color = 'rgba(0, 255, 0, 0.25)';  // Green for label_id
+                        }
+                    }
                 }
                 
                 if (color !== 'transparent') {
@@ -455,6 +466,25 @@ class AnnotationViewer {
                     ctx.fillRect(x, 0, w, height);
                 }
             }
+            
+            // Draw scrubline (thin line) across entire width
+            // Check if current frame is empty (saved or unsaved) to determine color
+            let isCurrentEmpty = false;
+            if (videoModifiedFrames.has(this.currentFrame)) {
+                const modified = videoModifiedFrames.get(this.currentFrame);
+                isCurrentEmpty = modified.maskType === 'empty';
+            } else {
+                const currentFrameData = this.videoData?.mask_data?.[this.currentFrame];
+                isCurrentEmpty = currentFrameData && currentFrameData.type === 'empty';
+            }
+            
+            const scrublineColor = isCurrentEmpty ? 'rgba(255, 0, 0, 0.9)' : 'rgba(76, 175, 80, 0.9)';
+            
+            // Draw scrubline across entire width (draw on top of colored sections)
+            const scrublineY = height / 2;
+            const scrublineHeight = 3;
+            ctx.fillStyle = scrublineColor;
+            ctx.fillRect(0, scrublineY - scrublineHeight / 2, width, scrublineHeight);
         });
     }
 
@@ -482,21 +512,21 @@ class AnnotationViewer {
             const hasMask = !!entry.has_mask;
             const labelId = entry.label_id;
             const isAnnotation = !!entry.is_annotation;
-
-            // Derive a simple type from is_annotation + has_mask:
-            // - annotation + mask   -> fluid (human)
-            // - annotation + no mask -> empty
-            // - non-annotation + mask -> tracked
-            // - non-annotation + no mask -> empty (should be rare)
-            let type = 'tracked';
-            if (isAnnotation && hasMask) {
-                type = 'fluid';
-            } else if (isAnnotation && !hasMask) {
-                type = 'empty';
-            } else if (!hasMask) {
-                type = 'empty';
-            } else {
-                type = 'tracked';
+            
+            // Use type from metadata if provided (server is source of truth)
+            // Otherwise derive from is_annotation + has_mask
+            let type = entry.type;
+            if (!type) {
+                // Fallback: derive type from is_annotation + has_mask
+                if (isAnnotation && hasMask) {
+                    type = 'fluid';
+                } else if (isAnnotation && !hasMask) {
+                    type = 'empty';
+                } else if (!hasMask) {
+                    type = 'empty';
+                } else {
+                    type = 'tracked';
+                }
             }
 
             this.videoData.mask_data[frameNum] = {
@@ -682,32 +712,24 @@ class AnnotationViewer {
         this.renderRect = { x: displayX, y: displayY, width: displayWidth, height: displayHeight };
 
         // Check if current frame is empty_id for visual indicator
+        // Check both stored frameData and current maskType (for in-progress edits)
         const frameData = this.videoData?.mask_data?.[this.currentFrame];
-        const isEmptyFrame = frameData && frameData.type === 'empty';
+        const isEmptyFrame = (frameData && frameData.type === 'empty') || this.maskType === 'empty';
         
-        // Add/remove empty frame indicator class
+        // Add/remove empty frame indicator class on canvas
         if (isEmptyFrame) {
             this.canvas.classList.add('empty-frame-indicator');
         } else {
             this.canvas.classList.remove('empty-frame-indicator');
         }
+        
+        // Scrubline is now drawn on type bar canvas, so update it
+        this.updateSliderTypeBar();
 
         // Draw frame on main canvas (scaled to viewport)
         this.ctx.drawImage(this.frameImage, displayX, displayY, displayWidth, displayHeight);
         
-        // Draw red outline for empty frames
-        if (isEmptyFrame) {
-            this.ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
-            this.ctx.lineWidth = 4;
-            this.ctx.setLineDash([]);
-            const padding = 8; // Padding around frame
-            this.ctx.strokeRect(
-                displayX - padding,
-                displayY - padding,
-                displayWidth + (padding * 2),
-                displayHeight + (padding * 2)
-            );
-        }
+        // Note: Red outline/border for empty frames is now handled by CSS (.empty-frame-indicator class)
 
         // Position and size overlay canvas to match display dimensions (like teef adjustCanvasSize)
         this.overlayCanvas.style.width = `${displayWidth}px`;
@@ -857,35 +879,40 @@ class AnnotationViewer {
         });
     }
 
-    // Helper: Build .tar archive from masks and metadata
-    async buildMaskArchive(modifiedFrames, studyUid, seriesUid, flowMethod) {
+    // Helper: Build .tar archive from all annotation frames and metadata
+    // Uses simple tar format - no gzip (WebP already compressed)
+    async buildMaskArchive(annotationFrames, studyUid, seriesUid, flowMethod) {
         const frames = [];
-        const maskBlobs = [];
+        const files = new Map(); // filename -> Uint8Array
         
         // Get label IDs from video data
         const labelId = this.videoData?.labels?.find(l => l.labelName === 'Fluid')?.labelId || '';
         const emptyId = this.videoData?.labels?.find(l => l.labelName === 'Empty')?.labelId || '';
         
-        for (const [frameNum, frameData] of modifiedFrames.entries()) {
-            const frameNumber = parseInt(frameNum);
+        for (const [frameNumStr, frameData] of Object.entries(annotationFrames)) {
+            const frameNumber = parseInt(frameNumStr);
             const isEmpty = frameData.is_empty;
-            const filename = `frame_${String(frameNumber).padStart(6, '0')}_mask.webp`;
-            
-            // Convert mask ImageData to WebP blob
-            const webpBlob = await this.imageDataToWebP(
-                frameData.maskData,
-                this.maskCanvas.width,
-                this.maskCanvas.height
-            );
-            maskBlobs.push({ filename, blob: webpBlob });
             
             frames.push({
                 frame_number: frameNumber,
                 has_mask: !isEmpty,
-                is_annotation: true, // All user edits are annotations
+                is_annotation: true,
                 label_id: isEmpty ? emptyId : labelId,
-                filename: isEmpty ? null : filename
+                filename: isEmpty ? null : `frame_${String(frameNumber).padStart(6, '0')}_mask.webp`
             });
+            
+            // Only add mask file for non-empty frames
+            if (!isEmpty) {
+                const filename = `frame_${String(frameNumber).padStart(6, '0')}_mask.webp`;
+                // Convert mask ImageData to WebP blob
+                const webpBlob = await this.imageDataToWebP(
+                    frameData.maskData,
+                    frameData.maskData.width,
+                    frameData.maskData.height
+                );
+                const arrayBuffer = await webpBlob.arrayBuffer();
+                files.set(filename, new Uint8Array(arrayBuffer));
+            }
         }
         
         // Build metadata.json
@@ -899,50 +926,86 @@ class AnnotationViewer {
             mask_count: frames.filter(f => f.has_mask).length,
             frames: frames
         };
-        
-        // Build .tar archive (no gzip)
-        const tarData = new Uint8Array(1024 * 1024); // 1MB buffer, grow if needed
-        let offset = 0;
-        
-        // Helper: Add file to tar
-        const addFile = (name, data) => {
-            const nameBytes = new TextEncoder().encode(name);
-            const nameLen = Math.min(nameBytes.length, 100);
-            tarData.set(nameBytes.slice(0, nameLen), offset);
-            offset += 100;
-            
-            // File mode, uid, gid, size, mtime (simplified)
-            const size = data.length;
-            const sizeStr = size.toString(8).padStart(11, '0');
-            const sizeBytes = new TextEncoder().encode(sizeStr);
-            tarData.set(sizeBytes, offset + 124);
-            offset += 512;
-            
-            // File data
-            if (size > 0) {
-                tarData.set(data, offset);
-                offset += Math.ceil(size / 512) * 512;
-            }
-        };
-        
-        // Add metadata.json
         const metadataJson = JSON.stringify(metadata, null, 2);
-        const metadataBytes = new TextEncoder().encode(metadataJson);
-        addFile('metadata.json', metadataBytes);
+        files.set('metadata.json', new TextEncoder().encode(metadataJson));
         
-        // Add mask files
-        for (const { filename, blob } of maskBlobs) {
-            const arrayBuffer = await blob.arrayBuffer();
-            addFile(filename, new Uint8Array(arrayBuffer));
+        // Build tar using simple format
+        return this._createSimpleTar(files);
+    }
+    
+    // Simple tar creator (no gzip - WebP already compressed)
+    _createSimpleTar(files) {
+        const chunks = [];
+        
+        for (const [filename, data] of files) {
+            // Tar header (512 bytes)
+            const header = new Uint8Array(512);
+            const encoder = new TextEncoder();
+            
+            // Filename (100 bytes)
+            const nameBytes = encoder.encode(filename);
+            header.set(nameBytes.slice(0, 100), 0);
+            
+            // Mode (8 bytes) - 0644
+            encoder.encodeInto('0000644\0', header.subarray(100, 108));
+            
+            // UID/GID (8 bytes each) - 0
+            encoder.encodeInto('0000000\0', header.subarray(108, 116));
+            encoder.encodeInto('0000000\0', header.subarray(116, 124));
+            
+            // Size (12 bytes) - octal
+            const sizeStr = data.length.toString(8).padStart(11, '0') + '\0';
+            encoder.encodeInto(sizeStr, header.subarray(124, 136));
+            
+            // mtime (12 bytes) - current time in octal
+            const mtime = Math.floor(Date.now() / 1000);
+            const mtimeStr = mtime.toString(8).padStart(11, '0') + '\0';
+            encoder.encodeInto(mtimeStr, header.subarray(136, 148));
+            
+            // Checksum placeholder (8 bytes) - spaces
+            encoder.encodeInto('        ', header.subarray(148, 156));
+            
+            // Type flag (1 byte) - 0 = normal file
+            header[156] = 0;
+            
+            // Link name (100 bytes) - empty
+            // Magic "ustar\0" (6 bytes)
+            encoder.encodeInto('ustar\0', header.subarray(257, 263));
+            // Version "00" (2 bytes)
+            encoder.encodeInto('00', header.subarray(263, 265));
+            
+            // Calculate checksum
+            let checksum = 0;
+            for (let i = 0; i < 512; i++) {
+                checksum += header[i];
+            }
+            const checksumStr = checksum.toString(8).padStart(6, '0') + '\0 ';
+            encoder.encodeInto(checksumStr, header.subarray(148, 156));
+            
+            chunks.push(header);
+            
+            // File data (padded to 512-byte boundary)
+            chunks.push(data);
+            const padding = (512 - (data.length % 512)) % 512;
+            if (padding > 0) {
+                chunks.push(new Uint8Array(padding));
+            }
         }
         
-        // Pad to 512-byte boundary
-        const remainder = offset % 512;
-        if (remainder > 0) {
-            offset += 512 - remainder;
+        // Two empty blocks at end
+        chunks.push(new Uint8Array(512));
+        chunks.push(new Uint8Array(512));
+        
+        // Concatenate all chunks
+        const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+            result.set(chunk, offset);
+            offset += chunk.length;
         }
         
-        return tarData.slice(0, offset);
+        return result;
     }
 
     async saveChanges() {
@@ -959,37 +1022,98 @@ class AnnotationViewer {
         const { method, studyUid, seriesUid } = this.currentVideo;
         const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
         
-        if (videoModifiedFrames.size === 0) {
-            console.log('No changes to save');
+        // Collect ALL annotation frames (label_id and empty_id) from in-memory videoData
+        // This ensures previously saved empty_id frames are preserved
+        const allAnnotationFrames = {};
+        
+        // Helper to get mask ImageData for a frame (from cache, modified, or archive)
+        const getMaskImageDataForFrame = async (frameNum) => {
+            // Check if frame is in modified frames (has current edits)
+            if (videoModifiedFrames.has(frameNum)) {
+                return videoModifiedFrames.get(frameNum).maskData;
+            }
+            
+            // Check frame cache
+            const cached = this.frameCache.get(frameNum);
+            if (cached && cached.maskImageData) {
+                return cached.maskImageData;
+            }
+            
+            // Load from archive if available
+            const maskFileName = `frame_${frameNum.toString().padStart(6, '0')}_mask.webp`;
+            if (this.masksArchive && this.masksArchive[maskFileName]) {
+                const maskData = this.masksArchive[maskFileName];
+                const blob = new Blob([maskData], { type: 'image/webp' });
+                const maskUrl = URL.createObjectURL(blob);
+                const maskImg = new Image();
+                const canvas = document.createElement('canvas');
+                await new Promise((resolve, reject) => {
+                    maskImg.onload = () => {
+                        canvas.width = maskImg.width;
+                        canvas.height = maskImg.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(maskImg, 0, 0);
+                        URL.revokeObjectURL(maskUrl);
+                        resolve();
+                    };
+                    maskImg.onerror = reject;
+                    maskImg.src = maskUrl;
+                });
+                return canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+            }
+            
+            // No mask - return empty black mask
+            const emptyCanvas = document.createElement('canvas');
+            emptyCanvas.width = this.maskCanvas.width;
+            emptyCanvas.height = this.maskCanvas.height;
+            const ctx = emptyCanvas.getContext('2d');
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, emptyCanvas.width, emptyCanvas.height);
+            return ctx.getImageData(0, 0, emptyCanvas.width, emptyCanvas.height);
+        };
+        
+        // First, collect all saved annotation frames from videoData
+        if (this.videoData && this.videoData.mask_data) {
+            for (const [frameNumStr, frameData] of Object.entries(this.videoData.mask_data)) {
+                const frameNum = parseInt(frameNumStr);
+                // Include frames that are annotations (fluid or empty)
+                if (frameData && (frameData.type === 'fluid' || frameData.type === 'empty')) {
+                    // Skip if this frame was modified (will be added below from videoModifiedFrames)
+                    if (!videoModifiedFrames.has(frameNum)) {
+                        const maskImageData = await getMaskImageDataForFrame(frameNum);
+                        allAnnotationFrames[frameNum] = {
+                            maskData: maskImageData,
+                            is_empty: frameData.type === 'empty'
+                        };
+                    }
+                }
+            }
+        }
+        
+        // Then, add/override with ALL modified frames (user edits take precedence)
+        for (const [frameNum, frameData] of videoModifiedFrames.entries()) {
+            const frameNumber = parseInt(frameNum);
+            allAnnotationFrames[frameNumber] = {
+                maskData: frameData.maskData,
+                is_empty: frameData.is_empty || frameData.maskType === 'empty'
+            };
+        }
+        
+        if (Object.keys(allAnnotationFrames).length === 0) {
+            console.log('No annotation frames to save');
             return;
         }
 
+        console.log(`Saving ${Object.keys(allAnnotationFrames).length} annotation frames`);
         try {
-            // Prepare modified_frames payload with PNG data URLs
-            const modifiedFramesPayload = {};
-            for (const [frameNum, frameData] of videoModifiedFrames.entries()) {
-                const frameNumber = parseInt(frameNum);
-                // Render mask to offscreen canvas to get PNG data URL
-                const offscreen = document.createElement('canvas');
-                offscreen.width = this.maskCanvas.width;
-                offscreen.height = this.maskCanvas.height;
-                const offCtx = offscreen.getContext('2d');
-                offCtx.putImageData(frameData.maskData, 0, 0);
-                const pngDataUrl = offscreen.toDataURL('image/png');
-
-                modifiedFramesPayload[frameNumber] = {
-                    mask_data: pngDataUrl,
-                    is_empty: frameData.is_empty || frameData.maskType === 'empty'
-                };
-            }
-
-            const payload = {
-                method,
-                study_uid: studyUid,
-                series_uid: seriesUid,
-                previous_version_id: this.currentVersionId || '',
-                modified_frames: modifiedFramesPayload
-            };
+            // Build tar archive with all annotation frames
+            const archiveData = await this.buildMaskArchive(
+                allAnnotationFrames,
+                studyUid,
+                seriesUid,
+                method
+            );
+            console.log(`Built archive: ${archiveData.length} bytes`);
 
             const userEmail = this.getUserEmail();
             if (!userEmail) {
@@ -1005,13 +1129,14 @@ class AnnotationViewer {
             // Show blocking loading overlay
             this.showRetrackLoading('Saving and retracking...');
 
-            const allResponse = await fetch('/api/save_changes', {
+            const allResponse = await fetch(`/proxy/api/masks/${studyUid}/${seriesUid}`, {
                 method: 'POST',
                 headers: { 
-                    'Content-Type': 'application/json',
-                    'X-User-Email': this.getUserEmail()
+                    'Content-Type': 'application/x-tar',
+                    'X-User-Email': this.getUserEmail(),
+                    'X-Previous-Version-ID': this.currentVersionId || ''
                 },
-                body: JSON.stringify(payload)
+                body: archiveData
             });
 
             if (allResponse.ok) {
@@ -1034,8 +1159,8 @@ class AnnotationViewer {
                 } else {
                     // No retrack queued (shouldn't happen, but handle gracefully)
                     this.hideRetrackLoading();
-                    videoModifiedFrames.clear();
-                    this.hasUnsavedChanges = false;
+                videoModifiedFrames.clear();
+                this.hasUnsavedChanges = false;
                     this.updateSaveButtonState();
                 }
             } else {
@@ -1146,8 +1271,8 @@ class AnnotationViewer {
         }
         
         this.updateSaveButtonState();
-        this.render();
-    }
+                        this.render();
+                    }
 
     async confirmCompleteSeries() {
         // Hide modal immediately
@@ -1212,15 +1337,15 @@ class AnnotationViewer {
             
             // Reload current series with reset masks (initial tracking) - add cache busting
             // Clear ALL caches first
-            this.frameCache.clear();
-            this.framesArchive = null;
-            this.masksArchive = {};
-            
+                    this.frameCache.clear();
+                    this.framesArchive = null;
+                    this.masksArchive = {};
+
             // Reload current series directly (don't call loadNextSeries - stay on current series)
             // The user was just active on this series, so it should be returned by /api/series/next
             // But to be safe, reload the current series directly first, then verify with /api/series/next
             const currentFrameNum = this.currentFrame;
-            await this.loadVideoData();
+                    await this.loadVideoData();
             await this.loadFramesArchive(true);
             this.currentFrame = -1;
             await this.goToFrame(currentFrameNum);
@@ -1719,7 +1844,7 @@ class AnnotationViewer {
                     }
                     // Continue without masks - viewer will show frames only
                 } else {
-                    const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
+                const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
                     const masksTarData = new Uint8Array(masksArrayBuffer);
                     
                     // Store version ID from response headers for optimistic locking
@@ -1728,15 +1853,15 @@ class AnnotationViewer {
                     let metadataBytes = null;
 
                     // Parse tar: extract masks and metadata.json
-                    offset = 0;
+                offset = 0;
                     while (offset < masksTarData.length) {
                         if (offset + 512 > masksTarData.length) break;
 
                         const name = new TextDecoder().decode(masksTarData.slice(offset, offset + 100)).replace(/\0/g, '');
-                        if (!name) break;
+                    if (!name) break;
 
                         const size = parseInt(new TextDecoder().decode(masksTarData.slice(offset + 124, offset + 136)), 8);
-                        offset += 512;
+                    offset += 512;
 
                         if (size > 0) {
                             const fileData = masksTarData.slice(offset, offset + size);
@@ -1747,10 +1872,10 @@ class AnnotationViewer {
                                 // Mask files live at root of archive
                                 this.masksArchive[name] = fileData;
                             }
-                        }
-
-                        offset += Math.ceil(size / 512) * 512;
                     }
+
+                    offset += Math.ceil(size / 512) * 512;
+                }
 
                     // Apply per-frame metadata for coloring and info panel
                     if (metadataBytes) {

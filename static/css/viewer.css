@@ -27,25 +27,12 @@ html, body {
     transition: box-shadow 0.3s ease;
 }
 
-/* Empty frame indicator: red outline + pulsing drop-shadow */
+/* Empty frame indicator: static inward red glow */
 #canvas.empty-frame-indicator {
-    box-shadow: 0 0 20px rgba(255, 0, 0, 0.6),
-                0 0 40px rgba(255, 0, 0, 0.4),
-                0 0 60px rgba(255, 0, 0, 0.2);
-    animation: emptyFramePulse 2s ease-in-out infinite;
-}
-
-@keyframes emptyFramePulse {
-    0%, 100% {
-        box-shadow: 0 0 20px rgba(255, 0, 0, 0.6),
-                    0 0 40px rgba(255, 0, 0, 0.4),
-                    0 0 60px rgba(255, 0, 0, 0.2);
-    }
-    50% {
-        box-shadow: 0 0 30px rgba(255, 0, 0, 0.8),
-                    0 0 60px rgba(255, 0, 0, 0.6),
-                    0 0 90px rgba(255, 0, 0, 0.4);
-    }
+    outline: 4px solid rgba(255, 0, 0, 0.8);
+    outline-offset: -4px; /* Makes outline appear inside */
+    box-shadow: inset 0 0 40px rgba(255, 0, 0, 0.6),
+                inset 0 0 80px rgba(255, 0, 0, 0.4);
 }
 
 #overlayCanvas {
@@ -308,24 +295,23 @@ html, body {
     padding: 0;
 }
 
-/* The actual track line - show thin line on top of type bar */
+/* The actual track line - transparent since we draw it on type bar canvas */
 #frameSlider::-webkit-slider-runnable-track {
     width: 100%;
     height: 3px;  /* Thin visible line */
-    background: rgba(76, 175, 80, 0.8);  /* Semi-transparent green line */
+    background: transparent;  /* Transparent - scrubline drawn on type bar canvas */
     border: none;
     border-radius: 2px;
-    margin-top: 10.5px; /* Center vertically: (24px - 3px) / 2 */
-    box-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
+    margin-top: 10.5px; /* Center vertically: (24px - 3px) / 2 = 10.5px */
+    margin-bottom: 10.5px; /* Match top margin for centering */
 }
 
 #frameSlider::-moz-range-track {
     width: 100%;
     height: 3px;  /* Thin visible line */
-    background: rgba(76, 175, 80, 0.8);  /* Semi-transparent green line */
+    background: transparent;  /* Transparent - scrubline drawn on type bar canvas */
     border: none;
     border-radius: 2px;
-    box-shadow: 0 0 4px rgba(76, 175, 80, 0.5);
 }
 
 #frameSlider::-webkit-slider-thumb {
@@ -337,7 +323,8 @@ html, body {
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 10px rgba(76, 175, 80, 0.8);
-    margin-top: -10.5px; /* Center on track: (24px - 3px) / 2 */
+    margin-top: -10.5px; /* Center on track: (24px - 3px) / 2 = 10.5px */
+    margin-bottom: -10.5px; /* Match top margin for centering */
     position: relative;
     z-index: 2;
 }
