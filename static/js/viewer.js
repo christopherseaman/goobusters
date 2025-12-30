@@ -94,7 +94,7 @@ class AnnotationViewer {
 
     async init() {
         this.setupEventListeners();
-        
+        await this.loadSettings();
         // Ensure user email is set (prompt if missing)
         await this.ensureUserEmail();
         
@@ -115,8 +115,8 @@ class AnnotationViewer {
     }
     
     async ensureUserEmail() {
-        // Check localStorage first
-        let userEmail = localStorage.getItem('userEmail');
+        // Check already loaded from settings/localStorage
+        let userEmail = this.getUserEmail();
         
         if (!userEmail) {
             // Prompt user for email
@@ -136,10 +136,99 @@ class AnnotationViewer {
             
             // Store in localStorage
             localStorage.setItem('userEmail', userEmail);
+
+            // Persist to backend (best-effort)
+            try {
+                await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_email: userEmail }),
+                });
+            } catch (e) {
+                console.warn('Failed to persist user email to backend', e);
+            }
         }
         
         this.userEmail = userEmail;
+
+        // Keep settings modal in sync
+        const emailInput = document.getElementById('settingsEmail');
+        if (emailInput && !emailInput.value) {
+            emailInput.value = userEmail;
+        }
+
         return userEmail;
+    }
+
+    async loadSettings() {
+        try {
+            const resp = await fetch('/api/settings');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (data.user_email) {
+                this.userEmail = data.user_email;
+                localStorage.setItem('userEmail', data.user_email);
+                const emailInput = document.getElementById('settingsEmail');
+                if (emailInput) {
+                    emailInput.value = data.user_email;
+                }
+            }
+            const tokenStatus = document.getElementById('tokenStatus');
+            if (tokenStatus) {
+                tokenStatus.textContent = data.mdai_token_present ? 'Token: set' : 'Token: not set';
+            }
+        } catch (err) {
+            console.warn('Failed to load settings', err);
+        }
+    }
+
+    async saveSettings() {
+        const emailInput = document.getElementById('settingsEmail');
+        const tokenInput = document.getElementById('settingsToken');
+        const tokenStatus = document.getElementById('tokenStatus');
+
+        const user_email = emailInput ? emailInput.value.trim() : '';
+        const token_value = tokenInput ? tokenInput.value.trim() : '';
+
+        const payload = { user_email };
+        if (tokenInput && token_value !== '') {
+            payload.mdai_token = token_value;
+        }
+
+        try {
+            const resp = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!resp.ok) {
+                const errorData = await resp.json().catch(() => ({}));
+                alert(`Failed to save settings: ${errorData.error || resp.statusText}`);
+                return;
+            }
+            const data = await resp.json();
+            if (data.user_email) {
+                this.userEmail = data.user_email;
+                localStorage.setItem('userEmail', data.user_email);
+            }
+            if (tokenStatus) {
+                tokenStatus.textContent = data.mdai_token_present ? 'Token: set' : 'Token: not set';
+            }
+            if (tokenInput) {
+                tokenInput.value = '';
+            }
+            this.hideModal('settingsModal');
+        } catch (err) {
+            alert(`Failed to save settings: ${err.message}`);
+        }
+    }
+
+    openSettings() {
+        const emailInput = document.getElementById('settingsEmail');
+        if (emailInput && !emailInput.value) {
+            emailInput.value = this.getUserEmail();
+        }
+        this.showModal('settingsModal');
     }
 
     setupEventListeners() {
@@ -148,6 +237,10 @@ class AnnotationViewer {
         document.getElementById('navBtn').addEventListener('click', () => this.showModal('navModal'));
         document.getElementById('closeInfo').addEventListener('click', () => this.hideModal('infoModal'));
         document.getElementById('closeNav').addEventListener('click', () => this.hideModal('navModal'));
+        document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
+        document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
+        const saveSettingsBtn = document.getElementById('saveSettings');
+        if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', () => this.saveSettings());
 
         // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {
@@ -1937,11 +2030,20 @@ class AnnotationViewer {
             const infoSeries = document.getElementById('infoSeries');
             const infoMethod = document.getElementById('infoMethod');
             const infoExam = document.getElementById('infoExam');
+            const examBadge = document.getElementById('examBadge');
             
             if (infoStudy) infoStudy.textContent = this.videoData.study_uid || this.currentVideo.studyUid;
             if (infoSeries) infoSeries.textContent = this.videoData.series_uid || this.currentVideo.seriesUid;
             if (infoMethod) infoMethod.textContent = this.videoData.method || this.currentVideo.method;
-            if (infoExam) infoExam.textContent = this.videoData.exam_number || 'Unknown';
+            const examValue = this.videoData.exam_number || 'Unknown';
+            if (infoExam) infoExam.textContent = examValue;
+            if (examBadge) {
+                const badgeText = typeof examValue === 'number' || /^\d+$/.test(String(examValue))
+                    ? `# ${examValue}`
+                    : '# --';
+                examBadge.textContent = badgeText;
+                examBadge.title = `Exam ${examValue}`;
+            }
         }
     }
     

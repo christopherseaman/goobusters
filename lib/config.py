@@ -62,11 +62,18 @@ def _resolve_env(
 ) -> dict[str, str]:
     """
     Load environment dictionaries in priority order:
-    1. `dot.env`
-    2. `dot.env.{role}` (if present)
-    3. Real environment (for overrides when running in production)
+    1. `dot.env.defaults` (non-sensitive defaults, checked in)
+    2. `dot.env`
+    3. `dot.env.{role}` (if present)
+    4. Real environment (for overrides when running in production)
     """
     env: dict[str, str] = {}
+
+    defaults_file = base_path / "dot.env.defaults"
+    if defaults_file.exists():
+        env.update({
+            k: v for k, v in dotenv_values(defaults_file).items() if v is not None
+        })
 
     root_file = base_path / "dot.env"
     if root_file.exists():

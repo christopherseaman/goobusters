@@ -196,7 +196,7 @@ def process_retrack_job(
         try:
             # build_mask_metadata reads version_id from frametype.json
             metadata = build_mask_metadata(
-                series, masks_dir, config.flow_method
+                series, masks_dir, config.flow_method, config
             )
             archive_path = output_dir.parent / "masks.tar"
             archive_bytes = build_mask_archive(masks_dir, metadata)

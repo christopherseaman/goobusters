@@ -12,6 +12,7 @@
 - [ ]Ensure we are consistently using 0-based frame counting, to be consistent with mdai json
 - [ ] Multi-player? Worry about caching
 - [ ] Fix brush size preview location (shouldn't move during resize previews)
+- [ ] Handle series with no fluid annotations gracefully (serve blank masks/metadata so client can open; no tracking needed)
   - [ ] Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frameNumber 0 (`"id": "A_gp58a1"`) & 41 (`"id": "A_AYxjY2"`) of 143, 0-based counting)"
   - StudyInstanceUID = "1.2.826.0.1.3680043.8 498. 21582572478922879563110991046360588727"
   - SeriesInstranceUID = "1.2.826.0.1.3680043.8.498.88798124921994953570699988775039906436"

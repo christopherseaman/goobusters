@@ -36,6 +36,8 @@
 
     <!-- Floating control buttons (top-right) -->
     <div class="control-buttons top-right" id="controlButtons">
+        <div class="control-badge" id="examBadge"># --</div>
+        <button class="control-btn" id="settingsBtn" title="Settings">⚙️</button>
         <button class="control-btn" id="markComplete" title="Mark Complete & Get Next Series">✅</button>
         <button class="control-btn" id="infoBtn" title="Info">ℹ️</button>
         <button class="control-btn" id="navBtn" title="Navigation">🎬</button>
@@ -116,6 +118,25 @@
                     <div><kbd>D</kbd> Draw mode</div>
                     <div><kbd>E</kbd> Erase mode</div>
                     <div><kbd>⌘S</kbd> Save changes</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeSettings">✕</button>
+            <h2>Settings</h2>
+            <div class="info-section settings-form">
+                <label for="settingsEmail">User Email (for activity/save headers)</label>
+                <input type="email" id="settingsEmail" placeholder="you@ucsf.edu">
+                <label for="settingsToken">MD.ai API Token</label>
+                <input type="password" id="settingsToken" placeholder="Set or update token">
+                <p class="muted">Leave token blank to keep the current token. Token is stored for this session only.</p>
+                <div class="token-status" id="tokenStatus">Token: unknown</div>
+                <div class="settings-actions">
+                    <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
                 </div>
             </div>
         </div>

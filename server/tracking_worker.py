@@ -30,7 +30,10 @@ from lib.mask_archive import (  # noqa: E402
     mask_series_dir,
     MaskArchiveError,
 )
-from lib.multi_frame_tracker import process_video_with_multi_frame_tracking  # noqa: E402
+from lib.multi_frame_tracker import (  # noqa: E402
+    process_video_with_multi_frame_tracking,
+    set_label_ids,
+)
 from lib.optical import create_identity_file, copy_annotations_to_output  # noqa: E402
 from lib.opticalflowprocessor import OpticalFlowProcessor  # noqa: E402
 from server.storage.series_manager import SeriesManager  # noqa: E402
@@ -56,7 +59,7 @@ def build_mask_archive_from_directory(
     import tarfile
 
     series = series_manager.get_series(study_uid, series_uid)
-    metadata = build_mask_metadata(series, masks_dir, config.flow_method)
+    metadata = build_mask_metadata(series, masks_dir, config.flow_method, config)
     archive_path = output_dir / "masks.tar"
     archive_bytes = build_mask_archive(masks_dir, metadata)
     with archive_path.open("wb") as f:
@@ -191,11 +194,13 @@ def run_tracking_pipeline(
     resolved_version_id = version_id
 
     # Initialize optical flow processor
+    set_label_ids(config.label_id, config.empty_id)
     flow_processor = OpticalFlowProcessor(config.flow_method)
 
     # Process the video with multi-frame tracking (same as track.py)
     # For retrack, don't pass label_id_machine (TRACK_ID) - only use label_id and empty_id
     label_id_machine = "" if is_retrack else os.getenv("TRACK_ID", "")
+    set_label_ids(config.label_id, config.empty_id)
     process_video_with_multi_frame_tracking(
         video_path=video_path,
         annotations_df=annotations_df,

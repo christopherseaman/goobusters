@@ -8,7 +8,8 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, request, send_file
+import gzip
+from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
 
 from lib.mask_archive import (
     build_mask_archive,
@@ -414,40 +415,60 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 "archive_path": str(archive_path),
             }), 500
 
-        # Load metadata from archive for headers
-        # Try .tar first (no gzip), fall back to .tar.gz for backwards compatibility
+        def _open_tar(bytes_blob: bytes):
+            try:
+                return tarfile.open(fileobj=io.BytesIO(bytes_blob), mode="r")
+            except tarfile.ReadError:
+                return tarfile.open(fileobj=io.BytesIO(bytes_blob), mode="r:gz")
+
+        metadata = None
         try:
-            tar = tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r")
-        except tarfile.ReadError:
-            try:
-                tar = tarfile.open(
-                    fileobj=io.BytesIO(archive_bytes), mode="r:gz"
-                )
-            except Exception as exc:
-                import traceback
+            tar = _open_tar(archive_bytes)
+            with tar:
+                metadata_file = tar.extractfile("metadata.json")
+                if metadata_file:
+                    metadata = json.load(metadata_file)
+        except Exception:
+            metadata = None
 
-                print(f"Error opening tar archive: {exc}")
-                traceback.print_exc()
-                return jsonify({
-                    "error": f"Failed to parse mask archive: {str(exc)}",
-                    "error_code": "ARCHIVE_PARSE_ERROR",
-                }), 500
+        # If metadata is missing (old track.py archives), rebuild archive with metadata.json
+        if metadata is None:
+            masks_dir = mask_series_dir(
+                mask_root, config.flow_method, study_uid, series_uid
+            ) / "masks"
+            if masks_dir.exists() and list(masks_dir.glob("*.webp")):
+                try:
+                    from server.tracking_worker import build_mask_archive_from_directory
+                    logger = current_app.logger
+                    logger.warning(
+                        f"metadata.json missing in masks archive for {study_uid}/{series_uid}; rebuilding masks.tar"
+                    )
+                    build_mask_archive_from_directory(
+                        study_uid,
+                        series_uid,
+                        masks_dir,
+                        mask_dir,
+                        config,
+                        series_manager,
+                    )
+                    with (mask_dir / "masks.tar").open("rb") as f:
+                        archive_bytes = f.read()
+                    tar = _open_tar(archive_bytes)
+                    with tar:
+                        metadata_file = tar.extractfile("metadata.json")
+                        if metadata_file:
+                            metadata = json.load(metadata_file)
+                except Exception as exc:
+                    return jsonify({
+                        "error": f"metadata.json not found and rebuild failed: {exc}",
+                        "error_code": "MISSING_METADATA",
+                    }), 500
 
-        with tar:
-            metadata_file = tar.extractfile("metadata.json")
-            if not metadata_file:
-                return jsonify({
-                    "error": "metadata.json not found in mask archive",
-                    "error_code": "MISSING_METADATA",
-                }), 500
-            
-            try:
-                metadata = json.load(metadata_file)
-            except json.JSONDecodeError as exc:
-                return jsonify({
-                    "error": f"Failed to parse metadata.json: {exc}",
-                    "error_code": "METADATA_PARSE_ERROR",
-                }), 500
+        if metadata is None:
+            return jsonify({
+                "error": "metadata.json not found in mask archive",
+                "error_code": "MISSING_METADATA",
+            }), 500
 
         headers = {
             "Content-Type": "application/x-tar",
@@ -467,16 +488,34 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             mask_root, config.flow_method, study_uid, series_uid
         )
         tar_path = base_dir / "frames.tar"
+        gz_path = base_dir / "frames.tar.gz"
 
-        if not tar_path.exists():
-            return jsonify({"error": "frames.tar not found"}), 404
+        if tar_path.exists():
+            return send_file(
+                tar_path,
+                mimetype="application/x-tar",
+                as_attachment=False,
+                download_name=f"{study_uid}_{series_uid}_frames.tar",
+            )
 
-        return send_file(
-            tar_path,
-            mimetype="application/x-tar",
-            as_attachment=False,
-            download_name=f"{study_uid}_{series_uid}_frames.tar",
-        )
+        if gz_path.exists():
+            def _decompress():
+                with gzip.open(gz_path, "rb") as f:
+                    while True:
+                        chunk = f.read(64 * 1024)
+                        if not chunk:
+                            break
+                        yield chunk
+
+            return Response(
+                stream_with_context(_decompress()),
+                mimetype="application/x-tar",
+                headers={
+                    "Content-Disposition": f'inline; filename="{study_uid}_{series_uid}_frames.tar"',
+                },
+            )
+
+        return jsonify({"error": "frames.tar not found"}), 404
 
     def _get_total_frames(study_uid: str, series_uid: str) -> int:
         """Get total frame count from frames directory or frametype.json."""
@@ -839,6 +878,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     series_info,
                     masks_dir,
                     config.flow_method,
+                    config,
                 )
                 # Write to main output directory (overwrites any retracked tarball)
                 # mask_dir is the base output directory, masks_dir is mask_dir / "masks"
@@ -958,7 +998,10 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                         # build_mask_metadata looks for frametype.json at masks_dir.parent (which is mask_dir)
                         # This ensures we use initial tracking's frametype.json, not retrack's
                         metadata = build_mask_metadata(
-                            series, masks_dir, config.flow_method
+                            series,
+                            masks_dir,
+                            config.flow_method,
+                            config,
                         )
                         # Write to main output directory (overwrites any retracked tarball)
                         # mask_dir is the base output directory, masks_dir is mask_dir / "masks"

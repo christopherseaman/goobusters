@@ -36,24 +36,81 @@
         <div><strong>${item.study_uid}</strong> / ${item.series_uid}</div>
         <div>Exam: ${item.exam_number ?? "-"} | Series #: ${item.series_number ?? "-"}</div>
         <div>Video: ${item.video_path}</div>
-        <button data-action="frames">Extract Frames</button>
+        <div>Method: ${item.method ?? "dis"}</div>
+        <button data-action="frames">Preview Frames</button>
         <button data-action="mask">Download Masks (server)</button>
       `;
-      div.querySelector('[data-action="frames"]').onclick = () => extractFrames(item);
+      div.querySelector('[data-action="frames"]').onclick = () => previewFrames(item);
       div.querySelector('[data-action="mask"]').onclick = () => downloadMasks(item);
       seriesListEl.appendChild(div);
     });
   };
 
-  const extractFrames = async (item) => {
-    const url = `/api/local/frames/${item.study_uid}/${item.series_uid}`;
-    log(`Extracting frames for ${item.study_uid}/${item.series_uid}`);
-    const { status, body } = await jsonFetch(url, { method: "POST" });
-    log(`Frames status ${status}`);
-    if (status !== 200) return;
+  const parseFirstFrameUrl = (arrayBuffer) => {
+    const data = new Uint8Array(arrayBuffer);
+    const decoder = new TextDecoder();
+    let offset = 0;
+
+    while (offset + 512 <= data.length) {
+      const name = decoder
+        .decode(data.slice(offset, offset + 100))
+        .replace(/\0/g, "")
+        .trim();
+      if (!name) break;
+
+      const sizeStr = decoder
+        .decode(data.slice(offset + 124, offset + 136))
+        .replace(/\0/g, "")
+        .trim();
+      const size = parseInt(sizeStr || "0", 8);
+      offset += 512;
+
+      if (size > 0 && /\.(webp|png)$/i.test(name)) {
+        const fileBytes = data.slice(offset, offset + size);
+        const mime = name.endsWith(".png") ? "image/png" : "image/webp";
+        const blob = new Blob([fileBytes], { type: mime });
+        return URL.createObjectURL(blob);
+      }
+
+      const padded = Math.ceil(size / 512) * 512;
+      offset += padded;
+    }
+    return null;
+  };
+
+  const previewFrames = async (item) => {
+    const method = item.method || "dis";
+    const url = `/proxy/api/frames/${method}/${item.study_uid}/${item.series_uid}`;
+    log(`Fetching frames archive for ${item.study_uid}/${item.series_uid}`);
+    const metaResp = await fetch(url);
+    if (!metaResp.ok) {
+      log(`Frames meta status ${metaResp.status}`);
+      return;
+    }
+    const { frames_archive_url } = await metaResp.json();
+    if (!frames_archive_url) {
+      log("No frames archive url returned");
+      return;
+    }
+
+    const framesUrl = frames_archive_url.startsWith("/api/")
+      ? `/proxy${frames_archive_url}`
+      : frames_archive_url;
+    const archiveResp = await fetch(framesUrl);
+    if (!archiveResp.ok) {
+      log(`Frames archive status ${archiveResp.status}`);
+      return;
+    }
+    const buffer = await archiveResp.arrayBuffer();
+    const previewUrl = parseFirstFrameUrl(buffer);
+    if (!previewUrl) {
+      log("Could not parse first frame from archive");
+      return;
+    }
+
     const img = document.createElement("img");
-    img.src = `/frames/${item.study_uid}/${item.series_uid}/0.png`;
-    img.alt = "Frame 0";
+    img.src = previewUrl;
+    img.alt = "Frame preview";
     img.style.maxWidth = "480px";
     previewEl.innerHTML = "";
     previewEl.appendChild(img);
@@ -98,4 +155,3 @@
     if (status === 200) renderSeries(body);
   };
 })();
-

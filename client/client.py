@@ -22,15 +22,7 @@ import os
 import signal
 
 import httpx
-from flask import (
-    Flask,
-    Response,
-    abort,
-    jsonify,
-    request,
-    render_template,
-    send_file,
-)
+from flask import Flask, Response, jsonify, request, render_template
 
 # Now we can import lib modules (project_root is in sys.path)
 from lib.mask_archive import build_mask_archive, iso_now
@@ -53,9 +45,13 @@ class ClientContext:
         self.dataset = MDaiDatasetManager(config)
         # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
         self.http_client = httpx.Client(timeout=60)
+        self.user_email_override: Optional[str] = None
 
     def close(self) -> None:
         self.http_client.close()
+
+    def current_user_email(self) -> str:
+        return (self.user_email_override or self.config.user_email or "").strip()
 
 
 def create_app(
@@ -79,6 +75,9 @@ def create_app(
         images_dir = context.dataset.sync_dataset()
         logger.info(f"Dataset synced. Images directory: {images_dir}")
         logger.info("Client initialization complete.")
+
+    def _current_user_email() -> str:
+        return context.current_user_email()
 
     def _build_videos() -> list[dict]:
         """
@@ -185,7 +184,32 @@ def create_app(
         if not videos:
             return render_template("no_videos.html"), 503
 
+        # Default to first video, but prefer the server-selected "next" series
         selected_video = videos[0]
+        try:
+            resp = context.http_client.get(
+                f"{config.server_url.rstrip('/')}/api/series/next",
+                headers={"X-User-Email": _current_user_email()},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data and data.get("study_uid") and data.get("series_uid"):
+                    match = next(
+                        (
+                            v
+                            for v in videos
+                            if v["study_uid"] == data["study_uid"]
+                            and v["series_uid"] == data["series_uid"]
+                        ),
+                        None,
+                    )
+                    if match:
+                        selected_video = match
+        except Exception:
+            # Non-fatal: fall back to first video
+            pass
+
         return render_template(
             "viewer.html", videos=videos, selected_video=selected_video
         )
@@ -285,6 +309,7 @@ def create_app(
                 "series_number": info.series_number,
                 "dataset_name": info.dataset_name,
                 "video_path": str(info.video_path),
+                "method": config.flow_method,
             }
             for info in series
         ]
@@ -351,45 +376,43 @@ def create_app(
             "in_sync": in_sync,
         })
 
-    @app.post("/api/local/frames/<study_uid>/<series_uid>")
-    def ensure_frames(study_uid: str, series_uid: str):
-        try:
-            video_path = context.dataset.resolve_video(study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError) as exc:
-            return jsonify({"error": str(exc)}), 404
+    @app.get("/api/settings")
+    def get_settings():
+        """
+        Return current user identity and whether an MD.ai token is set.
+        Token contents are never returned.
+        """
+        return jsonify({
+            "user_email": _current_user_email(),
+            "mdai_token_present": bool(
+                context.dataset._token_override or context.config.mdai_token
+            ),
+        })
 
-        try:
-            frame_dir = context.frames.ensure_frames(
-                video_path, study_uid, series_uid
-            )
-        except FrameExtractionError as exc:
-            return jsonify({"error": str(exc)}), 500
+    @app.post("/api/settings")
+    def update_settings():
+        """
+        Update user_email and/or MD.ai token for this client process.
+        Values are kept in-memory for the session.
+        """
+        data = request.get_json(silent=True) or {}
+        user_email = data.get("user_email")
+        mdai_token = data.get("mdai_token")
 
-        manifest_path = context.frames.manifest_path(study_uid, series_uid)
-        manifest = {}
-        if manifest_path.exists():
-            import json
+        if user_email is not None:
+            email_clean = user_email.strip()
+            context.user_email_override = email_clean or None
 
-            with manifest_path.open() as f:
-                manifest = json.load(f)
+        if mdai_token is not None:
+            token_clean = mdai_token.strip()
+            context.dataset.set_token(token_clean or None)
 
-        return jsonify({"frames_dir": str(frame_dir), "manifest": manifest})
-
-    @app.get("/frames/<study_uid>/<series_uid>/<int:frame_index>.webp")
-    def serve_frame(study_uid: str, series_uid: str, frame_index: int):
-        try:
-            video_path = context.dataset.resolve_video(study_uid, series_uid)
-            context.frames.ensure_frames(video_path, study_uid, series_uid)
-        except (DatasetNotReady, FileNotFoundError, FrameExtractionError):
-            abort(404)
-
-        frame_path = (
-            context.frames.frame_dir(study_uid, series_uid)
-            / f"frame_{frame_index:06d}.webp"
-        )
-        if not frame_path.exists():
-            abort(404)
-        return send_file(frame_path, mimetype="image/webp")
+        return jsonify({
+            "user_email": _current_user_email(),
+            "mdai_token_present": bool(
+                context.dataset._token_override or context.config.mdai_token
+            ),
+        })
 
     @app.post("/api/save_changes")
     def save_changes():
@@ -495,8 +518,10 @@ def create_app(
         user_email = request.headers.get("X-User-Email")
         if user_email:
             headers["X-User-Email"] = user_email
-        elif config.user_email:
-            headers["X-Editor"] = config.user_email
+        else:
+            current_email = _current_user_email()
+            if current_email:
+                headers["X-User-Email"] = current_email
 
         try:
             resp = context.http_client.post(
@@ -555,8 +580,10 @@ def create_app(
                 frontend_email = request.headers.get("X-User-Email")
                 if frontend_email:
                     headers["X-User-Email"] = frontend_email
-                elif config.user_email:
-                    headers["X-User-Email"] = config.user_email
+                else:
+                    current_email = _current_user_email()
+                    if current_email:
+                        headers["X-User-Email"] = current_email
 
             files = None
             if request.files:

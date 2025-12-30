@@ -37,11 +37,10 @@ import io
 import shutil
 from PIL import Image
 from datetime import datetime
-from dotenv import load_dotenv
 import threading
+from lib.config import load_config
 
-# Load environment variables from dot.env (project uses dot.env, not .env)
-load_dotenv('dot.env')
+config = load_config("shared")
 
 app = Flask(__name__)
 
@@ -357,7 +356,7 @@ def api_save_mask():
     series_uid = data['series_uid']
     frame_num = data['frame_number']
     mask_b64 = data['mask_data']
-    label_id = data.get('label_id', os.getenv('LABEL_ID', ''))
+    label_id = data.get('label_id', config.label_id)
 
     # Decode mask
     mask_bytes = base64.b64decode(mask_b64.split(',')[1] if ',' in mask_b64 else mask_b64)
@@ -424,7 +423,7 @@ def api_mark_empty():
     study_uid = data['study_uid']
     series_uid = data['series_uid']
     frame_num = data['frame_number']
-    empty_id = os.getenv('EMPTY_ID', '')
+    empty_id = config.empty_id
 
     # Create empty mask
     video_dir = OUTPUT_DIR / method / f"{study_uid}_{series_uid}"
@@ -564,7 +563,10 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
         # Import lib functions
         from lib.local_annotations import convert_local_to_annotations_df
         from lib.opticalflowprocessor import OpticalFlowProcessor
-        from lib.multi_frame_tracker import process_video_with_multi_frame_tracking
+        from lib.multi_frame_tracker import (
+            process_video_with_multi_frame_tracking,
+            set_label_ids,
+        )
         import tarfile
 
         # Convert local annotations to DataFrame
@@ -588,9 +590,10 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
         retrack_status[task_id]['message'] = 'Running optical flow tracking...'
 
         # Get label IDs from environment
-        label_id_fluid = os.getenv('LABEL_ID', '')
-        label_id_empty = os.getenv('EMPTY_ID', '')
+        label_id_fluid = config.label_id
+        label_id_empty = config.empty_id
         label_id_track = os.getenv('TRACK_ID', '')
+        set_label_ids(label_id_fluid, label_id_empty)
 
         # Run tracking - use a temp dir since we'll reformat the output
         import tempfile

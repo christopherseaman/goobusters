@@ -109,6 +109,21 @@ html, body {
     pointer-events: none;
 }
 
+.control-badge {
+    align-self: flex-end;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.85);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    min-width: 64px;
+    text-align: center;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
 /* Tool and control buttons */
 .tool-btn, .control-btn {
     width: 64px;
@@ -482,6 +497,45 @@ html, body {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
+}
+
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.settings-form label {
+    font-size: 14px;
+    color: #ccc;
+}
+
+.settings-form input {
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 16px;
+}
+
+.settings-form input:focus {
+    outline: 2px solid rgba(33, 150, 243, 0.8);
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.token-status {
+    font-size: 14px;
+    color: #9acdff;
+}
+
+.muted {
+    color: #aaa;
+    font-size: 13px;
 }
 
 .modal-btn {

@@ -10,8 +10,9 @@ import json
 import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional, Optional
+from typing import Iterable, Optional
 
+from lib.config import SharedConfig, ServerConfig, load_config
 MASK_METADATA_FILENAME = "metadata.json"
 
 
@@ -133,7 +134,12 @@ def get_mask_count(archive_path: Path) -> int:
     return metadata.get("mask_count", 0)
 
 
-def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
+def build_mask_metadata(
+    series,
+    masks_path: Path,
+    flow_method: str,
+    config: Optional[SharedConfig | ServerConfig] = None,
+) -> dict:
     """
     Build metadata for mask archive per DISTRIBUTED_ARCHITECTURE.md spec.
 
@@ -151,10 +157,9 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
     For retrack, masks_path should be retrack/masks/, so frametype.json will be found at retrack/frametype.json.
     For initial tracking, masks_path should be masks/, so frametype.json will be found at the main output dir/frametype.json.
     """
-    from lib.config import load_config
     import json
 
-    config = load_config("server")
+    cfg = config or load_config("server")
     frames_by_number: dict[int, dict] = {}
 
     # Prefer frametype.json if present (authoritative per-frame metadata)
@@ -180,7 +185,7 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
 
                     has_mask = bool(info.get("has_mask", False))
                     is_annotation = bool(info.get("is_annotation", False))
-                    label_id = info.get("label_id") or config.label_id
+                    label_id = info.get("label_id") or cfg.label_id
                     type_str = info.get("type", "tracked")
                     mask_file = info.get("mask_file")
                     if has_mask and not mask_file:
@@ -215,7 +220,7 @@ def build_mask_metadata(series, masks_path: Path, flow_method: str) -> dict:
                 "frame_number": frame_number,
                 "has_mask": True,
                 "is_annotation": False,
-                "label_id": config.label_id,
+                "label_id": cfg.label_id,
                 "type": "tracked",
                 "filename": file_path.name,
             }

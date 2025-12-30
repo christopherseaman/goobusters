@@ -14,10 +14,6 @@ import numpy as np
 import psutil
 from typing import Optional, Tuple
 from pathlib import Path
-from dotenv import load_dotenv
-
-# Load environment variables from dot.env
-load_dotenv('dot.env')
 
 class PerformanceOptimizer:
     """

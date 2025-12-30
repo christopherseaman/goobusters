@@ -51,23 +51,81 @@
   const selectSeries = (item) => {
     selected = item;
     setStatus(`Selected ${item.study_uid} / ${item.series_uid}`);
-    // Auto ensure frames
-    ensureFrames(item);
-    // Fetch masks and first frame
-    loadFrame(item, 0);
+    // Fetch masks and first frame preview
+    previewFrame(item);
     loadMask(item);
   };
 
-  const ensureFrames = async (item) => {
-    const url = `/api/local/frames/${item.study_uid}/${item.series_uid}`;
-    log(`Extracting frames for ${item.study_uid}/${item.series_uid}`);
-    await jsonFetch(url, { method: "POST" });
+  const parseFirstFrameUrl = (arrayBuffer) => {
+    const data = new Uint8Array(arrayBuffer);
+    const decoder = new TextDecoder();
+    let offset = 0;
+
+    while (offset + 512 <= data.length) {
+      const name = decoder
+        .decode(data.slice(offset, offset + 100))
+        .replace(/\0/g, "")
+        .trim();
+      if (!name) break;
+
+      const sizeStr = decoder
+        .decode(data.slice(offset + 124, offset + 136))
+        .replace(/\0/g, "")
+        .trim();
+      const size = parseInt(sizeStr || "0", 8);
+      offset += 512;
+
+      if (size > 0 && /\.(webp|png)$/i.test(name)) {
+        const fileBytes = data.slice(offset, offset + size);
+        const mime = name.endsWith(".png") ? "image/png" : "image/webp";
+        const blob = new Blob([fileBytes], { type: mime });
+        return URL.createObjectURL(blob);
+      }
+
+      const padded = Math.ceil(size / 512) * 512;
+      offset += padded;
+    }
+    return null;
   };
 
-  const loadFrame = (item, index) => {
-    frameImg.src = `/frames/${item.study_uid}/${item.series_uid}/${index}.png`;
+  const previewFrame = async (item) => {
+    const method = item.method || "dis";
+    const url = `/proxy/api/frames/${method}/${item.study_uid}/${item.series_uid}`;
+    log(`Fetching frames archive for ${item.study_uid}/${item.series_uid}`);
+    const metaResp = await fetch(url);
+    if (!metaResp.ok) {
+      log(`Frames meta status ${metaResp.status}`);
+      setStatus("Frames unavailable");
+      return;
+    }
+    const { frames_archive_url } = await metaResp.json();
+    if (!frames_archive_url) {
+      log("No frames archive url returned");
+      setStatus("Frames unavailable");
+      return;
+    }
+
+    const framesUrl = frames_archive_url.startsWith("/api/")
+      ? `/proxy${frames_archive_url}`
+      : frames_archive_url;
+    const archiveResp = await fetch(framesUrl);
+    if (!archiveResp.ok) {
+      log(`Frames archive status ${archiveResp.status}`);
+      setStatus("Frames unavailable");
+      return;
+    }
+    const buffer = await archiveResp.arrayBuffer();
+    const previewUrl = parseFirstFrameUrl(buffer);
+    if (!previewUrl) {
+      log("Could not parse first frame from archive");
+      setStatus("Frames unavailable");
+      return;
+    }
+
+    frameImg.src = previewUrl;
     frameImg.onload = () => {
       frameImg.style.display = "block";
+      setStatus(`Previewing ${item.study_uid}/${item.series_uid}`);
     };
   };
 
@@ -108,8 +166,7 @@
       setStatus("Select a series first");
       return;
     }
-    await ensureFrames(selected);
+    await previewFrame(selected);
     setStatus("Frames ready");
   };
 })();
-

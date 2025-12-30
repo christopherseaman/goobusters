@@ -42,7 +42,7 @@ def rebuild_for_series(
             return
 
         print(f"  rebuilding {archive_path} from {masks_dir}")
-        metadata = build_mask_metadata(series, masks_dir, flow_method)
+        metadata = build_mask_metadata(series, masks_dir, flow_method, config)
         archive_bytes = build_mask_archive(masks_dir, metadata)
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         with archive_path.open("wb") as f:
@@ -81,5 +81,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

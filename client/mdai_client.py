@@ -42,6 +42,7 @@ class MDaiDatasetManager:
         self.video_cache_path.mkdir(parents=True, exist_ok=True)
         self._client_lock = threading.Lock()
         self._client: Optional[mdai.Client] = None
+        self._token_override: Optional[str] = None
         self._images_dir: Optional[Path] = None
         self._annotations_df: Optional[pd.DataFrame] = None
         self._studies_lookup: Optional[dict[str, dict]] = None
@@ -51,9 +52,19 @@ class MDaiDatasetManager:
         with self._client_lock:
             if self._client is None:
                 self._client = mdai.Client(
-                    domain=self.config.domain, access_token=self.config.mdai_token
+                    domain=self.config.domain,
+                    access_token=self._token_override or self.config.mdai_token,
                 )
             return self._client
+
+    def set_token(self, token: Optional[str]) -> None:
+        """
+        Update the MD.ai token for subsequent SDK calls.
+        Resets the underlying client so the next use picks up the new token.
+        """
+        with self._client_lock:
+            self._token_override = token.strip() if token else None
+            self._client = None
 
     def sync_dataset(self) -> Path:
         """

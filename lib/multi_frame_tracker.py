@@ -62,6 +62,23 @@ except ImportError:
 
 
 LABEL_ID_NO_FLUID = os.getenv("LABEL_ID_NO_FLUID", "L_75K42J")
+LABEL_ID_FLUID_OVERRIDE: Optional[str] = None
+EMPTY_ID_OVERRIDE: Optional[str] = None
+
+
+def set_label_ids(label_id_fluid: Optional[str], empty_id: Optional[str]) -> None:
+    """Set module-level label IDs to avoid env lookups downstream."""
+    global LABEL_ID_FLUID_OVERRIDE, EMPTY_ID_OVERRIDE
+    LABEL_ID_FLUID_OVERRIDE = label_id_fluid
+    EMPTY_ID_OVERRIDE = empty_id
+
+
+def _label_id_fluid() -> str:
+    return LABEL_ID_FLUID_OVERRIDE or os.getenv("LABEL_ID", "")
+
+
+def _label_id_empty() -> str:
+    return EMPTY_ID_OVERRIDE or os.getenv("EMPTY_ID", "")
 
 
 class SharedParams:
@@ -240,9 +257,7 @@ class MultiFrameTracker:
                         "id", f"fluid_{annotation['frame']}"
                     ),
                     "track_id": f"annotation_{annotation['frame']}",
-                    "label_id": annotation.get(
-                        "labelId", os.getenv("LABEL_ID", "")
-                    ),
+                    "label_id": annotation.get("labelId", _label_id_fluid()),
                 }
             elif annotation["type"] == "empty":
                 all_masks[annotation["frame"]] = {
@@ -253,9 +268,7 @@ class MultiFrameTracker:
                         "id", f"empty_{annotation['frame']}"
                     ),
                     "track_id": f"annotation_{annotation['frame']}",
-                    "label_id": annotation.get(
-                        "labelId", os.getenv("EMPTY_ID", "")
-                    ),
+                    "label_id": annotation.get("labelId", _label_id_empty()),
                 }
 
         # Process segments BETWEEN consecutive annotations
@@ -403,9 +416,9 @@ class MultiFrameTracker:
         """
         annotations = []
 
-        # Get label IDs from environment
-        label_id_fluid = os.getenv("LABEL_ID", "")
-        empty_id = os.getenv("EMPTY_ID", "")
+        # Get label IDs from overrides/env
+        label_id_fluid = _label_id_fluid()
+        empty_id = _label_id_empty()
 
         for _, row in annotations_df.iterrows():
             frame_num = int(row["frameNumber"])
@@ -659,7 +672,7 @@ class MultiFrameTracker:
                     "forward_weight": forward_weight,
                     "backward_weight": backward_weight,
                     "track_id": f"track_{frame_idx}",
-                    "label_id": os.getenv("LABEL_ID", ""),
+                    "label_id": _label_id_fluid(),
                 }
             elif frame_idx in forward_masks:
                 all_masks[frame_idx] = {
@@ -667,7 +680,7 @@ class MultiFrameTracker:
                     "type": "fluid_forward",
                     "is_annotation": False,
                     "track_id": f"track_{frame_idx}",
-                    "label_id": os.getenv("LABEL_ID", ""),
+                    "label_id": _label_id_fluid(),
                 }
             elif frame_idx in backward_masks:
                 all_masks[frame_idx] = {
@@ -675,7 +688,7 @@ class MultiFrameTracker:
                     "type": "fluid_backward",
                     "is_annotation": False,
                     "track_id": f"track_{frame_idx}",
-                    "label_id": os.getenv("LABEL_ID", ""),
+                    "label_id": _label_id_fluid(),
                 }
 
     def _combine_masks_weighted(self, mask1, mask2, weight1, weight2):
@@ -780,8 +793,8 @@ class MultiFrameTracker:
 
             # Create masks.json with all tracked annotations
             masks_annotations = []
-            empty_id = os.getenv("EMPTY_ID", "")
-            label_id_fluid = os.getenv("LABEL_ID", "")
+            empty_id = _label_id_empty()
+            label_id_fluid = _label_id_fluid()
 
             for frame_num, mask_info in all_masks.items():
                 if isinstance(mask_info, dict):

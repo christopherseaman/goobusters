@@ -28,15 +28,18 @@ Loads settings from dot.env and performs tracking inline.
 
 import os
 import sys
-from dotenv import load_dotenv
 import mdai
 import pandas as pd
 from tqdm import tqdm
 
 # Import from lib modules
 from lib.optical import create_identity_file, copy_annotations_to_output
-from lib.multi_frame_tracker import process_video_with_multi_frame_tracking
+from lib.multi_frame_tracker import (
+    process_video_with_multi_frame_tracking,
+    set_label_ids,
+)
 from lib.opticalflowprocessor import OpticalFlowProcessor
+from lib.config import load_config
 
 
 def find_annotations_file(data_dir: str, project_id: str, dataset_id: str) -> str:
@@ -107,25 +110,26 @@ def find_images_dir(data_dir: str, project_id: str, dataset_id: str) -> str:
 
 def main():
     """Main execution function for the tracking pipeline."""
-    load_dotenv("dot.env")
+    config = load_config("shared")
 
     DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
 
-    # Load optical flow methods from environment
-    FLOW_METHOD = [
-        method.strip() for method in os.getenv("FLOW_METHOD", "farneback").split(",")
-    ]
+    # Load optical flow methods from config
+    FLOW_METHOD = [method.strip() for method in config.flow_method.split(",")]
 
-    ACCESS_TOKEN = os.getenv("MDAI_TOKEN")
-    DATA_DIR = os.getenv("DATA_DIR")
-    DOMAIN = os.getenv("DOMAIN")
-    PROJECT_ID = os.getenv("PROJECT_ID")
-    DATASET_ID = os.getenv("DATASET_ID")
-    LABEL_ID = os.getenv("LABEL_ID")
+    ACCESS_TOKEN = config.mdai_token
+    DATA_DIR = str(config.data_dir)
+    DOMAIN = config.domain
+    PROJECT_ID = config.project_id
+    DATASET_ID = config.dataset_id
+    LABEL_ID = config.label_id
 
-    if ACCESS_TOKEN is None:
-        print("ACCESS_TOKEN is not set, please set ACCESS_TOKEN in dot.env")
+    if not ACCESS_TOKEN:
+        print("MDAI_TOKEN is not set; please populate dot.env or environment.")
         sys.exit(1)
+
+    # Set label IDs for downstream tracking functions
+    set_label_ids(LABEL_ID, config.empty_id)
 
     # Start MD.ai client (skip connection test if we have cached data)
     try:
@@ -160,7 +164,7 @@ def main():
         project.set_labels_dict(labels_dict)
 
     # Get EMPTY_ID from environment
-    EMPTY_ID = os.getenv("EMPTY_ID", "")
+    EMPTY_ID = config.empty_id
 
     # Filter annotations for the free fluid label AND empty frames (both needed for tracking)
     free_fluid_annotations = annotations_df[
@@ -190,8 +194,8 @@ def main():
     num_without_files = len(free_fluid_annotations) - num_with_files
 
     # Select annotations for processing
-    TEST_STUDY_UID = os.getenv("TEST_STUDY_UID")
-    TEST_SERIES_UID = os.getenv("TEST_SERIES_UID")
+    TEST_STUDY_UID = config.test_study_uid
+    TEST_SERIES_UID = config.test_series_uid
 
     if TEST_STUDY_UID and TEST_SERIES_UID:
         # Use specific test study if provided
@@ -303,4 +307,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

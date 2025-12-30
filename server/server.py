@@ -9,9 +9,9 @@ import logging
 import os
 import shutil
 import signal
+import subprocess
 import sys
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
 from typing import Optional
 
@@ -31,32 +31,8 @@ from lib.mask_archive import mask_series_dir
 from server.api.routes import create_api_blueprint
 from server.storage.series_manager import SeriesManager
 from server.startup import initialize_server
-import threading
 
 logger = logging.getLogger(__name__)
-
-
-class MDaiOutputCapture:
-    """Capture MD.ai SDK stdout output and redirect to logger."""
-
-    def __init__(self, original_stream, logger):
-        self.original_stream = original_stream
-        self.logger = logger
-
-    def write(self, text):
-        # Handle both bytes and strings (Flask's click.echo may write bytes)
-        if isinstance(text, bytes):
-            text = text.decode("utf-8", errors="replace")
-
-        if text.strip():  # Only log non-empty lines
-            for line in text.rstrip().split("\n"):
-                if line.strip():
-                    self.logger.info(f"[MD.ai SDK] {line}")
-        # Don't write to original stream - we've already logged it
-        # This prevents triple logging
-
-    def flush(self):
-        self.original_stream.flush()
 
 
 class ServerContext:
@@ -90,11 +66,17 @@ def cleanup_retrack_queue(
             if job.status == "processing":
                 try:
                     from lib.mask_archive import mask_series_dir
+
                     output_dir = mask_series_dir(
-                        Path(config.mask_storage_path), config.flow_method, job.study_uid, job.series_uid
+                        Path(config.mask_storage_path),
+                        config.flow_method,
+                        job.study_uid,
+                        job.series_uid,
                     )
                     # Check retrack frametype.json (where new_version_id would have been written)
-                    retrack_frametype_path = output_dir / "retrack" / "frametype.json"
+                    retrack_frametype_path = (
+                        output_dir / "retrack" / "frametype.json"
+                    )
                     if retrack_frametype_path.exists():
                         # Remove retrack directory entirely (cleanup)
                         retrack_dir = output_dir / "retrack"
@@ -106,6 +88,8 @@ def cleanup_retrack_queue(
                     if frametype_path.exists() and job.previous_version_id is not None:
                         try:
                             with frametype_path.open("r+") as f:
+                                import json
+
                                 data = json.load(f)
                                 # Only revert if current version matches the new_version_id from the failed job
                                 # This means the retrack completed but we're clearing it
@@ -123,9 +107,10 @@ def cleanup_retrack_queue(
         # Version ID is now stored in output/{flow_method}/{study_uid}_{series_uid}/version.json
         series_root_old = config.server_state_path / "series"
         if series_root_old.exists():
-            import shutil
             shutil.rmtree(series_root_old)
-            logger.info("Removed old server_state/series/ directory (migrated to filesystem-based storage)")
+            logger.info(
+                "Removed old server_state/series/ directory (migrated to filesystem-based storage)"
+            )
 
         retrack_queue.clear_queue()
         print("Cleared retrack queue")
@@ -221,16 +206,14 @@ def get_pid_file(config: ServerConfig) -> Path:
 
 def _cleanup_server_state(config: ServerConfig, was_killed: bool) -> None:
     """Clean up old server_state files after successful startup."""
-    import shutil
-    
     state_path = config.server_state_path
-    
+
     # Remove old series_index.json (index is now in-memory)
     old_index = state_path / "series_index.json"
     if old_index.exists():
         old_index.unlink()
         logger.info("Removed old series_index.json (index is now in-memory)")
-    
+
     # Clean up uploaded_masks directory (temporary uploads, should be empty after retrack completes)
     uploaded_masks_dir = state_path / "uploaded_masks"
     if uploaded_masks_dir.exists():
@@ -239,7 +222,7 @@ def _cleanup_server_state(config: ServerConfig, was_killed: bool) -> None:
             logger.info("Cleaned up uploaded_masks directory")
         except OSError as e:
             logger.warning(f"Failed to clean uploaded_masks directory: {e}")
-    
+
     # Keep: retrack_queue.json (persists jobs across restarts)
     # Keep: server.pid (process management)
 
@@ -318,55 +301,44 @@ def kill_existing(pid_file: Path) -> bool:
         return False
 
 
-def daemonize(log_file: Path) -> None:
-    """Detach process and run in background."""
-    try:
-        pid = os.fork()
-        if pid > 0:
-            # Parent process - print log location and exit
-            print(f"Log file: {log_file}")
-            print(f"PID file: {get_pid_file(load_config('server'))}")
-            os._exit(0)
-    except OSError as e:
-        sys.stderr.write(f"Fork failed: {e}\n")
-        sys.exit(1)
+def start_detached_process(
+    script_path: Path,
+    log_file: Path,
+    pid_file: Path,
+    kill_existing_flag: bool,
+) -> None:
+    """
+    Start a detached child process without double-forking.
 
-    # Child process continues
-    os.setsid()  # Create new session
+    Using subprocess with start_new_session avoids the Torch/MPS crash that
+    happens when the original process forks after importing heavy libraries.
+    """
+    child_args: list[str] = []
+    if kill_existing_flag:
+        child_args.append("-k")
+    cmd = [sys.executable, str(script_path), *child_args]
 
-    # Second fork
-    try:
-        pid = os.fork()
-        if pid > 0:
-            # Parent process - exit
-            os._exit(0)
-    except OSError as e:
-        sys.stderr.write(f"Second fork failed: {e}\n")
-        sys.exit(1)
+    # Ensure log file exists so the child can append immediately
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.touch(exist_ok=True)
 
-    # Redirect standard file descriptors to /dev/null
-    os.chdir("/")
-    os.umask(0)
+    env = dict(os.environ)
+    env["GOOBUSTERS_LOG_FILE"] = str(log_file)
+    env["GOOBUSTERS_DAEMON_CHILD"] = "1"
 
-    # Redirect stdin, stdout, stderr to /dev/null
-    with open("/dev/null", "r") as devnull:
-        os.dup2(devnull.fileno(), sys.stdin.fileno())
-    with open("/dev/null", "w") as devnull:
-        os.dup2(devnull.fileno(), sys.stdout.fileno())
-        os.dup2(devnull.fileno(), sys.stderr.fileno())
+    with open(os.devnull, "rb") as devnull, open(os.devnull, "ab", buffering=0) as devnull_out:
+        subprocess.Popen(
+            cmd,
+            stdin=devnull,
+            stdout=devnull_out,
+            stderr=devnull_out,
+            start_new_session=True,
+            env=env,
+        )
 
-    # Close file descriptors (except 0, 1, 2 which are now /dev/null)
-    import resource
-
-    maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-    if maxfd == resource.RLIM_INFINITY:
-        maxfd = 1024
-
-    for fd in range(3, maxfd):
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    print(f"Log file: {log_file}")
+    print(f"PID file: {pid_file}")
+    sys.exit(0)
 
 
 def main() -> None:
@@ -394,9 +366,15 @@ def main() -> None:
     log_dir = server_dir / "log"
     log_dir.mkdir(exist_ok=True)
 
-    # Log filename: YYMMDD-HHMMSS.log (sortable, 24h format)
-    timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    log_file = log_dir / f"{timestamp}.log"
+    # Allow daemon parent to pass a fixed log file to child to avoid churn
+    env_log_file = os.environ.get("GOOBUSTERS_LOG_FILE")
+    is_daemon_child = os.environ.get("GOOBUSTERS_DAEMON_CHILD") == "1"
+    if env_log_file:
+        log_file = Path(env_log_file)
+    else:
+        # Log filename: YYMMDD-HHMMSS.log (sortable, 24h format)
+        timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+        log_file = log_dir / f"{timestamp}.log"
 
     # Create/update symlink to latest log
     update_latest_log_symlink(log_file)
@@ -421,9 +399,11 @@ def main() -> None:
         print(f"Use -k to kill it, or check PID file: {pid_file}")
         sys.exit(1)
 
-    # Daemonize if requested (must be before logging setup)
+    # Detach early to avoid fork-with-torch crashes
     if args.daemon:
-        daemonize(log_file)
+        start_detached_process(
+            Path(__file__).resolve(), log_file, pid_file, args.kill
+        )
 
     # Configure root logger with file and console handlers
     root_logger = logging.getLogger()
@@ -441,22 +421,15 @@ def main() -> None:
     file_handler.setFormatter(file_formatter)
     root_logger.addHandler(file_handler)
 
-    # Store original stdout before we replace it
-    original_stdout = sys.stdout
-
-    # Capture MD.ai SDK output and redirect to logger
-    # MD.ai SDK prints directly to stdout, so we intercept it
-    mdai_capture = MDaiOutputCapture(original_stdout, logger)
-    sys.stdout = mdai_capture
-
-    # Console handler - write to original stdout to avoid recursion
-    console_handler = logging.StreamHandler(original_stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
+    # Console handler - only if stdout is a real console (avoid double-writing to log file in daemon mode)
+    if not is_daemon_child:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
 
     # Write PID file
     write_pid(pid_file)
@@ -478,10 +451,10 @@ def main() -> None:
 
     try:
         app = create_app(config, skip_startup=False)
-        
+
         # Clean up old server_state files after successful startup
         _cleanup_server_state(config, args.kill)
-        
+
         logger.info(
             f"Server ready on {config.server_host}:{config.server_port}"
         )
@@ -489,8 +462,6 @@ def main() -> None:
     finally:
         # Clean up PID file on exit
         pid_file.unlink(missing_ok=True)
-        # Restore original stdout
-        sys.stdout = original_stdout
 
 
 if __name__ == "__main__":
