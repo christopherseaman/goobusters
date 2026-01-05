@@ -288,7 +288,14 @@ class AnnotationViewer {
             videoSelect.addEventListener('change', async (e) => {
                 const [method, studyUid, seriesUid] = e.target.value.split('|');
                 // Mark activity immediately when selecting from dropdown
-                await this.markSeriesActivity(studyUid, seriesUid);
+                const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
+                // Update warnings from activity response
+                if (activityResponse && activityResponse.ok) {
+                    const activityData = await activityResponse.json().catch(() => null);
+                    if (activityData) {
+                        await this.updateMultiplayerWarning(activityData);
+                    }
+                }
                 await this.loadVideo(method, studyUid, seriesUid);
             });
         }
@@ -1906,7 +1913,15 @@ class AnnotationViewer {
             
             // Mark activity immediately when server selects a series for us
             // This happens before any local checks or loading
-            await this.markSeriesActivity(data.study_uid, data.series_uid);
+            const activityResponse = await this.markSeriesActivity(data.study_uid, data.series_uid);
+            
+            // Update warnings from the activity response (includes updated activity data)
+            if (activityResponse && activityResponse.ok) {
+                const activityData = await activityResponse.json().catch(() => null);
+                if (activityData) {
+                    await this.updateMultiplayerWarning(activityData);
+                }
+            }
             
             // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
             // We need to determine the method - for now, use flow_method from config or default
@@ -1991,7 +2006,7 @@ class AnnotationViewer {
      */
     async markSeriesActivity(studyUid, seriesUid) {
         if (!studyUid || !seriesUid) {
-            return;
+            return null;
         }
         
         try {
@@ -2007,11 +2022,14 @@ class AnnotationViewer {
             
             if (!response.ok) {
                 console.warn(`Activity mark failed: ${response.status} ${response.statusText}`);
+                return null;
             } else {
                 console.debug('Activity marked successfully');
+                return response; // Return response so caller can get updated data
             }
         } catch (error) {
             console.warn('Activity mark error:', error);
+            return null;
         }
     }
     
@@ -2025,7 +2043,92 @@ class AnnotationViewer {
         }
         
         // Use the shared method
-        await this.markSeriesActivity(this.currentVideo.studyUid, this.currentVideo.seriesUid);
+        const response = await this.markSeriesActivity(this.currentVideo.studyUid, this.currentVideo.seriesUid);
+        
+        // Update warnings after activity ping (response includes updated activity data)
+        if (response && response.ok) {
+            const data = await response.json().catch(() => null);
+            if (data) {
+                await this.updateMultiplayerWarning(data);
+            }
+        }
+    }
+    
+    /**
+     * Fetch series detail and update warnings.
+     */
+    async fetchAndUpdateWarnings() {
+        if (!this.currentVideo || !this.currentVideo.studyUid) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(
+                `/proxy/api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`
+            );
+            if (response.ok) {
+                const data = await response.json();
+                await this.updateMultiplayerWarning(data);
+            }
+        } catch (error) {
+            console.warn('Failed to fetch series detail for warnings:', error);
+        }
+    }
+    
+    /**
+     * Check for multiplayer warnings and update the banner.
+     * Warnings shown for:
+     * - Series is completed (status === 'completed')
+     * - Other users have been active recently (within 24 hours)
+     */
+    async updateMultiplayerWarning(seriesData) {
+        const warningEl = document.getElementById('multiplayerWarning');
+        if (!warningEl || !this.currentVideo) {
+            return;
+        }
+        
+        const currentUserEmail = this.getUserEmail();
+        const warnings = [];
+        
+        // Check if series is completed
+        if (seriesData.status === 'completed') {
+            warnings.push('⚠️ This series is marked as completed');
+        }
+        
+        // Check for recent activity from other users
+        if (seriesData.activity) {
+            const now = new Date();
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            let mostRecentOtherUser = null;
+            let mostRecentOtherTime = null;
+            
+            for (const [userEmail, timestamp] of Object.entries(seriesData.activity)) {
+                if (userEmail === currentUserEmail) {
+                    continue; // Skip current user
+                }
+                const activityTime = new Date(timestamp);
+                if (activityTime >= twentyFourHoursAgo) {
+                    if (!mostRecentOtherTime || activityTime > mostRecentOtherTime) {
+                        mostRecentOtherTime = activityTime;
+                        mostRecentOtherUser = userEmail;
+                    }
+                }
+            }
+            
+            if (mostRecentOtherUser) {
+                const timeAgo = Math.round((now - mostRecentOtherTime) / (1000 * 60)); // minutes ago
+                const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`;
+                warnings.push(`⚠️ Another user (${mostRecentOtherUser}) was active ${timeStr}`);
+            }
+        }
+        
+        // Update banner
+        if (warnings.length > 0) {
+            warningEl.textContent = warnings.join(' • ');
+            warningEl.classList.remove('hidden');
+        } else {
+            warningEl.classList.add('hidden');
+        }
     }
 
     getVideoKey(method, studyUid, seriesUid) {
@@ -2063,6 +2166,9 @@ class AnnotationViewer {
         this.updateCompletionIndicator(); // Update completion status indicator
         this.updateVideoSelect(); // Update dropdown to show current series
         await this.refreshAllSeriesStatuses(); // Update all indicators with activity data
+        
+        // Fetch series detail to get activity data and update warnings
+        await this.fetchAndUpdateWarnings();
         
         // Start activity pings for this video (every 30s)
         this.startActivityPings();

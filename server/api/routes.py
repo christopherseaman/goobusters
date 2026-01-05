@@ -241,7 +241,12 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
-        return jsonify(_serialize_series(metadata))
+        
+        # Include activity data in response for warning updates
+        activity = series_manager.activity_history(study_uid, series_uid)
+        payload = _serialize_series(metadata)
+        payload["activity"] = activity
+        return jsonify(payload)
 
     @bp.post("/api/series/<study_uid>/<series_uid>/complete")
     def series_complete(study_uid: str, series_uid: str):

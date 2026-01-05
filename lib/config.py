@@ -153,7 +153,7 @@ def load_config(
     if role == "client":
         client_kwargs = dict(
             client_port=int(raw.get("CLIENT_PORT", 8080)),
-            server_url=raw.get("SERVER_URL", "http://localhost:5000"),
+            server_url=raw.get("SERVER_URL", "http://hivemind.local:5000"),
             user_email=raw.get("USER_EMAIL"),
             video_cache_path=Path(
                 raw.get("VIDEO_CACHE_PATH", "client_cache/data")

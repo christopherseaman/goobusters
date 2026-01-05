@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Optional
@@ -398,6 +398,42 @@ class SeriesManager:
             print(warning_msg, file=sys.stderr, flush=True)
             return None
 
+        # Filter out series with recent activity from other users (within 24 hours)
+        # This prevents conflicts by not assigning series that others are actively working on
+        RECENT_VIEW_THRESHOLD = timedelta(hours=24)
+        now = utc_now()
+        filtered_candidates = []
+        
+        for item in candidates:
+            data = self._read_status(item.study_uid, item.series_uid)
+            activity = data.get("activity", {})
+            
+            # Check if another user has been active recently
+            has_recent_other_activity = False
+            for other_user, timestamp_str in activity.items():
+                if other_user == user_email:
+                    continue  # Skip current user
+                timestamp = parse_time(timestamp_str)
+                if timestamp and (now - timestamp) < RECENT_VIEW_THRESHOLD:
+                    has_recent_other_activity = True
+                    break
+            
+            # Skip series with recent activity from other users (unless current user was also recently active)
+            if has_recent_other_activity:
+                # Only skip if current user hasn't been active recently
+                current_user_time = None
+                if user_email and user_email in activity:
+                    current_user_time = parse_time(activity[user_email])
+                
+                if not current_user_time or (now - current_user_time) >= RECENT_VIEW_THRESHOLD:
+                    continue  # Skip this series - another user is actively working on it
+            
+            filtered_candidates.append(item)
+        
+        # If all candidates were filtered out, fall back to all candidates (sorted by priority)
+        if not filtered_candidates:
+            filtered_candidates = candidates
+
         def sort_key(item: SeriesMetadata):
             data = self._read_status(item.study_uid, item.series_uid)
             activity = data.get("activity", {})
@@ -435,7 +471,7 @@ class SeriesManager:
                 # No activity -> medium priority
                 return 0.0
 
-        selected = sorted(candidates, key=sort_key)[0]
+        selected = sorted(filtered_candidates, key=sort_key)[0]
         return self.record_view(
             selected.study_uid, selected.series_uid, user_email
         )

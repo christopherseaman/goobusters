@@ -10,9 +10,10 @@ from typing import Optional
 
 # Add project root to Python path BEFORE any imports
 # This allows running client/client.py directly
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+project_root = Path(__file__).resolve().parent.parent
+project_root_str = str(project_root)
+if project_root_str not in sys.path:
+    sys.path.insert(0, project_root_str)
 
 import argparse
 import atexit
