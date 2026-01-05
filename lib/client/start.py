@@ -653,6 +653,7 @@ def create_app(
 
             proxy_headers = headers.copy()
 
+            # Create a fresh request to avoid any connection reuse or caching
             resp = context.http_client.request(
                 request.method,
                 url,
@@ -664,6 +665,29 @@ def create_app(
                 timeout=60,
                 follow_redirects=True,
             )
+
+            # Ensure we read the full response content to avoid any streaming/caching issues
+            content = resp.content
+
+            # Debug: Log response size and first 200 chars for /api/series
+            if subpath == "api/series":
+                logger.debug(
+                    f"Proxy /api/series response size: {len(content)} bytes"
+                )
+                try:
+                    import json
+
+                    data = json.loads(content.decode("utf-8"))
+                    if data and isinstance(data, list):
+                        exam_429 = [
+                            x for x in data if x.get("exam_number") == 429
+                        ]
+                        if exam_429:
+                            logger.debug(
+                                f"Exam 429 activity in proxy response: {exam_429[0].get('activity', {})}"
+                            )
+                except Exception:
+                    pass
 
             logger.debug(f"Proxy response: {resp.status_code} for {subpath}")
 
@@ -678,8 +702,14 @@ def create_app(
                 for key, value in resp.headers.items()
                 if key.lower() not in excluded_headers
             }
+            # Add no-cache headers to prevent browser caching of proxy responses
+            response_headers["Cache-Control"] = (
+                "no-store, no-cache, must-revalidate, max-age=0"
+            )
+            response_headers["Pragma"] = "no-cache"
+            response_headers["Expires"] = "0"
             return Response(
-                resp.content, status=resp.status_code, headers=response_headers
+                content, status=resp.status_code, headers=response_headers
             )
         except Exception as exc:
             import traceback
