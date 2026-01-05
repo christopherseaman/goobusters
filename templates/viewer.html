@@ -154,7 +154,7 @@
                     {% for video in videos|sort(attribute='exam_number') %}
                     <option value="{{ video.method }}|{{ video.study_uid }}|{{ video.series_uid }}"
                             {% if video == selected_video %}selected{% endif %}>
-                        🔲 Exam {{ video.exam_number }}
+                        ◻️ Exam {{ video.exam_number }}
                     </option>
                     {% endfor %}
                 </select>

@@ -1613,7 +1613,7 @@ class AnnotationViewer {
                 }
                 
                 // Priority 4: Inactive (no recent activity)
-                return '🔲';
+                return '◻️';
             };
             
             // Update all dropdown options
@@ -1627,7 +1627,7 @@ class AnnotationViewer {
                     // Series not found in API response, use default
                     const match = option.text.match(/Exam (\d+)/);
                     if (match) {
-                        option.text = `🔲 Exam ${match[1]}`;
+                        option.text = `◻️ Exam ${match[1]}`;
                     }
                     continue;
                 }

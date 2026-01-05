@@ -15,7 +15,7 @@
   - [ ] Two users editing same series simultaneously
   - [ ] Verify HTTP 409 conflict on save when version mismatch
   - [ ] Verify conflict warning displayed to user
-- [ ] Test activity tracking (keep-alive mechanism)
+- [ ] Test activity tracking (keep-alive mechanism) - Implementation complete, testing pending
   - [ ] Verify activity timestamps update on series access
   - [ ] Verify recent activity warnings shown to other users
   - [ ] Test activity timeout/cleanup logic
@@ -53,6 +53,8 @@
 ### UI/UX Improvements
 - [ ] Navigate series through current series indicator (add prev/next series navigation, show current position in series list)
 - [ ] Simplify/consolidate right toolbar (reduce button clutter, combine related actions, improve organization)
+- [ ] Scrubline frame highlight width tweaks
+- [ ] Brush size scales with series size not viewport
 
 ### Other Tasks
 - [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
@@ -116,3 +118,4 @@
 - [x] dot.env.example update for new/modified options (added TEST_STUDY_UID, TEST_SERIES_UID, improved comments)
 - [x] `tracked_annotations` should include TRACK_ID, EMPTY_ID, and LABEL_ID (now uses actual environment variable values instead of hardcoded strings)
 - [x] Retrack on Save (save automatically triggers retrack; removed separate retrack button)
+- [x] Activity tracking implementation (mark series as active on selection/view, activity pings every 30s, activity displayed in dropdown with emoji indicators, activity cleared on reset retrack)
