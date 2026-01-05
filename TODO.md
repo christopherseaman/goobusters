@@ -55,6 +55,7 @@
 - [ ] Simplify/consolidate right toolbar (reduce button clutter, combine related actions, improve organization)
 - [ ] Scrubline frame highlight width tweaks
 - [ ] Brush size scales with series size not viewport
+- [ ] Performance check on initial page load (measure time to interactive, identify bottlenecks)
 
 ### Other Tasks
 - [ ] Simplify client backend architecture - frontend should talk directly to server for everything except MD.ai images/videos
