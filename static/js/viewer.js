@@ -1784,28 +1784,19 @@ class AnnotationViewer {
         this.hideModal('conflictModal');
         
         const { studyUid, seriesUid, method } = this.currentVideo;
-        const currentFrameNum = this.currentFrame >= 0 ? this.currentFrame : 0;
+        const videoKey = this.getVideoKey(method, studyUid, seriesUid);
         
-        // Clear unsaved edits - loadVideo will handle everything else
-        this.modifiedFrames.delete(`${studyUid}__${seriesUid}`);
+        // Clear unsaved edits - ensure Map is completely removed
+        this.modifiedFrames.delete(videoKey);
         this.hasUnsavedChanges = false;
         
         // Reload fresh from server (skip modified_frames, force cache bust)
-        // This clears all caches, rebuilds videoData.mask_data from masks archive metadata, and updates UI
+        // This clears all caches, rebuilds videoData.mask_data from server, and updates UI
         await this.loadVideo(method, studyUid, seriesUid, true, true);
         
-        // Go to the frame we were on (loadVideo goes to 0)
-        if (currentFrameNum !== 0) {
-            await this.goToFrame(currentFrameNum);
-        }
-        
-        // Ensure scrubline is updated with fresh data after all async operations
-        // updateMaskDataFromMetadata() already calls updateSliderTypeBar(), but we ensure it runs
-        // after any deferred requestAnimationFrame callbacks from goToFrame()
-        await new Promise(resolve => requestAnimationFrame(() => {
-            this.updateSliderTypeBar();
-            requestAnimationFrame(resolve);
-        }));
+        // Force UI updates after reload to ensure fresh state is displayed
+        this.updateSaveButtonState();
+        this.updateSliderTypeBar();
     }
 
     markEmpty() {
