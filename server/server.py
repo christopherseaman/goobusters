@@ -15,15 +15,28 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask
+# Find project root: directory containing both 'lib' and 'server'
+# Walk up from this file until we find a directory with both packages
+_current = Path(__file__).resolve()
+while _current != _current.parent:
+    if (_current / "lib").exists() and (_current / "server").exists():
+        break
+    _current = _current.parent
+else:
+    raise RuntimeError(
+        "Could not find project root (directory with 'lib' and 'server')"
+    )
 
-# Add project root to Python path BEFORE any imports
-# This allows running server/server.py directly
-# Use .resolve() to ensure absolute path regardless of current working directory
-project_root = Path(__file__).resolve().parent.parent
-project_root_str = str(project_root)
-if project_root_str not in sys.path:
-    sys.path.insert(0, project_root_str)
+# Add project root to Python path so imports work
+_project_root = str(_current)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+# When running server/server.py directly, set __package__ so 'from server.api' works
+if __name__ == "__main__" and not __package__:
+    __package__ = "server"
+
+from flask import Flask
 
 from lib.config import ServerConfig, load_config
 from lib.mask_archive import mask_series_dir
@@ -87,7 +100,10 @@ def cleanup_retrack_queue(
                     # Revert main frametype.json to previous_version_id (the version before retrack started)
                     # This only matters if retrack completed and overwrote the main frametype.json
                     frametype_path = output_dir / "frametype.json"
-                    if frametype_path.exists() and job.previous_version_id is not None:
+                    if (
+                        frametype_path.exists()
+                        and job.previous_version_id is not None
+                    ):
                         try:
                             with frametype_path.open("r+") as f:
                                 import json
@@ -95,8 +111,13 @@ def cleanup_retrack_queue(
                                 data = json.load(f)
                                 # Only revert if current version matches the new_version_id from the failed job
                                 # This means the retrack completed but we're clearing it
-                                if data.get("_version_id") == job.new_version_id:
-                                    data["_version_id"] = job.previous_version_id
+                                if (
+                                    data.get("_version_id")
+                                    == job.new_version_id
+                                ):
+                                    data["_version_id"] = (
+                                        job.previous_version_id
+                                    )
                                     f.seek(0)
                                     f.truncate()
                                     json.dump(data, f, indent=2)
@@ -328,7 +349,10 @@ def start_detached_process(
     env["GOOBUSTERS_LOG_FILE"] = str(log_file)
     env["GOOBUSTERS_DAEMON_CHILD"] = "1"
 
-    with open(os.devnull, "rb") as devnull, open(os.devnull, "ab", buffering=0) as devnull_out:
+    with (
+        open(os.devnull, "rb") as devnull,
+        open(os.devnull, "ab", buffering=0) as devnull_out,
+    ):
         subprocess.Popen(
             cmd,
             stdin=devnull,
