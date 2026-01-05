@@ -57,6 +57,11 @@
 - [ ] Brush size scales with series size not viewport
 
 ### Other Tasks
+- [ ] Simplify client backend architecture - frontend should talk directly to server for everything except MD.ai images/videos
+  - Client backend should only: serve static files, serve MD.ai videos/images from local cache, dataset sync, user settings
+  - Remove proxy layer (`/proxy/<path>`) - frontend can use `SERVER_URL` from config to talk directly to server
+  - Server already has series list from MD.ai annotations, so `/api/videos`, `/api/video`, `/api/frames` can be server-only
+  - This eliminates caching issues and simplifies the architecture
 - [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
 - [ ] Combine (i) and video button
 - [ ] Change revert button behavior? Revert to mdai? Or last saved?

@@ -11,8 +11,12 @@ from dataclasses import asdict
 from pathlib import Path
 
 # Add paths: project root (for lib imports) and lib/server (for server package imports)
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-_lib_server = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+_lib_server = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -20,7 +24,14 @@ if _lib_server not in sys.path:
     sys.path.insert(0, _lib_server)
 
 import gzip
-from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context
+from flask import (
+    Blueprint,
+    Response,
+    jsonify,
+    request,
+    send_file,
+    stream_with_context,
+)
 
 from lib.mask_archive import (
     build_mask_archive,
@@ -119,8 +130,10 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         records = []
         for item in all_series:
             # Get full activity history (user_email -> timestamp)
-            activity = series_manager.activity_history(item.study_uid, item.series_uid)
-            
+            activity = series_manager.activity_history(
+                item.study_uid, item.series_uid
+            )
+
             record = {
                 "study_uid": item.study_uid,
                 "series_uid": item.series_uid,
@@ -130,6 +143,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 "activity": activity,  # dict of user_email -> ISO timestamp
             }
             records.append(record)
+
         return jsonify(records)
 
     @bp.get("/api/dataset/version")
@@ -200,11 +214,13 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
             if not result:
                 return jsonify({"no_available_series": True}), 200
-            
+
             # Mark activity when server selects a series for the user
             # This ensures the selected series is immediately marked as active
-            series_manager.mark_activity(result.study_uid, result.series_uid, user_email)
-            
+            series_manager.mark_activity(
+                result.study_uid, result.series_uid, user_email
+            )
+
             return jsonify(_serialize_series(result))
         except Exception as exc:
             import traceback
@@ -252,7 +268,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
-        
+
         # Include activity data in response for warning updates
         activity = series_manager.activity_history(study_uid, series_uid)
         payload = _serialize_series(metadata)
@@ -401,22 +417,35 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         # For retrack, tarball is in main output directory (overwrites initial tracking's tarball)
         # Check for masks.tar (server format)
         archive_path = mask_dir / "masks.tar"
-        
+
         # If masks.tar doesn't exist but masks/ directory exists (from track.py), build it
         if not archive_path.exists():
             masks_dir_path = mask_dir / "masks"
             if masks_dir_path.exists() and list(masks_dir_path.glob("*.webp")):
-                from server.tracking_worker import build_mask_archive_from_directory
+                from server.tracking_worker import (
+                    build_mask_archive_from_directory,
+                )
                 import logging
+
                 logger = logging.getLogger(__name__)
-                logger.info(f"Building masks.tar from existing masks/ directory for {study_uid}/{series_uid}")
+                logger.info(
+                    f"Building masks.tar from existing masks/ directory for {study_uid}/{series_uid}"
+                )
                 try:
                     build_mask_archive_from_directory(
-                        study_uid, series_uid, masks_dir_path, mask_dir, config, series_manager
+                        study_uid,
+                        series_uid,
+                        masks_dir_path,
+                        mask_dir,
+                        config,
+                        series_manager,
                     )
                 except Exception as exc:
                     import traceback
-                    logger.error(f"Failed to build masks.tar from masks/ directory: {exc}")
+
+                    logger.error(
+                        f"Failed to build masks.tar from masks/ directory: {exc}"
+                    )
                     traceback.print_exc()
                     # If build fails, return error
                     return jsonify({
@@ -424,7 +453,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                         "error_code": "ARCHIVE_BUILD_ERROR",
                         "error_message": f"Failed to build mask archive from masks/ directory: {str(exc)}",
                     }), 500
-        
+
         # If retrack/ subdirectory exists, the tarball in main output directory is from retrack
         # Otherwise, it's from initial tracking. Both use the same path.
         if not archive_path.exists():
@@ -470,12 +499,18 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
 
         # If metadata is missing (old track.py archives), rebuild archive with metadata.json
         if metadata is None:
-            masks_dir = mask_series_dir(
-                mask_root, config.flow_method, study_uid, series_uid
-            ) / "masks"
+            masks_dir = (
+                mask_series_dir(
+                    mask_root, config.flow_method, study_uid, series_uid
+                )
+                / "masks"
+            )
             if masks_dir.exists() and list(masks_dir.glob("*.webp")):
                 try:
-                    from server.tracking_worker import build_mask_archive_from_directory
+                    from server.tracking_worker import (
+                        build_mask_archive_from_directory,
+                    )
+
                     logger = current_app.logger
                     logger.warning(
                         f"metadata.json missing in masks archive for {study_uid}/{series_uid}; rebuilding masks.tar"
@@ -536,6 +571,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
 
         if gz_path.exists():
+
             def _decompress():
                 with gzip.open(gz_path, "rb") as f:
                     while True:
@@ -560,13 +596,13 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             mask_root, config.flow_method, study_uid, series_uid
         )
         frames_dir = base_dir / "frames"
-        
+
         # Count frames in frames directory (most reliable)
         if frames_dir.exists():
             frame_files = list(frames_dir.glob("frame_*.webp"))
             if frame_files:
                 return len(frame_files)
-        
+
         # Fallback: get from frametype.json
         frametype_path = base_dir / "frametype.json"
         if frametype_path.exists():
@@ -576,7 +612,8 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     # frametype.json keys are frame numbers (as strings)
                     # Exclude metadata keys
                     frame_keys = [
-                        k for k in frametype_data.keys()
+                        k
+                        for k in frametype_data.keys()
                         if k != "_version_id" and k.isdigit()
                     ]
                     if frame_keys:
@@ -584,7 +621,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                         return max(int(k) for k in frame_keys) + 1
             except (json.JSONDecodeError, ValueError, KeyError):
                 pass
-        
+
         return 0
 
     @bp.get("/api/video/<method>/<study_uid>/<series_uid>")
@@ -596,15 +633,15 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             series = series_manager.get_series(study_uid, series_uid)
         except FileNotFoundError:
             return jsonify({"error": "Series not found"}), 404
-        
+
         total_frames = _get_total_frames(study_uid, series_uid)
-        
+
         # Construct labels from config (same format as client)
         labels = [
             {"labelId": config.label_id, "labelName": "Fluid"},
             {"labelId": config.empty_id, "labelName": "Empty"},
         ]
-        
+
         return jsonify({
             "total_frames": total_frames,
             "method": method,
@@ -624,17 +661,15 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         Frames and masks are generated by the server tracking pipeline.
         """
         total_frames = _get_total_frames(study_uid, series_uid)
-        
+
         # Frames archive URL (server-produced frames.tar)
         frames_archive_url = f"/api/frames_archive/{study_uid}/{series_uid}.tar"
         masks_archive_url = f"/api/masks/{study_uid}/{series_uid}"
-        return jsonify(
-            {
-                "frames_archive_url": frames_archive_url,
-                "masks_archive_url": masks_archive_url,
-                "total_frames": total_frames,
-            }
-        )
+        return jsonify({
+            "frames_archive_url": frames_archive_url,
+            "masks_archive_url": masks_archive_url,
+            "total_frames": total_frames,
+        })
 
     @bp.post("/api/masks/<study_uid>/<series_uid>")
     def post_masks(study_uid: str, series_uid: str):
@@ -940,7 +975,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         # Reset completion status to "pending" and clear activity tracking
         series_manager.reopen(study_uid, series_uid)
         series_manager.clear_activity(study_uid, series_uid)
-        print(f"[RESET] Reset completion status to 'pending' and cleared activity tracking")
+        print(
+            f"[RESET] Reset completion status to 'pending' and cleared activity tracking"
+        )
 
         # Tracking status is computed from filesystem (checks for masks.tar)
         print(
@@ -990,8 +1027,10 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             try:
                 # Reset completion status to "pending" and clear activity tracking for all series
                 series_manager.reopen(series.study_uid, series.series_uid)
-                series_manager.clear_activity(series.study_uid, series.series_uid)
-                
+                series_manager.clear_activity(
+                    series.study_uid, series.series_uid
+                )
+
                 mask_dir = mask_series_dir(
                     mask_root, flow_method, series.study_uid, series.series_uid
                 )

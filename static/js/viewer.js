@@ -1323,12 +1323,12 @@ class AnnotationViewer {
                 }
                 this.hasUnsavedChanges = false;
                 
-                // Reload from server with cache busting to ensure fresh masks
+                // Reload from server to ensure fresh masks
                 this.frameCache.clear();
                 this.framesArchive = null;
                 this.masksArchive = {};
                 await this.loadVideoData();
-                await this.loadFramesArchive(true); // Force cache bust
+                await this.loadFramesArchive();
                 // Force reload current frame to ensure fresh masks are displayed
                 const currentFrameNum = this.currentFrame;
                 this.currentFrame = -1; // Force reload
@@ -1678,7 +1678,7 @@ class AnnotationViewer {
             this.hasUnsavedChanges = false;
             this.updateSaveButtonState();
             
-            // Reload current series with reset masks (initial tracking) - add cache busting
+            // Reload current series with reset masks (initial tracking)
             // Clear ALL caches first
                     this.frameCache.clear();
                     this.framesArchive = null;
@@ -1689,7 +1689,7 @@ class AnnotationViewer {
             // But to be safe, reload the current series directly first, then verify with /api/series/next
             const currentFrameNum = this.currentFrame;
                     await this.loadVideoData();
-            await this.loadFramesArchive(true);
+            await this.loadFramesArchive();
             this.currentFrame = -1;
             await this.goToFrame(currentFrameNum);
             
@@ -1752,7 +1752,7 @@ class AnnotationViewer {
                 // Reload current series directly (don't call loadNextSeries - stay on current series)
                 const currentFrameNum = this.currentFrame;
                 await this.loadVideoData(); // This will fetch fresh status from server
-                await this.loadFramesArchive(true);
+                await this.loadFramesArchive();
                 this.currentFrame = -1;
                 await this.goToFrame(currentFrameNum);
                 
@@ -1790,9 +1790,9 @@ class AnnotationViewer {
         this.modifiedFrames.delete(videoKey);
         this.hasUnsavedChanges = false;
         
-        // Reload fresh from server (skip modified_frames, force cache bust)
+        // Reload fresh from server (skip modified_frames)
         // This clears all caches, rebuilds videoData.mask_data from server, and updates UI
-        await this.loadVideo(method, studyUid, seriesUid, true, true);
+        await this.loadVideo(method, studyUid, seriesUid, true);
         
         // Force UI updates after reload to ensure fresh state is displayed
         this.updateSaveButtonState();
@@ -2116,7 +2116,7 @@ class AnnotationViewer {
         return this.modifiedFrames.get(videoKey);
     }
 
-    async loadVideo(method, studyUid, seriesUid, skipModifiedFrames = false, forceCacheBust = false) {
+    async loadVideo(method, studyUid, seriesUid, skipModifiedFrames = false) {
         // Stop activity pings for previous video (if any)
         this.stopActivityPings();
         
@@ -2131,7 +2131,7 @@ class AnnotationViewer {
         this.currentVideo = { method, studyUid, seriesUid };
         // Load video data first so we know which frames are modified
         await this.loadVideoData(skipModifiedFrames);
-        await this.loadFramesArchive(forceCacheBust);
+        await this.loadFramesArchive();
         this.currentFrame = -1;
         await this.goToFrame(0);
         this.updateSaveButtonState();
@@ -2154,7 +2154,7 @@ class AnnotationViewer {
         this.stopActivityPings();
     }
     
-    async loadFramesArchive(forceCacheBust = false) {
+    async loadFramesArchive() {
         const loadingDiv = document.getElementById('loadingIndicator') || (() => {
             const d = document.createElement('div');
             d.id = 'loadingIndicator';
@@ -2167,10 +2167,7 @@ class AnnotationViewer {
 
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
-            let url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
-            if (forceCacheBust) {
-                url += `?t=${Date.now()}`;
-            }
+            const url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
             const response = await fetch(url);
             
             if (!response.ok) {
@@ -2221,13 +2218,8 @@ class AnnotationViewer {
             }
 
             // Load masks archive (.tar format, no gzip) - get version ID from headers
-            // Add cache busting if forceCacheBust is true
             this.masksArchive = {};
             if (masksUrl) {
-                if (forceCacheBust) {
-                    const separator = masksUrl.includes('?') ? '&' : '?';
-                    masksUrl = `${masksUrl}${separator}t=${Date.now()}`;
-                }
                 const masksArchiveResponse = await fetch(masksUrl);
                 
                 if (!masksArchiveResponse.ok) {

@@ -10,7 +10,10 @@ from typing import Optional
 
 # Add paths: project root (for lib imports) and lib/client (for client package imports)
 import os
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 _lib_client = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 if _project_root not in sys.path:
@@ -42,14 +45,24 @@ class ClientContext:
         self.config = config
         self.dataset = MDaiDatasetManager(config)
         # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
-        self.http_client = httpx.Client(timeout=60)
+        # Disable all caching - clients should never cache anything
+        # httpx doesn't cache by default, but explicitly disable connection pooling
+        self.http_client = httpx.Client(
+            timeout=60,
+            follow_redirects=True,
+            limits=httpx.Limits(
+                max_keepalive_connections=0, max_connections=100
+            ),  # No connection reuse
+        )
         self.user_email_override: Optional[str] = None
 
     def close(self) -> None:
         self.http_client.close()
 
     def current_user_email(self) -> str:
-        return (self.user_email_override or self.config.user_email or "").strip()
+        return (
+            self.user_email_override or self.config.user_email or ""
+        ).strip()
 
 
 def create_app(
@@ -103,11 +116,13 @@ def create_app(
                 "series_number": info.series_number,
                 "labels": labels,
                 "status": "pending",  # Default, will be updated from server
+                "activity": {},  # Default, will be updated from server (never cached locally)
             }
             for info in series
         ]
 
-        # Fetch completion status from server for each series
+        # Fetch completion status and activity from server for each series
+        # Always fetch fresh - never cache activity data locally
         try:
             resp = context.http_client.get(
                 f"{config.server_url.rstrip('/')}/api/series",
@@ -116,17 +131,21 @@ def create_app(
             if resp.status_code == 200:
                 server_series = resp.json()
                 # Create a lookup map by (study_uid, series_uid)
-                status_map = {
-                    (s["study_uid"], s["series_uid"]): s.get("status", "pending")
+                server_data_map = {
+                    (s["study_uid"], s["series_uid"]): {
+                        "status": s.get("status", "pending"),
+                        "activity": s.get("activity", {}),
+                    }
                     for s in server_series
                 }
-                # Update videos with server status
+                # Update videos with server status and activity (fresh from server, not cached)
                 for video in videos:
                     key = (video["study_uid"], video["series_uid"])
-                    if key in status_map:
-                        video["status"] = status_map[key]
+                    if key in server_data_map:
+                        video["status"] = server_data_map[key]["status"]
+                        video["activity"] = server_data_map[key]["activity"]
         except Exception:
-            # Non-fatal: continue with default "pending" status
+            # Non-fatal: continue with default "pending" status and empty activity
             pass
 
         # Sort by exam_number
@@ -301,7 +320,9 @@ def create_app(
         if not info:
             return jsonify({"error": "Series not found locally"}), 404
 
-        frames_archive_url = f"/proxy/api/frames_archive/{study_uid}/{series_uid}.tar"
+        frames_archive_url = (
+            f"/proxy/api/frames_archive/{study_uid}/{series_uid}.tar"
+        )
         masks_archive_url = f"/proxy/api/masks/{study_uid}/{series_uid}"
         return jsonify({
             "frames_archive_url": frames_archive_url,
@@ -630,6 +651,8 @@ def create_app(
             logger = logging.getLogger(__name__)
             logger.debug(f"Proxying {request.method} {subpath} to {url}")
 
+            proxy_headers = headers.copy()
+
             resp = context.http_client.request(
                 request.method,
                 url,
@@ -637,8 +660,9 @@ def create_app(
                 data=data,
                 json=json_payload,
                 files=files,
-                headers=headers,
+                headers=proxy_headers,
                 timeout=60,
+                follow_redirects=True,
             )
 
             logger.debug(f"Proxy response: {resp.status_code} for {subpath}")
@@ -838,7 +862,10 @@ def main() -> None:
 
     # Create log directory (repo root log/)
     import os
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     log_dir = Path(project_root) / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
 

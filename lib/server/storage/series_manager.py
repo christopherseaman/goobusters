@@ -6,6 +6,7 @@ selection logic. This module is shared by the Flask API and background workers.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -163,11 +164,17 @@ class SeriesManager:
         if user_email is not None:
             if "activity" not in data:
                 data["activity"] = {}
+            # Preserve existing activity from other users - only update this user's timestamp
             data["activity"][user_email] = isoformat(utc_now())
 
         status_path.parent.mkdir(parents=True, exist_ok=True)
-        with status_path.open("w") as f:
+        # Use atomic write: write to temp file, then rename
+        import tempfile
+
+        temp_path = status_path.with_suffix(".tmp")
+        with temp_path.open("w") as f:
             json.dump(data, f, indent=2)
+        temp_path.replace(status_path)
 
     def _get_status(self, study_uid: str, series_uid: str) -> str:
         """Get user completion status from status.json."""
@@ -287,9 +294,7 @@ class SeriesManager:
             self._write_status(study_uid, series_uid, status="pending")
             return self.get_series(study_uid, series_uid)
 
-    def clear_activity(
-        self, study_uid: str, series_uid: str
-    ) -> SeriesMetadata:
+    def clear_activity(self, study_uid: str, series_uid: str) -> SeriesMetadata:
         """Clear all activity tracking for a series."""
         with self._lock:
             status_path = self._status_path(study_uid, series_uid)
@@ -297,8 +302,15 @@ class SeriesManager:
             # Clear activity but preserve status
             data["activity"] = {}
             status_path.parent.mkdir(parents=True, exist_ok=True)
-            with status_path.open("w") as f:
+            # Use atomic write: write to temp file, then rename (ensures consistency)
+            import tempfile
+
+            temp_path = status_path.with_suffix(".tmp")
+            with temp_path.open("w") as f:
                 json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # Ensure written to disk
+            temp_path.replace(status_path)  # Atomic rename
             return self.get_series(study_uid, series_uid)
 
     def mark_activity(
@@ -321,8 +333,9 @@ class SeriesManager:
         self, study_uid: str, series_uid: str
     ) -> dict[str, str]:
         """Get activity history: dict of user_email -> last_activity_at."""
-        data = self._read_status(study_uid, series_uid)
-        return data.get("activity", {})
+        with self._lock:
+            data = self._read_status(study_uid, series_uid)
+            return data.get("activity", {})
 
     # ----------------------------------------------------------- Public helpers
     def get_version_id(self, study_uid: str, series_uid: str) -> Optional[str]:
@@ -403,11 +416,11 @@ class SeriesManager:
         RECENT_VIEW_THRESHOLD = timedelta(hours=24)
         now = utc_now()
         filtered_candidates = []
-        
+
         for item in candidates:
             data = self._read_status(item.study_uid, item.series_uid)
             activity = data.get("activity", {})
-            
+
             # Check if another user has been active recently
             has_recent_other_activity = False
             for other_user, timestamp_str in activity.items():
@@ -417,19 +430,22 @@ class SeriesManager:
                 if timestamp and (now - timestamp) < RECENT_VIEW_THRESHOLD:
                     has_recent_other_activity = True
                     break
-            
+
             # Skip series with recent activity from other users (unless current user was also recently active)
             if has_recent_other_activity:
                 # Only skip if current user hasn't been active recently
                 current_user_time = None
                 if user_email and user_email in activity:
                     current_user_time = parse_time(activity[user_email])
-                
-                if not current_user_time or (now - current_user_time) >= RECENT_VIEW_THRESHOLD:
+
+                if (
+                    not current_user_time
+                    or (now - current_user_time) >= RECENT_VIEW_THRESHOLD
+                ):
                     continue  # Skip this series - another user is actively working on it
-            
+
             filtered_candidates.append(item)
-        
+
         # If all candidates were filtered out, fall back to all candidates (sorted by priority)
         if not filtered_candidates:
             filtered_candidates = candidates
@@ -470,6 +486,11 @@ class SeriesManager:
             else:
                 # No activity -> medium priority
                 return 0.0
+
+        selected = sorted(filtered_candidates, key=sort_key)[0]
+        return self.record_view(
+            selected.study_uid, selected.series_uid, user_email
+        )
 
         selected = sorted(filtered_candidates, key=sort_key)[0]
         return self.record_view(
