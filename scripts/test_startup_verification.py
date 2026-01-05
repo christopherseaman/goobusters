@@ -13,9 +13,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Add paths: project root (for lib imports) and lib/server (for server package imports)
+import os
+
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_lib_server = os.path.join(_project_root, "lib", "server")
+
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+if _lib_server not in sys.path:
+    sys.path.insert(0, _lib_server)
 
 from lib.config import load_config
 from server.storage.series_manager import SeriesManager
@@ -183,5 +190,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-

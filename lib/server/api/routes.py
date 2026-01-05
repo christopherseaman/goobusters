@@ -1,12 +1,23 @@
-'"""Flask blueprint exposing the distributed tracking API."""'
+"""Flask blueprint exposing the distributed tracking API."""
 
 from __future__ import annotations
 
+import os
+import sys
 import json
 import shutil
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
+
+# Add paths: project root (for lib imports) and lib/server (for server package imports)
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_lib_server = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+if _lib_server not in sys.path:
+    sys.path.insert(0, _lib_server)
 
 import gzip
 from flask import Blueprint, Response, jsonify, request, send_file, stream_with_context

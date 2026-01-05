@@ -15,11 +15,18 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# Add project root to Python path for imports
-project_root = Path(__file__).resolve().parent.parent
-project_root_str = str(project_root)
-if project_root_str not in sys.path:
-    sys.path.insert(0, project_root_str)
+# Add paths: project root (for lib imports) and lib/server (for server package imports)
+import os
+
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+_lib_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+if _lib_server not in sys.path:
+    sys.path.insert(0, _lib_server)
 
 import mdai  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -60,7 +67,9 @@ def build_mask_archive_from_directory(
     import tarfile
 
     series = series_manager.get_series(study_uid, series_uid)
-    metadata = build_mask_metadata(series, masks_dir, config.flow_method, config)
+    metadata = build_mask_metadata(
+        series, masks_dir, config.flow_method, config
+    )
     archive_path = output_dir / "masks.tar"
     archive_bytes = build_mask_archive(masks_dir, metadata)
     with archive_path.open("wb") as f:

@@ -318,7 +318,7 @@ class AnnotationViewer {
         document.getElementById('eraseMode').addEventListener('click', () => this.setDrawMode('erase'));
         document.getElementById('markEmpty').addEventListener('click', () => this.markEmpty());
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
-        document.getElementById('resetMask').addEventListener('click', () => this.resetMask());
+        document.getElementById('resetMask').addEventListener('click', () => this.handleResetAndReload());
 
         // Brush size sliders (both modal and inline)
         const brushSizeModal = document.getElementById('brushSize');
@@ -442,7 +442,7 @@ class AnnotationViewer {
         document.getElementById('brushPreview').style.display = 'none';
     }
 
-    async loadVideoData() {
+    async loadVideoData(skipModifiedFrames = false) {
         if (!this.currentVideo) {
             throw new Error('No current video set');
         }
@@ -478,7 +478,8 @@ class AnnotationViewer {
         
         // Override with modified_frames (user modifications take precedence)
         // Modified masks are always human-verified annotations (both fluid AND empty)
-        if (data.modified_frames) {
+        // Skip if resetting (skipModifiedFrames = true)
+        if (data.modified_frames && !skipModifiedFrames) {
             for (const [frameNum, frameData] of Object.entries(data.modified_frames)) {
                 const num = parseInt(frameNum);
                 if (this.videoData.mask_data[num]) {
@@ -508,7 +509,7 @@ class AnnotationViewer {
         document.getElementById('frameSlider').min = 0;
         document.getElementById('frameSlider').max = this.totalFrames - 1;
         this.updateFrameCounter();
-        this.updateSliderTypeBar();
+        // Don't update scrubline here - it will be updated after masks archive metadata is loaded
     }
     
     updateSliderTypeBar() {
@@ -755,12 +756,12 @@ class AnnotationViewer {
         this.maskCtx.putImageData(this.maskImageData, 0, 0);
         
         // Check if this frame was already modified in this session
+        // Only restore if hasUnsavedChanges is true (prevents restoring after reset)
         const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        if (videoModifiedFrames.has(this.currentFrame)) {
+        if (this.hasUnsavedChanges && videoModifiedFrames.has(this.currentFrame)) {
             const saved = videoModifiedFrames.get(this.currentFrame);
             this.maskImageData = saved.maskData;
             this.maskType = saved.maskType;
-            this.hasUnsavedChanges = true;
         } else {
             this.hasUnsavedChanges = false;
         }
@@ -1357,25 +1358,6 @@ class AnnotationViewer {
     }
 
 
-    resetMask() {
-        // Reset to the last saved state (from annotations/ if exists, else output/)
-        this.maskImageData = this.cloneImageData(this.originalMaskImageData);
-        this.maskType = this.originalMaskType;
-        
-        // Clear any unsaved edits for this frame (whether from modifiedFrames or pending retrack)
-        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        const hadUnsavedEdit = videoModifiedFrames.has(this.currentFrame);
-        
-        if (hadUnsavedEdit) {
-            // Remove from modified frames - resetting clears the unsaved edit
-            videoModifiedFrames.delete(this.currentFrame);
-            // Update unsaved changes state
-            this.hasUnsavedChanges = videoModifiedFrames.size > 0;
-        }
-        
-        this.updateSaveButtonState();
-                        this.render();
-                    }
 
     /**
      * Show completion confirmation modal.
@@ -1801,30 +1783,29 @@ class AnnotationViewer {
     async handleResetAndReload() {
         this.hideModal('conflictModal');
         
-        const { studyUid, seriesUid } = this.currentVideo;
-        const videoKey = `${studyUid}__${seriesUid}`;
+        const { studyUid, seriesUid, method } = this.currentVideo;
+        const currentFrameNum = this.currentFrame >= 0 ? this.currentFrame : 0;
         
-        // Clear all local edits for this video
-        this.modifiedFrames.delete(videoKey);
+        // Clear unsaved edits - loadVideo will handle everything else
+        this.modifiedFrames.delete(`${studyUid}__${seriesUid}`);
         this.hasUnsavedChanges = false;
-        this.updateSaveButtonState();
         
-        // Clear frame cache
-        this.frameCache.clear();
-        this.framesArchive = null;
-        this.masksArchive = {};
+        // Reload fresh from server (skip modified_frames, force cache bust)
+        // This clears all caches, rebuilds videoData.mask_data from masks archive metadata, and updates UI
+        await this.loadVideo(method, studyUid, seriesUid, true, true);
         
-        // Reload from server
-        console.log('Resetting and reloading from server...');
-        try {
-            await this.loadVideoData();
-            await this.loadFramesArchive();
-            await this.goToFrame(this.currentFrame);
-            console.log('✅ Reloaded from server');
-        } catch (error) {
-            console.error('Error reloading from server:', error);
-            alert(`Error reloading: ${error.message}`);
+        // Go to the frame we were on (loadVideo goes to 0)
+        if (currentFrameNum !== 0) {
+            await this.goToFrame(currentFrameNum);
         }
+        
+        // Ensure scrubline is updated with fresh data after all async operations
+        // updateMaskDataFromMetadata() already calls updateSliderTypeBar(), but we ensure it runs
+        // after any deferred requestAnimationFrame callbacks from goToFrame()
+        await new Promise(resolve => requestAnimationFrame(() => {
+            this.updateSliderTypeBar();
+            requestAnimationFrame(resolve);
+        }));
     }
 
     markEmpty() {
@@ -1945,7 +1926,8 @@ class AnnotationViewer {
             await this.loadVideo(method, data.study_uid, data.series_uid);
         } catch (error) {
             console.error('Error loading next series:', error);
-            alert(`Failed to load next series: ${error.message}`);
+            const errorMsg = error?.message || error?.toString() || 'Unknown error';
+            alert(`Failed to load next series: ${errorMsg}`);
         }
     }
     
@@ -2143,7 +2125,7 @@ class AnnotationViewer {
         return this.modifiedFrames.get(videoKey);
     }
 
-    async loadVideo(method, studyUid, seriesUid) {
+    async loadVideo(method, studyUid, seriesUid, skipModifiedFrames = false, forceCacheBust = false) {
         // Stop activity pings for previous video (if any)
         this.stopActivityPings();
         
@@ -2157,8 +2139,8 @@ class AnnotationViewer {
         this.currentVersionId = null; // Reset version ID - will be set from server response
         this.currentVideo = { method, studyUid, seriesUid };
         // Load video data first so we know which frames are modified
-        await this.loadVideoData();
-        await this.loadFramesArchive();
+        await this.loadVideoData(skipModifiedFrames);
+        await this.loadFramesArchive(forceCacheBust);
         this.currentFrame = -1;
         await this.goToFrame(0);
         this.updateSaveButtonState();
@@ -2414,7 +2396,10 @@ class AnnotationViewer {
 AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
     try {
         const resp = await fetch('/api/dataset/version_status');
-        if (!resp.ok) return;
+        if (!resp.ok) {
+            // Silently fail - dataset sync status is not critical
+            return;
+        }
         const data = await resp.json();
         const banner = document.getElementById('datasetWarning');
         if (!banner) return;
@@ -2424,6 +2409,7 @@ AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
             banner.classList.remove('hidden');
         }
     } catch (e) {
+        // Silently fail - dataset sync status is not critical
         const banner = document.getElementById('datasetWarning');
         if (banner) banner.classList.add('hidden');
     }

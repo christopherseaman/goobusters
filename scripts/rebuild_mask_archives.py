@@ -16,10 +16,15 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-# Ensure project root is on sys.path so we can import lib and server.*
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Add paths: project root (for lib imports) and lib/server (for server package imports)
+import os
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_lib_server = os.path.join(PROJECT_ROOT, "lib", "server")
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+if _lib_server not in sys.path:
+    sys.path.insert(0, _lib_server)
 
 from lib.config import load_config, ServerConfig  # type: ignore
 from lib.mask_archive import (  # type: ignore

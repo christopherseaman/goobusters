@@ -8,12 +8,15 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# Add project root to Python path BEFORE any imports
-# This allows running client/client.py directly
-project_root = Path(__file__).resolve().parent.parent
-project_root_str = str(project_root)
-if project_root_str not in sys.path:
-    sys.path.insert(0, project_root_str)
+# Add paths: project root (for lib imports) and lib/client (for client package imports)
+import os
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_lib_client = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+if _lib_client not in sys.path:
+    sys.path.insert(0, _lib_client)
 
 import argparse
 import atexit
@@ -25,17 +28,11 @@ import signal
 import httpx
 from flask import Flask, Response, jsonify, request, render_template
 
-# Now we can import lib modules (project_root is in sys.path)
 from lib.mask_archive import build_mask_archive, iso_now
 from lib.config import ClientConfig, load_config
+from client.mdai_client import DatasetNotReady, MDaiDatasetManager
 
-# Support running as a module (`python -m client.client`) or as a script
-if __package__:
-    from .mdai_client import DatasetNotReady, MDaiDatasetManager
-else:  # pragma: no cover - fallback for direct script execution
-    from mdai_client import DatasetNotReady, MDaiDatasetManager  # type: ignore
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(_project_root)
 TEMPLATE_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 
@@ -711,9 +708,9 @@ def write_pid(pid_file: Path) -> None:
 
 
 def update_latest_log_symlink(log_file: Path) -> None:
-    """Create or update symlink log/latest pointing to the current log file."""
+    """Create or update symlink log/client pointing to the current log file."""
     log_dir = log_file.parent
-    latest_link = log_dir / "latest"
+    latest_link = log_dir / "client"
 
     # Remove existing symlink if it exists
     if latest_link.exists() or latest_link.is_symlink():
@@ -722,7 +719,7 @@ def update_latest_log_symlink(log_file: Path) -> None:
         except OSError:
             pass  # Ignore errors removing old symlink
 
-    # Create new symlink
+    # Create new symlink (relative path so it works if log_dir is moved)
     try:
         latest_link.symlink_to(log_file.name)
     except OSError as e:
@@ -839,18 +836,20 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
 
-    # Create log directory
-    log_dir = Path(__file__).parent.parent / "client" / "log"
+    # Create log directory (repo root log/)
+    import os
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    log_dir = Path(project_root) / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Log filename: YYMMDD-HHMMSS.log
+    # Log filename: client_YYMMDD-HHMMSS.log
     from datetime import datetime
 
     timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    log_file = log_dir / f"{timestamp}.log"
+    log_file = log_dir / f"client_{timestamp}.log"
 
-    # Create/update symlink to latest log
-    update_latest_log_symlink(log_file)
+    # Create log file immediately so symlink works
+    log_file.touch(exist_ok=True)
 
     # Kill existing process if requested
     if args.kill:
@@ -869,6 +868,10 @@ def main() -> None:
     # Daemonize if requested (must be before logging setup)
     if args.daemon:
         daemonize(log_file, pid_file)
+
+    # Create/update symlink to latest log (after daemonize so child process creates it)
+    # This must happen after daemonize so the child process creates the symlink
+    update_latest_log_symlink(log_file)
 
     # File handler
     file_handler = logging.FileHandler(log_file)

@@ -15,11 +15,15 @@ from typing import Optional
 
 import mdai
 
-# Add project root to Python path BEFORE any imports
-project_root = Path(__file__).resolve().parent.parent
-project_root_str = str(project_root)
-if project_root_str not in sys.path:
-    sys.path.insert(0, project_root_str)
+# Add paths: project root (for lib imports) and lib/server (for server package imports)
+import os
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_lib_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+if _lib_server not in sys.path:
+    sys.path.insert(0, _lib_server)
 
 from lib.config import ServerConfig
 from lib.mask_archive import mask_series_dir

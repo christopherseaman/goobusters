@@ -15,34 +15,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Find project root: directory containing both 'lib' and 'server'
-# Walk up from this file until we find a directory with both packages
-_current = Path(__file__).resolve()
-while _current != _current.parent:
-    if (_current / "lib").exists() and (_current / "server").exists():
-        break
-    _current = _current.parent
-else:
-    raise RuntimeError(
-        "Could not find project root (directory with 'lib' and 'server')"
-    )
+# Add paths: project root (for lib imports) and lib/server (for server package imports)
+_project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+_lib_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Add project root to Python path so imports work
-_project_root = str(_current)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
-
-# When running server/server.py directly, set __package__ so 'from server.api' works
-if __name__ == "__main__" and not __package__:
-    __package__ = "server"
+if _lib_server not in sys.path:
+    sys.path.insert(0, _lib_server)
 
 from flask import Flask
-
 from lib.config import ServerConfig, load_config
 from lib.mask_archive import mask_series_dir
-
-# Now we can import server modules using absolute imports
-# (they work because project_root is in sys.path)
 from server.api.routes import create_api_blueprint
 from server.storage.series_manager import SeriesManager
 from server.startup import initialize_server
@@ -151,9 +137,14 @@ def _run_retrack_worker_process(config: ServerConfig) -> None:
     from server.storage.series_manager import SeriesManager
     import logging
 
-    # Configure logging to append to server log/latest and also stdout
-    log_dir = Path(__file__).parent / "log"
-    latest_log = log_dir / "latest"
+    # Configure logging to append to repo root log/server and also stdout
+    import os
+
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    log_dir = Path(project_root) / "log"
+    latest_log = log_dir / "server"
     logging.basicConfig(
         level=logging.INFO,
         handlers=[
@@ -272,9 +263,9 @@ def write_pid(pid_file: Path) -> None:
 
 
 def update_latest_log_symlink(log_file: Path) -> None:
-    """Create or update symlink log/latest pointing to the current log file."""
+    """Create or update symlink log/server pointing to the current log file."""
     log_dir = log_file.parent
-    latest_link = log_dir / "latest"
+    latest_link = log_dir / "server"
 
     # Remove existing symlink if it exists
     if latest_link.exists() or latest_link.is_symlink():
@@ -283,7 +274,7 @@ def update_latest_log_symlink(log_file: Path) -> None:
         except OSError:
             pass  # Ignore errors removing old symlink
 
-    # Create new symlink
+    # Create new symlink (relative path so it works if log_dir is moved)
     try:
         latest_link.symlink_to(log_file.name)
     except OSError as e:
@@ -387,9 +378,13 @@ def main() -> None:
     pid_file = get_pid_file(config)
 
     # Set up logging to both file and console
-    # Log directory: log/ subdirectory from server.py location
-    server_dir = Path(__file__).parent
-    log_dir = server_dir / "log"
+    # Log directory: repo root log/
+    import os
+
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    log_dir = Path(project_root) / "log"
     log_dir.mkdir(exist_ok=True)
 
     # Allow daemon parent to pass a fixed log file to child to avoid churn
@@ -398,9 +393,12 @@ def main() -> None:
     if env_log_file:
         log_file = Path(env_log_file)
     else:
-        # Log filename: YYMMDD-HHMMSS.log (sortable, 24h format)
+        # Log filename: server_YYMMDD-HHMMSS.log (sortable, 24h format)
         timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-        log_file = log_dir / f"{timestamp}.log"
+        log_file = log_dir / f"server_{timestamp}.log"
+
+    # Create log file immediately so symlink works
+    log_file.touch(exist_ok=True)
 
     # Create/update symlink to latest log
     update_latest_log_symlink(log_file)
