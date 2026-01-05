@@ -179,6 +179,17 @@ html, body {
     box-shadow: 0 0 20px rgba(255, 193, 7, 0.5);
 }
 
+.control-btn.completed {
+    background: rgba(76, 175, 80, 0.8); /* Green background for completed */
+    border: 2px solid rgba(76, 175, 80, 1);
+    box-shadow: 0 0 20px rgba(76, 175, 80, 0.5);
+}
+
+.control-btn.completed:hover {
+    background: rgba(76, 175, 80, 1);
+    box-shadow: 0 0 30px rgba(76, 175, 80, 0.7);
+}
+
 .tool-btn.unsaved:hover {
     background: rgba(255, 193, 7, 1);
     box-shadow: 0 0 30px rgba(255, 193, 7, 0.7);

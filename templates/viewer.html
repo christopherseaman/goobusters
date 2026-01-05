@@ -151,10 +151,10 @@
             <div class="nav-section">
                 <h3>Select Video</h3>
                 <select id="videoSelect" class="video-select">
-                    {% for video in videos %}
+                    {% for video in videos|sort(attribute='exam_number') %}
                     <option value="{{ video.method }}|{{ video.study_uid }}|{{ video.series_uid }}"
                             {% if video == selected_video %}selected{% endif %}>
-                        {{ video.method }} - Exam {{ video.exam_number }}
+                        🔲 Exam {{ video.exam_number }}
                     </option>
                     {% endfor %}
                 </select>

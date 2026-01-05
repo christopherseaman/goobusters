@@ -100,9 +100,25 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
 
     @bp.get("/api/series")
     def list_series():
-        records = [
-            _serialize_series(item) for item in series_manager.list_series()
-        ]
+        """
+        Get all series with completion status and activity info.
+        Returns list of series with: study_uid, series_uid, exam_number, status, activity.
+        """
+        all_series = series_manager.list_series()
+        records = []
+        for item in all_series:
+            # Get full activity history (user_email -> timestamp)
+            activity = series_manager.activity_history(item.study_uid, item.series_uid)
+            
+            record = {
+                "study_uid": item.study_uid,
+                "series_uid": item.series_uid,
+                "exam_number": item.exam_number,
+                "series_number": item.series_number,
+                "status": item.status,  # "pending" or "completed"
+                "activity": activity,  # dict of user_email -> ISO timestamp
+            }
+            records.append(record)
         return jsonify(records)
 
     @bp.get("/api/dataset/version")
@@ -173,6 +189,11 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
             if not result:
                 return jsonify({"no_available_series": True}), 200
+            
+            # Mark activity when server selects a series for the user
+            # This ensures the selected series is immediately marked as active
+            series_manager.mark_activity(result.study_uid, result.series_uid, user_email)
+            
             return jsonify(_serialize_series(result))
         except Exception as exc:
             import traceback
@@ -553,7 +574,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     @bp.get("/api/video/<method>/<study_uid>/<series_uid>")
     def video(method: str, study_uid: str, series_uid: str):
         """
-        Return video metadata including total_frames for the viewer.
+        Return video metadata including total_frames and completion status for the viewer.
         """
         try:
             series = series_manager.get_series(study_uid, series_uid)
@@ -574,6 +595,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             "study_uid": study_uid,
             "series_uid": series_uid,
             "exam_number": series.exam_number,
+            "status": series.status,  # "pending" or "completed"
             "labels": labels,
             "masks_annotations": [],
             "modified_frames": {},
@@ -899,6 +921,11 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 f"[RESET] Warning: Cannot regenerate masks.tar - masks_dir does not exist or is empty: {masks_dir}"
             )
 
+        # Reset completion status to "pending" and clear activity tracking
+        series_manager.reopen(study_uid, series_uid)
+        series_manager.clear_activity(study_uid, series_uid)
+        print(f"[RESET] Reset completion status to 'pending' and cleared activity tracking")
+
         # Tracking status is computed from filesystem (checks for masks.tar)
         print(
             f"[RESET] Regenerated masks.tar - tracking status will be 'completed'"
@@ -945,6 +972,10 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
         flow_method = config.flow_method
         for series in all_series:
             try:
+                # Reset completion status to "pending" and clear activity tracking for all series
+                series_manager.reopen(series.study_uid, series.series_uid)
+                series_manager.clear_activity(series.study_uid, series.series_uid)
+                
                 mask_dir = mask_series_dir(
                     mask_root, flow_method, series.study_uid, series.series_uid
                 )

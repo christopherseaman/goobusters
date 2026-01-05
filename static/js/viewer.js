@@ -257,7 +257,7 @@ class AnnotationViewer {
         const confirmComplete = document.getElementById('confirmComplete');
         if (closeComplete) closeComplete.addEventListener('click', () => this.hideModal('completeModal'));
         if (cancelComplete) cancelComplete.addEventListener('click', () => this.hideModal('completeModal'));
-        if (confirmComplete) confirmComplete.addEventListener('click', () => this.confirmCompleteSeries());
+        if (confirmComplete) confirmComplete.addEventListener('click', () => this.confirmCompleteSeries(true));
 
         // Conflict modal
         const closeConflict = document.getElementById('closeConflict');
@@ -285,13 +285,15 @@ class AnnotationViewer {
         // Keep videoSelect for manual selection if needed, but wire Next/Prev to server
         const videoSelect = document.getElementById('videoSelect');
         if (videoSelect) {
-            videoSelect.addEventListener('change', (e) => {
-            const [method, studyUid, seriesUid] = e.target.value.split('|');
-            this.loadVideo(method, studyUid, seriesUid);
-        });
+            videoSelect.addEventListener('change', async (e) => {
+                const [method, studyUid, seriesUid] = e.target.value.split('|');
+                // Mark activity immediately when selecting from dropdown
+                await this.markSeriesActivity(studyUid, seriesUid);
+                await this.loadVideo(method, studyUid, seriesUid);
+            });
         }
 
-        document.getElementById('markComplete').addEventListener('click', () => this.markCompleteAndNext());
+        document.getElementById('markComplete').addEventListener('click', () => this.showCompleteModal());
 
         // Playback controls
         document.getElementById('prevFrame').addEventListener('click', () => this.navigateFrame(-1));
@@ -450,6 +452,7 @@ class AnnotationViewer {
             study_uid: data.study_uid || studyUid,
             series_uid: data.series_uid || seriesUid,
             exam_number: data.exam_number || 'Unknown',
+            status: data.status || 'pending',  // "pending" or "completed"
             labels: data.labels || []
         };
         
@@ -1367,7 +1370,27 @@ class AnnotationViewer {
                         this.render();
                     }
 
-    async confirmCompleteSeries() {
+    /**
+     * Show completion confirmation modal.
+     */
+    showCompleteModal() {
+        if (!this.currentVideo) {
+            return;
+        }
+        // If already completed, show reopen option instead
+        if (this.videoData && this.videoData.status === 'completed') {
+            if (confirm('This series is already marked as complete. Reopen it for editing?')) {
+                this.reopenSeries();
+            }
+            return;
+        }
+        this.showModal('completeModal');
+    }
+
+    /**
+     * Confirm completion and optionally load next series.
+     */
+    async confirmCompleteSeries(loadNext = true) {
         // Hide modal immediately
         this.hideModal('completeModal');
 
@@ -1386,11 +1409,249 @@ class AnnotationViewer {
                 alert(`Failed to mark complete: ${data.error || resp.status}`);
                 return;
             }
-            // Optional: simple toast via alert for now
-            alert('Series marked as done on server.');
+            
+            // Refresh status from server (no client caching)
+            await this.refreshCompletionStatus();
+            this.updateCompletionIndicator();
+            // Refresh all series statuses to update dropdown
+            await this.refreshAllSeriesStatuses();
+            
+            if (loadNext) {
+                // Get next series (server will exclude this completed series)
+                await this.loadNextSeries();
+            } else {
+                alert('Series marked as complete.');
+            }
         } catch (e) {
             alert(`Failed to mark complete: ${e.message}`);
         }
+    }
+
+    /**
+     * Reopen a completed series for editing.
+     */
+    async reopenSeries() {
+        if (!this.currentVideo) {
+            return;
+        }
+        
+        const { studyUid, seriesUid } = this.currentVideo;
+        try {
+            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/reopen`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                alert(`Failed to reopen series: ${data.error || resp.status}`);
+                return;
+            }
+            
+            // Refresh status from server (no client caching)
+            await this.refreshCompletionStatus();
+            this.updateCompletionIndicator();
+            // Refresh all series statuses to update dropdown
+            await this.refreshAllSeriesStatuses();
+            
+            alert('Series reopened for editing.');
+        } catch (e) {
+            alert(`Failed to reopen series: ${e.message}`);
+        }
+    }
+
+    /**
+     * Update completion status indicator in UI.
+     */
+    updateCompletionIndicator() {
+        const markCompleteBtn = document.getElementById('markComplete');
+        const examBadge = document.getElementById('examBadge');
+        
+        if (!this.videoData) {
+            return;
+        }
+        
+        const isCompleted = this.videoData.status === 'completed';
+        
+        // Update button appearance and tooltip
+        if (markCompleteBtn) {
+            if (isCompleted) {
+                markCompleteBtn.classList.add('completed');
+                markCompleteBtn.title = 'Series Complete - Click to Reopen';
+            } else {
+                markCompleteBtn.classList.remove('completed');
+                markCompleteBtn.title = 'Mark Complete & Get Next Series';
+            }
+        }
+        
+        // Update exam badge to show completion status
+        if (examBadge) {
+            const examText = examBadge.textContent;
+            if (isCompleted) {
+                if (!examText.includes('✓')) {
+                    examBadge.textContent = examText.replace(/#/, '#✓ ');
+                }
+            } else {
+                examBadge.textContent = examText.replace('#✓ ', '#');
+            }
+        }
+    }
+
+    /**
+     * Update video select dropdown to show current series as selected.
+     */
+    updateVideoSelect() {
+        const videoSelect = document.getElementById('videoSelect');
+        if (!videoSelect || !this.currentVideo) {
+            return;
+        }
+        
+        const { method, studyUid, seriesUid } = this.currentVideo;
+        const optionValue = `${method}|${studyUid}|${seriesUid}`;
+        
+        // Find and select the matching option
+        for (let i = 0; i < videoSelect.options.length; i++) {
+            if (videoSelect.options[i].value === optionValue) {
+                videoSelect.selectedIndex = i;
+                break;
+            }
+        }
+    }
+
+    /**
+     * Refresh completion status from server (no client caching).
+     * Updates videoData.status to reflect server state.
+     */
+    async refreshCompletionStatus() {
+        if (!this.currentVideo) {
+            return;
+        }
+        
+        const { studyUid, seriesUid } = this.currentVideo;
+        
+        try {
+            // Fetch fresh status from server
+            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                const serverStatus = data.status || 'pending';
+                
+                // Update local videoData (this is the only place we store status, no caching)
+                if (this.videoData) {
+                    this.videoData.status = serverStatus;
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to refresh completion status from server:', e);
+        }
+    }
+
+    /**
+     * Refresh all series statuses from server and update dropdown.
+     * This ensures dropdown reflects server state after operations like reset all.
+     */
+    async refreshAllSeriesStatuses() {
+        const videoSelect = document.getElementById('videoSelect');
+        if (!videoSelect) {
+            return;
+        }
+        
+        try {
+            // Fetch all series with statuses and activity from server
+            const resp = await fetch('/proxy/api/series');
+            if (!resp.ok) {
+                console.warn('Failed to fetch series list:', resp.status);
+                return;
+            }
+            
+            const allSeries = await resp.json();
+            const currentUserEmail = this.getUserEmail();
+            const now = new Date();
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            // Create a map of (study_uid, series_uid) -> {status, activity}
+            const seriesMap = new Map();
+            for (const series of allSeries) {
+                const key = `${series.study_uid}|${series.series_uid}`;
+                seriesMap.set(key, {
+                    status: series.status || 'pending',
+                    activity: series.activity || {}
+                });
+            }
+            
+            // Helper to determine indicator emoji based on priority
+            const getIndicator = (status, activity) => {
+                // Priority 1: Completed
+                if (status === 'completed') {
+                    return '✅';
+                }
+                
+                // Priority 2: Active with someone (current user or other) in last 24h
+                if (activity && Object.keys(activity).length > 0) {
+                    // Find most recent activity
+                    let mostRecentUser = null;
+                    let mostRecentTime = null;
+                    for (const [userEmail, timestamp] of Object.entries(activity)) {
+                        const activityTime = new Date(timestamp);
+                        if (!mostRecentTime || activityTime > mostRecentTime) {
+                            mostRecentTime = activityTime;
+                            mostRecentUser = userEmail;
+                        }
+                    }
+                    
+                    if (mostRecentTime && mostRecentTime >= twentyFourHoursAgo) {
+                        // Active in last 24h
+                        if (mostRecentUser === currentUserEmail) {
+                            // Priority 3: Last active with current user but not complete
+                            return '✏️';
+                        } else {
+                            // Priority 2: Last active with someone else in last 24h
+                            return '⚠️';
+                        }
+                    }
+                }
+                
+                // Priority 4: Inactive (no recent activity)
+                return '🔲';
+            };
+            
+            // Update all dropdown options
+            for (let i = 0; i < videoSelect.options.length; i++) {
+                const option = videoSelect.options[i];
+                const [method, studyUid, seriesUid] = option.value.split('|');
+                const key = `${studyUid}|${seriesUid}`;
+                const seriesData = seriesMap.get(key);
+                
+                if (!seriesData) {
+                    // Series not found in API response, use default
+                    const match = option.text.match(/Exam (\d+)/);
+                    if (match) {
+                        option.text = `🔲 Exam ${match[1]}`;
+                    }
+                    continue;
+                }
+                
+                // Extract exam number from current text
+                const match = option.text.match(/Exam (\d+)/);
+                if (match) {
+                    const examNum = match[1];
+                    const indicator = getIndicator(seriesData.status, seriesData.activity);
+                    option.text = `${indicator} Exam ${examNum}`;
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to refresh all series statuses:', e);
+        }
+    }
+
+    /**
+     * Update video select dropdown option text to reflect current completion status.
+     * @deprecated Use refreshAllSeriesStatuses() instead for better consistency.
+     */
+    updateVideoSelectDropdown() {
+        // For now, just refresh all statuses to ensure consistency
+        this.refreshAllSeriesStatuses();
     }
 
     async confirmResetRetrack() {
@@ -1443,23 +1704,12 @@ class AnnotationViewer {
             this.currentFrame = -1;
             await this.goToFrame(currentFrameNum);
             
-            // Verify we're on the right series by calling /api/series/next (should return current series)
-            // This ensures activity is recorded and the series is marked as most recently active
-            const seriesResp = await fetch('/proxy/api/series/next', {
-                headers: {
-                    'X-User-Email': this.getUserEmail() || ''
-                }
-            });
-            if (seriesResp.ok) {
-                const seriesData = await seriesResp.json();
-                if (seriesData.study_uid && seriesData.series_uid) {
-                    // If server returns a different series, it means activity tracking isn't working correctly
-                    // But we've already reloaded the current series, so just log a warning
-                    if (seriesData.study_uid !== studyUid || seriesData.series_uid !== seriesUid) {
-                        console.warn(`Server returned different series after reset: ${seriesData.study_uid}/${seriesData.series_uid} vs current ${studyUid}/${seriesUid}`);
-                    }
-                }
-            }
+            // Refresh completion status and activity indicators from server (no client caching)
+            await this.refreshCompletionStatus();
+            await this.refreshAllSeriesStatuses();
+            
+            // Update UI to reflect new status
+            this.updateCompletionIndicator();
             
             this.hideRetrackLoading();
         } catch (e) {
@@ -1497,6 +1747,9 @@ class AnnotationViewer {
                 const { studyUid, seriesUid } = this.currentVideo;
                 const videoKey = `${studyUid}__${seriesUid}`;
                 
+                // Mark activity immediately after reset (before reloading)
+                await this.markSeriesActivity(studyUid, seriesUid);
+                
                 // Clear all local edits
                 this.modifiedFrames.delete(videoKey);
                 this.hasUnsavedChanges = false;
@@ -1509,26 +1762,18 @@ class AnnotationViewer {
                 
                 // Reload current series directly (don't call loadNextSeries - stay on current series)
                 const currentFrameNum = this.currentFrame;
-                await this.loadVideoData();
+                await this.loadVideoData(); // This will fetch fresh status from server
                 await this.loadFramesArchive(true);
                 this.currentFrame = -1;
                 await this.goToFrame(currentFrameNum);
                 
-                // Verify we're on the right series by calling /api/series/next (should return current series)
-                const seriesResp = await fetch('/proxy/api/series/next', {
-                    headers: {
-                        'X-User-Email': this.getUserEmail() || ''
-                    }
-                });
-                if (seriesResp.ok) {
-                    const seriesData = await seriesResp.json();
-                    if (seriesData.study_uid && seriesData.series_uid) {
-                        // If server returns a different series, it means activity tracking isn't working correctly
-                        if (seriesData.study_uid !== studyUid || seriesData.series_uid !== seriesUid) {
-                            console.warn(`Server returned different series after reset all: ${seriesData.study_uid}/${seriesData.series_uid} vs current ${studyUid}/${seriesUid}`);
-                        }
-                    }
-                }
+                // Refresh completion status from server (no client caching)
+                await this.refreshCompletionStatus();
+                
+                // Update UI to reflect new status
+                this.updateCompletionIndicator();
+                // Refresh all series statuses to update dropdown (after activity is marked)
+                await this.refreshAllSeriesStatuses();
             }
             
             this.hideRetrackLoading();
@@ -1659,6 +1904,10 @@ class AnnotationViewer {
                 return;
             }
             
+            // Mark activity immediately when server selects a series for us
+            // This happens before any local checks or loading
+            await this.markSeriesActivity(data.study_uid, data.series_uid);
+            
             // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
             // We need to determine the method - for now, use flow_method from config or default
             // The server doesn't return method, so we'll need to infer it or use a default
@@ -1677,7 +1926,7 @@ class AnnotationViewer {
             }
             
             // Load the series from server
-            // Note: loadVideo() will start activity pings automatically
+            // Note: loadVideo() will also mark activity (redundant but safe)
             await this.loadVideo(method, data.study_uid, data.series_uid);
         } catch (error) {
             console.error('Error loading next series:', error);
@@ -1696,38 +1945,6 @@ class AnnotationViewer {
      * Mark current series as complete (note user), then get next series.
      * This replaces the old "next series" button - now it marks complete first.
      */
-    async markCompleteAndNext() {
-        if (!this.currentVideo || !this.currentVideo.studyUid) {
-            return;
-        }
-        
-        const studyUid = this.currentVideo.studyUid;
-        const seriesUid = this.currentVideo.seriesUid;
-        const userEmail = this.getUserEmail();
-        
-        try {
-            // Mark series as complete (notes the user who completed it)
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/complete`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-User-Email': userEmail || ''
-                },
-            });
-            
-            if (!resp.ok) {
-                const data = await resp.json().catch(() => ({}));
-                alert(`Failed to mark complete: ${data.error || resp.status}`);
-                return;
-            }
-            
-            // Get next series (server will exclude this completed series)
-            await this.loadNextSeries();
-        } catch (error) {
-            console.error('Error marking complete and loading next:', error);
-            alert(`Failed to mark complete: ${error.message}`);
-        }
-    }
     
     /**
      * Get user email from localStorage (set during init).
@@ -1769,17 +1986,17 @@ class AnnotationViewer {
     }
     
     /**
-     * Send a single activity ping to the server.
-     * This marks the current series as "actively being viewed".
+     * Mark a series as active with the current user.
+     * Can be called with specific study/series UIDs or uses current video.
      */
-    async sendActivityPing() {
-        if (!this.currentVideo || !this.currentVideo.studyUid) {
+    async markSeriesActivity(studyUid, seriesUid) {
+        if (!studyUid || !seriesUid) {
             return;
         }
         
         try {
             const response = await fetch(
-                `/proxy/api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}/activity`,
+                `/proxy/api/series/${studyUid}/${seriesUid}/activity`,
                 {
                     method: 'POST',
                     headers: {
@@ -1789,13 +2006,26 @@ class AnnotationViewer {
             );
             
             if (!response.ok) {
-                console.warn(`Activity ping failed: ${response.status} ${response.statusText}`);
+                console.warn(`Activity mark failed: ${response.status} ${response.statusText}`);
             } else {
-                console.debug('Activity ping sent successfully');
+                console.debug('Activity marked successfully');
             }
         } catch (error) {
-            console.warn('Failed to send activity ping:', error);
+            console.warn('Activity mark error:', error);
         }
+    }
+    
+    /**
+     * Send a single activity ping to the server.
+     * This marks the current series as "actively being viewed".
+     */
+    async sendActivityPing() {
+        if (!this.currentVideo || !this.currentVideo.studyUid) {
+            return;
+        }
+        
+        // Use the shared method
+        await this.markSeriesActivity(this.currentVideo.studyUid, this.currentVideo.seriesUid);
     }
 
     getVideoKey(method, studyUid, seriesUid) {
@@ -1814,6 +2044,9 @@ class AnnotationViewer {
         // Stop activity pings for previous video (if any)
         this.stopActivityPings();
         
+        // Mark activity immediately when viewing a series
+        await this.markSeriesActivity(studyUid, seriesUid);
+        
         this.frameImage = null;
         this.frameCache.clear();
         this.framesArchive = null;
@@ -1827,6 +2060,9 @@ class AnnotationViewer {
         await this.goToFrame(0);
         this.updateSaveButtonState();
         this.updateVideoInfo();
+        this.updateCompletionIndicator(); // Update completion status indicator
+        this.updateVideoSelect(); // Update dropdown to show current series
+        await this.refreshAllSeriesStatuses(); // Update all indicators with activity data
         
         // Start activity pings for this video (every 30s)
         this.startActivityPings();
@@ -1995,7 +2231,13 @@ class AnnotationViewer {
         }
     }
 
-    showModal(modalId) {
+    async showModal(modalId) {
+        // If showing navigation modal, refresh series statuses first to ensure fresh data
+        if (modalId === 'navModal') {
+            await this.refreshAllSeriesStatuses();
+        }
+        
+        // Show modal after statuses are refreshed (for navModal) or immediately (for others)
         document.getElementById(modalId).classList.add('active');
     }
 

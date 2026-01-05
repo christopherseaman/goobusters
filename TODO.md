@@ -2,16 +2,64 @@
 
 ## To Do
 
+### Series Completion Workflow
+- [x] Add completion status indicator to viewer UI (show "Completed" badge/icon)
+- [x] Add "Mark as Complete" button/action in viewer
+- [x] Update series list/navigation to display completion status
+- [x] Ensure `/api/series/next` skips completed series (verify smart selection logic)
+- [x] Add "Reopen" functionality to allow re-editing completed series
+- [ ] Test completion workflow end-to-end (mark complete → verify skipped in next → reopen → verify available again)
+
+### Multiplayer Testing & Bugfixing
+- [ ] Test concurrent editing conflicts (version ID validation)
+  - [ ] Two users editing same series simultaneously
+  - [ ] Verify HTTP 409 conflict on save when version mismatch
+  - [ ] Verify conflict warning displayed to user
+- [ ] Test activity tracking (keep-alive mechanism)
+  - [ ] Verify activity timestamps update on series access
+  - [ ] Verify recent activity warnings shown to other users
+  - [ ] Test activity timeout/cleanup logic
+- [ ] Test smart selection heuristics (`RECENT_VIEW_THRESHOLD_MINUTES`)
+  - [ ] Verify recently active series are skipped by `/api/series/next`
+  - [ ] Verify fallback to longest-since-viewed when all recent
+- [ ] Test retrack queue conflicts
+  - [ ] Verify temp version blocks concurrent saves during retrack
+  - [ ] Verify timeout cleanup of stale temp versions
+  - [ ] Test parallel retrack processing (multiple series simultaneously)
+- [ ] Document multiplayer edge cases and expected behaviors
+
+### iPad App
+- [ ] **C1: Runtime wrapper** - Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView
+  - [ ] Set up Apple dev account if needed
+  - [ ] Choose runtime (Pyto vs Pyodide-on-iOS)
+  - [ ] Create native app wrapper
+  - [ ] Integrate shared config loader
+  - [ ] Build IPA, test on physical iPad
+  - [ ] Verify Python process starts and serves local HTTP port
+- [ ] **C2: MD.ai sync** - Implement `client/mdai_client.py` to auth, list series, download exams, and store under `client_cache/data`
+  - [ ] Verify MD.ai SDK integration works on iPad
+  - [ ] Test downloading real exam (>=500 MB) over Wi-Fi
+  - [ ] Hash compare with MD.ai CLI output for validation
+  - [ ] Handle offline/network error scenarios
+- [ ] **C3: Frame extraction** - Use ffmpeg/opencv to split MP4 to frames, maintain manifest consumed by WebView; auto-extract after dataset sync
+  - [ ] Bundle ffmpeg binary for iPad
+  - [ ] Test frame extraction on downloaded video
+  - [ ] Verify frame count matches metadata
+  - [ ] Ensure frames accessible via `file://` path or localhost
+  - [ ] Verify post-sync auto-extraction
+  - [ ] Fix `context.frames` inconsistency (remove unused FrameExtractor references or implement properly)
+- [ ] Test end-to-end iPad workflow: download → extract → view → edit → save → retrack
+
+### UI/UX Improvements
+- [ ] Navigate series through current series indicator (add prev/next series navigation, show current position in series list)
+- [ ] Simplify/consolidate right toolbar (reduce button clutter, combine related actions, improve organization)
+
+### Other Tasks
 - [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
-- [ ] Retrack progress by frame (seems mocked right now)
-- [ ] Retrack remove modal interrupts
-- [ ] Retrack on Save
 - [ ] Combine (i) and video button
 - [ ] Change revert button behavior? Revert to mdai? Or last saved?
 - [ ] Indicator for verified empty frames (EMPTY_ID)
 - [ ]Ensure we are consistently using 0-based frame counting, to be consistent with mdai json
-- [ ] Multi-player? Worry about caching
-- [ ] Fix brush size preview location (shouldn't move during resize previews)
 - [ ] Handle series with no fluid annotations gracefully (serve blank masks/metadata so client can open; no tracking needed)
   - [ ] Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frameNumber 0 (`"id": "A_gp58a1"`) & 41 (`"id": "A_AYxjY2"`) of 143, 0-based counting)"
   - StudyInstanceUID = "1.2.826.0.1.3680043.8 498. 21582572478922879563110991046360588727"
@@ -67,3 +115,4 @@
 - [x] Performance tuning? Anything to be done with cpu vs gpu accel or parallelization? (reviewed, already optimized)
 - [x] dot.env.example update for new/modified options (added TEST_STUDY_UID, TEST_SERIES_UID, improved comments)
 - [x] `tracked_annotations` should include TRACK_ID, EMPTY_ID, and LABEL_ID (now uses actual environment variable values instead of hardcoded strings)
+- [x] Retrack on Save (save automatically triggers retrack; removed separate retrack button)

@@ -287,6 +287,20 @@ class SeriesManager:
             self._write_status(study_uid, series_uid, status="pending")
             return self.get_series(study_uid, series_uid)
 
+    def clear_activity(
+        self, study_uid: str, series_uid: str
+    ) -> SeriesMetadata:
+        """Clear all activity tracking for a series."""
+        with self._lock:
+            status_path = self._status_path(study_uid, series_uid)
+            data = self._read_status(study_uid, series_uid)
+            # Clear activity but preserve status
+            data["activity"] = {}
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            with status_path.open("w") as f:
+                json.dump(data, f, indent=2)
+            return self.get_series(study_uid, series_uid)
+
     def mark_activity(
         self, study_uid: str, series_uid: str, user_email: Optional[str]
     ) -> SeriesMetadata:

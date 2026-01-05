@@ -83,6 +83,7 @@ def create_app(
         """
         Build the list of locally available series for the viewer.
         No caching - always fetch fresh from server API.
+        Fetches completion status from server for each series.
         """
         try:
             series = context.dataset.list_local_series()
@@ -94,7 +95,8 @@ def create_app(
             {"labelId": config.empty_id, "labelName": "Empty"},
         ]
 
-        return [
+        # Build base video list
+        videos = [
             {
                 "method": config.flow_method,
                 "study_uid": info.study_uid,
@@ -102,9 +104,37 @@ def create_app(
                 "exam_number": info.exam_number,
                 "series_number": info.series_number,
                 "labels": labels,
+                "status": "pending",  # Default, will be updated from server
             }
             for info in series
         ]
+
+        # Fetch completion status from server for each series
+        try:
+            resp = context.http_client.get(
+                f"{config.server_url.rstrip('/')}/api/series",
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                server_series = resp.json()
+                # Create a lookup map by (study_uid, series_uid)
+                status_map = {
+                    (s["study_uid"], s["series_uid"]): s.get("status", "pending")
+                    for s in server_series
+                }
+                # Update videos with server status
+                for video in videos:
+                    key = (video["study_uid"], video["series_uid"])
+                    if key in status_map:
+                        video["status"] = status_map[key]
+        except Exception:
+            # Non-fatal: continue with default "pending" status
+            pass
+
+        # Sort by exam_number
+        videos.sort(key=lambda v: v["exam_number"] or 0)
+
+        return videos
 
     def _find_series_info(study_uid: str, series_uid: str):
         """
