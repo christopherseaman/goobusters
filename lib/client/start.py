@@ -281,8 +281,10 @@ def create_app(
     @app.get("/api/video/<method>/<study_uid>/<series_uid>")
     def api_video(method: str, study_uid: str, series_uid: str):
         """
-        Return video metadata including total_frames from server.
+        Proxy video metadata from server (no local caching).
+        Server is source of truth for masks_annotations and modified_frames.
         """
+        # Verify series exists locally (for dataset sync check)
         info = _find_series_info(study_uid, series_uid)
         if not info:
             return jsonify({"error": "Series not found locally"}), 404
@@ -292,28 +294,26 @@ def create_app(
         except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
 
-        # Get total_frames from server
+        # Proxy entire response from server (server is source of truth)
         try:
             server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
             resp = context.http_client.get(server_url, timeout=10)
             if resp.status_code == 200:
-                server_data = resp.json()
-                total_frames = server_data.get("total_frames", 0)
+                # Return server response directly (no local modification)
+                return Response(
+                    resp.content,
+                    status=resp.status_code,
+                    headers={"Content-Type": "application/json"},
+                )
             else:
-                total_frames = 0
-        except Exception:
-            total_frames = 0
-
-        return jsonify({
-            "total_frames": total_frames,
-            "method": config.flow_method,
-            "study_uid": study_uid,
-            "series_uid": series_uid,
-            "exam_number": info.get("exam_number"),
-            "labels": info.get("labels", []),
-            "masks_annotations": [],
-            "modified_frames": {},
-        })
+                # Server error - return error response
+                return Response(
+                    resp.content,
+                    status=resp.status_code,
+                    headers={"Content-Type": "application/json"},
+                )
+        except Exception as exc:
+            return jsonify({"error": f"Failed to fetch from server: {exc}"}), 500
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
     def api_frames(method: str, study_uid: str, series_uid: str):

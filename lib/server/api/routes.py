@@ -894,6 +894,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
 
         # Reset version_id in frametype.json to None (if it exists)
+        # Do this BEFORE regenerating masks.tar so the regenerated archive has version_id=None
         frametype_path = mask_dir / "frametype.json"
         if frametype_path.exists():
             try:
@@ -903,6 +904,8 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     f.seek(0)
                     f.truncate()
                     json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())  # Ensure written to disk
                 print(f"[RESET] Reset version_id in frametype.json to None")
             except (json.JSONDecodeError, OSError):
                 pass
@@ -973,11 +976,19 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             )
 
         # Reset completion status to "pending" and clear activity tracking
+        # Do this AFTER regenerating masks.tar to ensure clean state
         series_manager.reopen(study_uid, series_uid)
         series_manager.clear_activity(study_uid, series_uid)
         print(
             f"[RESET] Reset completion status to 'pending' and cleared activity tracking"
         )
+
+        # Force series_manager to refresh its view of this series (version_id should now be None)
+        # This ensures subsequent reads reflect the reset state
+        try:
+            _ = series_manager.get_series(study_uid, series_uid)
+        except Exception:
+            pass  # Non-fatal if refresh fails
 
         # Tracking status is computed from filesystem (checks for masks.tar)
         print(

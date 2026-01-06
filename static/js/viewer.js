@@ -447,6 +447,7 @@ class AnnotationViewer {
             throw new Error('No current video set');
         }
         const { method, studyUid, seriesUid } = this.currentVideo;
+        // Client backend proxies to server (no local caching)
         const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
         const data = await response.json();
         this.totalFrames = data.total_frames;
@@ -1682,15 +1683,18 @@ class AnnotationViewer {
             
             // Reload current series with reset masks (initial tracking)
             // Clear ALL caches first
-                    this.frameCache.clear();
-                    this.framesArchive = null;
-                    this.masksArchive = {};
+            this.frameCache.clear();
+            this.framesArchive = null;
+            this.masksArchive = {};
+            // Clear videoData to force fresh fetch from server (no client caching)
+            this.videoData = null;
 
             // Reload current series directly (don't call loadNextSeries - stay on current series)
             // The user was just active on this series, so it should be returned by /api/series/next
             // But to be safe, reload the current series directly first, then verify with /api/series/next
             const currentFrameNum = this.currentFrame;
-                    await this.loadVideoData();
+            // Force fresh fetch by skipping modified_frames (they're gone after reset)
+            await this.loadVideoData(true); // skipModifiedFrames = true
             await this.loadFramesArchive();
             this.currentFrame = -1;
             await this.goToFrame(currentFrameNum);
@@ -1885,8 +1889,14 @@ class AnnotationViewer {
                 return;
             }
             
-            // Mark activity immediately when server selects a series for us
-            // This happens before any local checks or loading
+            // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
+            // We need to determine the method - for now, use flow_method from config or default
+            // The server doesn't return method, so we'll need to infer it or use a default
+            // For now, assume method is 'dis' (the flow method)
+            const method = 'dis'; // TODO: Get from server response or config
+            
+            // Mark activity IMMEDIATELY when server selects a series (before any local checks)
+            // This ensures other clients see activity right away
             const activityResponse = await this.markSeriesActivity(data.study_uid, data.series_uid);
             
             // Update warnings from the activity response (includes updated activity data)
@@ -1896,12 +1906,6 @@ class AnnotationViewer {
                     await this.updateMultiplayerWarning(activityData);
                 }
             }
-            
-            // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
-            // We need to determine the method - for now, use flow_method from config or default
-            // The server doesn't return method, so we'll need to infer it or use a default
-            // For now, assume method is 'dis' (the flow method)
-            const method = 'dis'; // TODO: Get from server response or config
             
             // Check if series exists locally before trying to load
             // The client needs to have synced its dataset to include this series
@@ -2169,6 +2173,7 @@ class AnnotationViewer {
 
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
+            // Client backend proxies to server (no local caching)
             const url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
             const response = await fetch(url);
             
@@ -2193,6 +2198,7 @@ class AnnotationViewer {
             }
 
             // Load frames archive (.tar format, no gzip)
+            // Client backend proxies to server (no local caching)
             const framesArchiveResponse = await fetch(framesUrl);
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesTarData = new Uint8Array(framesArrayBuffer);
@@ -2222,6 +2228,7 @@ class AnnotationViewer {
             // Load masks archive (.tar format, no gzip) - get version ID from headers
             this.masksArchive = {};
             if (masksUrl) {
+                // Client backend proxies to server (no local caching)
                 const masksArchiveResponse = await fetch(masksUrl);
                 
                 if (!masksArchiveResponse.ok) {
