@@ -47,10 +47,8 @@ class ClientContext:
         # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
         # Disable all caching - clients should never cache anything
         # httpx doesn't cache by default, but explicitly disable connection pooling
-        # Create http client with connection timeout separate from read timeout
-        # This prevents hanging if server isn't ready
         self.http_client = httpx.Client(
-            timeout=httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=60.0),
+            timeout=60,
             follow_redirects=True,
             limits=httpx.Limits(
                 max_keepalive_connections=0, max_connections=100
@@ -246,10 +244,9 @@ def create_app(
             return jsonify({"error": str(exc)}), 404
 
         # Proxy entire response from server (server is source of truth)
-        # But if server isn't available, return basic metadata from local data
         try:
             server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
-            resp = context.http_client.get(server_url, timeout=httpx.Timeout(connect=2.0, read=10.0))
+            resp = context.http_client.get(server_url, timeout=10)
             if resp.status_code == 200:
                 # Return server response directly (no local modification)
                 return Response(
@@ -264,30 +261,7 @@ def create_app(
                     status=resp.status_code,
                     headers={"Content-Type": "application/json"},
                 )
-        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException) as exc:
-            # Server not available - return basic metadata so frontend can load video
-            logger = logging.getLogger(__name__)
-            logger.debug(f"Server not available for video metadata, using local fallback: {exc}")
-            # Return minimal response so frontend can at least load the video
-            # Frontend will retry server requests when server becomes available
-            return jsonify({
-                "total_frames": 0,  # Will be updated when server is available
-                "method": method,
-                "study_uid": study_uid,
-                "series_uid": series_uid,
-                "exam_number": info.exam_number if info else None,
-                "status": "pending",
-                "labels": [
-                    {"labelId": config.label_id, "labelName": "Fluid"},
-                    {"labelId": config.empty_id, "labelName": "Empty"},
-                ],
-                "masks_annotations": [],
-                "modified_frames": {},
-            })
         except Exception as exc:
-            # Other errors - log and return error
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error proxying video metadata: {exc}", exc_info=True)
             return jsonify({"error": f"Failed to fetch from server: {exc}"}), 500
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
