@@ -123,13 +123,20 @@ def create_app(
 
         # Fetch completion status and activity from server for each series
         # Always fetch fresh - never cache activity data locally
+        # Force a fresh request by creating a new client for this request
         try:
-            resp = context.http_client.get(
-                f"{config.server_url.rstrip('/')}/api/series",
+            # Use a fresh httpx client to avoid any connection reuse or caching
+            with httpx.Client(
                 timeout=10,
-            )
-            if resp.status_code == 200:
-                server_series = resp.json()
+                limits=httpx.Limits(
+                    max_keepalive_connections=0, max_connections=1
+                ),
+            ) as fresh_client:
+                resp = fresh_client.get(
+                    f"{config.server_url.rstrip('/')}/api/series",
+                )
+                if resp.status_code == 200:
+                    server_series = resp.json()
                 # Create a lookup map by (study_uid, series_uid)
                 server_data_map = {
                     (s["study_uid"], s["series_uid"]): {
@@ -654,20 +661,40 @@ def create_app(
             proxy_headers = headers.copy()
 
             # Create a fresh request to avoid any connection reuse or caching
-            resp = context.http_client.request(
-                request.method,
-                url,
-                params=request.args,
-                data=data,
-                json=json_payload,
-                files=files,
-                headers=proxy_headers,
-                timeout=60,
-                follow_redirects=True,
-            )
-
-            # Ensure we read the full response content to avoid any streaming/caching issues
-            content = resp.content
+            # For /api/series, use a completely fresh client to ensure no caching
+            if subpath == "api/series":
+                with httpx.Client(
+                    timeout=60,
+                    limits=httpx.Limits(
+                        max_keepalive_connections=0, max_connections=1
+                    ),
+                ) as fresh_client:
+                    resp = fresh_client.request(
+                        request.method,
+                        url,
+                        params=request.args,
+                        data=data,
+                        json=json_payload,
+                        files=files,
+                        headers=proxy_headers,
+                        follow_redirects=True,
+                    )
+                    # Read content immediately while response is still valid
+                    content = resp.content
+            else:
+                resp = context.http_client.request(
+                    request.method,
+                    url,
+                    params=request.args,
+                    data=data,
+                    json=json_payload,
+                    files=files,
+                    headers=proxy_headers,
+                    timeout=60,
+                    follow_redirects=True,
+                )
+                # Ensure we read the full response content to avoid any streaming/caching issues
+                content = resp.content
 
             # Debug: Log response size and first 200 chars for /api/series
             if subpath == "api/series":
