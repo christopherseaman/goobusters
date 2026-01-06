@@ -1576,28 +1576,30 @@ class AnnotationViewer {
                     return '✅';
                 }
                 
-                // Priority 2: Active with someone (current user or other) in last 24h
+                // Priority 2: Other user active in last 24h (trumps current user activity)
                 if (activity && Object.keys(activity).length > 0) {
-                    // Find most recent activity
-                    let mostRecentUser = null;
-                    let mostRecentTime = null;
+                    let hasOtherUserActivity = false;
+                    let hasCurrentUserActivity = false;
+                    
                     for (const [userEmail, timestamp] of Object.entries(activity)) {
                         const activityTime = new Date(timestamp);
-                        if (!mostRecentTime || activityTime > mostRecentTime) {
-                            mostRecentTime = activityTime;
-                            mostRecentUser = userEmail;
+                        if (activityTime >= twentyFourHoursAgo) {
+                            if (userEmail === currentUserEmail) {
+                                hasCurrentUserActivity = true;
+                            } else {
+                                hasOtherUserActivity = true;
+                            }
                         }
                     }
                     
-                    if (mostRecentTime && mostRecentTime >= twentyFourHoursAgo) {
-                        // Active in last 24h
-                        if (mostRecentUser === currentUserEmail) {
-                            // Priority 3: Last active with current user but not complete
-                            return '🖌️';
-                        } else {
-                            // Priority 2: Last active with someone else in last 24h
-                            return '⚠️';
-                        }
+                    // Priority 2: Other user active in last 24h (warning trumps current user)
+                    if (hasOtherUserActivity) {
+                        return '⚠️';
+                    }
+                    
+                    // Priority 3: Only current user active in last 24h
+                    if (hasCurrentUserActivity) {
+                        return '🖌️';
                     }
                 }
                 
