@@ -1593,7 +1593,7 @@ class AnnotationViewer {
                         // Active in last 24h
                         if (mostRecentUser === currentUserEmail) {
                             // Priority 3: Last active with current user but not complete
-                            return '✏️';
+                            return '🖌️';
                         } else {
                             // Priority 2: Last active with someone else in last 24h
                             return '⚠️';

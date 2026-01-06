@@ -419,11 +419,13 @@ def create_app(
         if (
             client_version
             and isinstance(server_version, dict)
-            and "annotations_mtime_ns" in server_version
+            and "annotations_size" in server_version
         ):
+            # Compare file size instead of mtime - mtime differs across machines
+            # even when files are identical. Size is a better indicator of sync.
             in_sync = (
-                client_version["annotations_mtime_ns"]
-                == server_version["annotations_mtime_ns"]
+                client_version["annotations_size"]
+                == server_version["annotations_size"]
             )
 
         return jsonify({
