@@ -67,7 +67,7 @@ html, body {
     gap: 8px;
     z-index: 99;  /* Below slider */
     padding: 12px;
-    background: rgba(0, 0, 0, 0.8);
+    background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
     border-radius: 12px;
     transition: all 0.3s ease;
@@ -154,7 +154,7 @@ html, body {
     height: 64px;
     border: none;
     border-radius: 12px;
-    background: rgba(0, 0, 0, 0.8); /* Black background for all buttons */
+    background: transparent; /* Transparent - toolbar container provides background */
     color: #fff;
     font-size: 32px;
     cursor: pointer;
