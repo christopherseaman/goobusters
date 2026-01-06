@@ -234,9 +234,10 @@ class AnnotationViewer {
     setupEventListeners() {
         // Modal controls
         document.getElementById('infoBtn').addEventListener('click', () => this.showModal('infoModal'));
-        document.getElementById('navBtn').addEventListener('click', () => this.showModal('navModal'));
+        document.getElementById('examBadge').addEventListener('click', () => this.showModal('seriesSelectModal'));
         document.getElementById('closeInfo').addEventListener('click', () => this.hideModal('infoModal'));
-        document.getElementById('closeNav').addEventListener('click', () => this.hideModal('navModal'));
+        document.getElementById('closeSeriesSelect').addEventListener('click', () => this.hideModal('seriesSelectModal'));
+        document.getElementById('closeKeyboardShortcuts').addEventListener('click', () => this.hideModal('keyboardShortcutsModal'));
         document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
         document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
         const saveSettingsBtn = document.getElementById('saveSettings');
@@ -267,17 +268,16 @@ class AnnotationViewer {
         if (cancelConflict) cancelConflict.addEventListener('click', () => this.hideModal('conflictModal'));
         if (resetAndReload) resetAndReload.addEventListener('click', () => this.handleResetAndReload());
 
-        // Reset retrack modal (current series)
-        // Reset retrack buttons (no modals - direct action)
+        // Reset retrack buttons (moved to info modal)
         const resetRetrackBtn = document.getElementById('resetRetrackBtn');
         if (resetRetrackBtn) resetRetrackBtn.addEventListener('click', () => {
-            this.hideModal('navModal');
+            this.hideModal('infoModal');
             this.confirmResetRetrack();
         });
 
         const resetRetrackAllBtn = document.getElementById('resetRetrackAllBtn');
         if (resetRetrackAllBtn) resetRetrackAllBtn.addEventListener('click', () => {
-            this.hideModal('navModal');
+            this.hideModal('infoModal');
             this.confirmResetRetrackAll();
         });
 
@@ -320,30 +320,27 @@ class AnnotationViewer {
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
         document.getElementById('resetMask').addEventListener('click', () => this.handleResetAndReload());
 
-        // Brush size sliders (both modal and inline)
-        const brushSizeModal = document.getElementById('brushSize');
+        // Brush size slider (inline only - modal slider removed)
         const brushSizeInline = document.getElementById('brushSizeInline');
+        if (brushSizeInline) {
+            brushSizeInline.addEventListener('input', (e) => {
+                this.brushSize = parseInt(e.target.value);
+                this.updateBrushPreview();
+            });
+        }
 
-        brushSizeModal.addEventListener('input', (e) => {
-            this.brushSize = parseInt(e.target.value);
-            brushSizeInline.value = this.brushSize;
-            document.getElementById('brushSizeValue').textContent = this.brushSize;
-            this.updateBrushPreview();
-        });
-
-        brushSizeInline.addEventListener('input', (e) => {
-            this.brushSize = parseInt(e.target.value);
-            brushSizeModal.value = this.brushSize;
-            document.getElementById('brushSizeValue').textContent = this.brushSize;
-            this.updateBrushPreview();
-        });
-
-        // Mask opacity
-        document.getElementById('maskOpacity').addEventListener('input', (e) => {
-            this.maskOpacity = parseInt(e.target.value) / 100;
-            document.getElementById('maskOpacityValue').textContent = e.target.value;
-            this.render();
-        });
+        // Mask opacity (optional - was in nav modal which was removed)
+        const maskOpacityEl = document.getElementById('maskOpacity');
+        if (maskOpacityEl) {
+            maskOpacityEl.addEventListener('input', (e) => {
+                this.maskOpacity = parseInt(e.target.value) / 100;
+                const maskOpacityValueEl = document.getElementById('maskOpacityValue');
+                if (maskOpacityValueEl) {
+                    maskOpacityValueEl.textContent = e.target.value;
+                }
+                this.render();
+            });
+        }
 
         // Drawing events (mouse)
         this.canvas.addEventListener('mousedown', (e) => this.startDrawing(e));
@@ -376,6 +373,10 @@ class AnnotationViewer {
             if (e.target.tagName === 'INPUT') return;
 
             switch(e.key) {
+                case '?':
+                    e.preventDefault();
+                    this.showModal('keyboardShortcutsModal');
+                    break;
                 case ' ':
                     e.preventDefault();
                     // If at end of video, restart from beginning; otherwise toggle play/pause
@@ -412,6 +413,7 @@ class AnnotationViewer {
 
     updateBrushPreview(e) {
         const preview = document.getElementById('brushPreview');
+        if (!preview) return;
 
         // Calculate display scale (mask pixels to screen pixels)
         const scale = this.renderRect ? (this.renderRect.width / this.maskCanvas.width) : 1;
@@ -439,7 +441,10 @@ class AnnotationViewer {
 
 
     hideBrushPreview() {
-        document.getElementById('brushPreview').style.display = 'none';
+        const preview = document.getElementById('brushPreview');
+        if (preview) {
+            preview.style.display = 'none';
+        }
     }
 
     async loadVideoData(skipModifiedFrames = false) {
@@ -573,17 +578,8 @@ class AnnotationViewer {
             }
             
             // Draw scrubline (thin line) across entire width
-            // Check if current frame is empty (saved or unsaved) to determine color
-            let isCurrentEmpty = false;
-            if (videoModifiedFrames.has(this.currentFrame)) {
-                const modified = videoModifiedFrames.get(this.currentFrame);
-                isCurrentEmpty = modified.maskType === 'empty';
-            } else {
-                const currentFrameData = this.videoData?.mask_data?.[this.currentFrame];
-                isCurrentEmpty = currentFrameData && currentFrameData.type === 'empty';
-            }
-            
-            const scrublineColor = isCurrentEmpty ? 'rgba(255, 0, 0, 0.9)' : 'rgba(76, 175, 80, 0.9)';
+            // Scrubline is always green - empty_id frames are indicated by the red glow around the image
+            const scrublineColor = 'rgba(76, 175, 80, 0.9)';
             
             // Draw scrubline across entire width (draw on top of colored sections)
             const scrublineY = height / 2;
@@ -821,11 +817,18 @@ class AnnotationViewer {
         const frameData = this.videoData?.mask_data?.[this.currentFrame];
         const isEmptyFrame = (frameData && frameData.type === 'empty') || this.maskType === 'empty';
         
-        // Add/remove empty frame indicator class on canvas
-        if (isEmptyFrame) {
-            this.canvas.classList.add('empty-frame-indicator');
-        } else {
-            this.canvas.classList.remove('empty-frame-indicator');
+        // Position and show/hide empty frame glow indicator to match image area
+        const glowElement = document.getElementById('emptyFrameGlow');
+        if (glowElement && this.renderRect) {
+            if (isEmptyFrame) {
+                glowElement.style.display = 'block';
+                glowElement.style.left = `${this.renderRect.x}px`;
+                glowElement.style.top = `${this.renderRect.y}px`;
+                glowElement.style.width = `${this.renderRect.width}px`;
+                glowElement.style.height = `${this.renderRect.height}px`;
+            } else {
+                glowElement.style.display = 'none';
+            }
         }
         
         // Scrubline is now drawn on type bar canvas, so update it
@@ -898,12 +901,18 @@ class AnnotationViewer {
         }
 
         console.log('Start drawing - Mode:', this.drawMode, 'Type:', this.maskType);
+        
+        if (!this.maskImageData) {
+            console.error('Cannot start drawing: maskImageData not initialized');
+            this.isDrawing = false;
+            return;
+        }
 
         this.draw(e);
     }
 
     draw(e) {
-        if (!this.isDrawing) return;
+        if (!this.isDrawing || !this.maskImageData) return;
 
         const coords = this.getCanvasCoordinates(e);
         this.drawLine(this.lastX, this.lastY, coords.x, coords.y);
@@ -943,6 +952,8 @@ class AnnotationViewer {
 
     // Draw circular brush (like teef)
     drawPoint(x, y) {
+        if (!this.maskImageData) return;
+        
         const value = this.drawMode === 'draw' ? 255 : 0;
 
         for (let dx = -this.brushSize; dx <= this.brushSize; dx++) {
@@ -1789,6 +1800,11 @@ class AnnotationViewer {
     async handleResetAndReload() {
         this.hideModal('conflictModal');
         
+        if (!this.currentVideo) {
+            console.error('Cannot reset: no current video');
+            return;
+        }
+        
         const { studyUid, seriesUid, method } = this.currentVideo;
         const videoKey = this.getVideoKey(method, studyUid, seriesUid);
         
@@ -1879,10 +1895,17 @@ class AnnotationViewer {
             });
             
             if (!response.ok) {
-                throw new Error(`Failed to fetch next series: ${response.statusText}`);
+                const errorText = await response.text().catch(() => response.statusText);
+                throw new Error(`Failed to fetch next series: ${response.status} ${errorText}`);
             }
             
-            const data = await response.json();
+            let data;
+            try {
+                data = await response.json();
+            } catch (e) {
+                const text = await response.text();
+                throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`);
+            }
             
             if (data.no_available_series) {
                 alert('No available series to work on. All series may be completed or in progress.');
@@ -1923,8 +1946,8 @@ class AnnotationViewer {
             await this.loadVideo(method, data.study_uid, data.series_uid);
         } catch (error) {
             console.error('Error loading next series:', error);
-            const errorMsg = error?.message || error?.toString() || 'Unknown error';
-            alert(`Failed to load next series: ${errorMsg}`);
+            // Re-throw so caller can handle fallback (e.g., to INITIAL_VIDEO)
+            throw error;
         }
     }
     
@@ -2312,12 +2335,13 @@ class AnnotationViewer {
     }
 
     async showModal(modalId) {
-        // If showing navigation modal, refresh series statuses first to ensure fresh data
-        if (modalId === 'navModal') {
+        // If showing series selection modal, refresh series statuses first to ensure fresh data
+        if (modalId === 'seriesSelectModal') {
             await this.refreshAllSeriesStatuses();
+            this.updateVideoSelect(); // Update dropdown to show current selection
         }
         
-        // Show modal after statuses are refreshed (for navModal) or immediately (for others)
+        // Show modal after statuses are refreshed (for seriesSelectModal) or immediately (for others)
         document.getElementById(modalId).classList.add('active');
     }
 
@@ -2347,25 +2371,37 @@ class AnnotationViewer {
 
     updateVideoInfo() {
         // Update video-level info (study, series, method, exam)
-        if (this.videoData) {
-            const infoStudy = document.getElementById('infoStudy');
-            const infoSeries = document.getElementById('infoSeries');
-            const infoMethod = document.getElementById('infoMethod');
-            const infoExam = document.getElementById('infoExam');
-            const examBadge = document.getElementById('examBadge');
-            
-            if (infoStudy) infoStudy.textContent = this.videoData.study_uid || this.currentVideo.studyUid;
-            if (infoSeries) infoSeries.textContent = this.videoData.series_uid || this.currentVideo.seriesUid;
-            if (infoMethod) infoMethod.textContent = this.videoData.method || this.currentVideo.method;
-            const examValue = this.videoData.exam_number || 'Unknown';
-            if (infoExam) infoExam.textContent = examValue;
-            if (examBadge) {
-                const badgeText = typeof examValue === 'number' || /^\d+$/.test(String(examValue))
-                    ? `# ${examValue}`
-                    : '# --';
-                examBadge.textContent = badgeText;
-                examBadge.title = `Exam ${examValue}`;
+        const infoStudy = document.getElementById('infoStudy');
+        const infoSeries = document.getElementById('infoSeries');
+        const infoMethod = document.getElementById('infoMethod');
+        const infoExam = document.getElementById('infoExam');
+        const examBadge = document.getElementById('examBadge');
+        
+        // Use videoData if available, otherwise fall back to currentVideo
+        const studyUid = this.videoData?.study_uid || this.currentVideo?.studyUid;
+        const seriesUid = this.videoData?.series_uid || this.currentVideo?.seriesUid;
+        const method = this.videoData?.method || this.currentVideo?.method;
+        const examValue = this.videoData?.exam_number || 'Unknown';
+        
+        if (infoStudy && studyUid) infoStudy.textContent = studyUid;
+        if (infoSeries && seriesUid) infoSeries.textContent = seriesUid;
+        if (infoMethod && method) infoMethod.textContent = method;
+        if (infoExam) infoExam.textContent = examValue;
+        
+        // Always update exam badge if we have any video info
+        if (examBadge) {
+            // Try to get exam number from videoData first, then from API response
+            let finalExamValue = examValue;
+            if ((!finalExamValue || finalExamValue === 'Unknown') && this.videoData) {
+                // Check if exam_number was set in loadVideoData
+                finalExamValue = this.videoData.exam_number || 'Unknown';
             }
+            
+            const badgeText = (finalExamValue && finalExamValue !== 'Unknown' && (typeof finalExamValue === 'number' || /^\d+$/.test(String(finalExamValue))))
+                ? `# ${finalExamValue}`
+                : '# --';
+            examBadge.textContent = badgeText;
+            examBadge.title = finalExamValue && finalExamValue !== 'Unknown' ? `Exam ${finalExamValue}` : 'Click to select series';
         }
     }
     
@@ -2387,8 +2423,8 @@ class AnnotationViewer {
 
 AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
     try {
-        const resp = await fetch('/api/dataset/version_status');
-        if (!resp.ok) {
+        const resp = await fetch('/api/dataset/version_status').catch(() => null);
+        if (!resp || !resp.ok) {
             // Silently fail - dataset sync status is not critical
             return;
         }

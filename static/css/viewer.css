@@ -27,12 +27,16 @@ html, body {
     transition: box-shadow 0.3s ease;
 }
 
-/* Empty frame indicator: static inward red glow */
-#canvas.empty-frame-indicator {
+/* Empty frame indicator: static inward red glow around image (not viewport) */
+#emptyFrameGlow {
+    position: fixed;
+    pointer-events: none;
+    z-index: 3; /* Above overlay canvas, below UI elements */
     outline: 4px solid rgba(255, 0, 0, 0.8);
     outline-offset: -4px; /* Makes outline appear inside */
     box-shadow: inset 0 0 40px rgba(255, 0, 0, 0.6),
                 inset 0 0 80px rgba(255, 0, 0, 0.4);
+    display: none; /* Hidden by default, shown when frame is empty */
 }
 
 #overlayCanvas {
@@ -63,7 +67,7 @@ html, body {
     gap: 8px;
     z-index: 99;  /* Below slider */
     padding: 12px;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.8);
     backdrop-filter: blur(10px);
     border-radius: 12px;
     transition: all 0.3s ease;
@@ -97,6 +101,13 @@ html, body {
     flex-direction: column;
 }
 
+.control-buttons.right-center {
+    top: 33.33%;
+    right: 12px;
+    transform: translateY(-50%);
+    flex-direction: column;
+}
+
 .top-center {
     top: 12px;
     left: 66%;
@@ -110,7 +121,9 @@ html, body {
 }
 
 .control-badge {
-    align-self: flex-end;
+    position: fixed;
+    top: 12px;
+    right: 12px;
     padding: 6px 10px;
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.85);
@@ -120,8 +133,19 @@ html, body {
     font-size: 14px;
     letter-spacing: 0.5px;
     min-width: 64px;
+    z-index: 99;
     text-align: center;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.control-badge.clickable {
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.control-badge.clickable:hover {
+    background: rgba(0, 0, 0, 0.95);
+    border-color: rgba(255, 255, 255, 0.4);
+    transform: scale(1.05);
 }
 
 /* Tool and control buttons */
@@ -130,7 +154,7 @@ html, body {
     height: 64px;
     border: none;
     border-radius: 12px;
-    background: rgba(0, 0, 0, 0.7); /* Black background for all buttons */
+    background: rgba(0, 0, 0, 0.8); /* Black background for all buttons */
     color: #fff;
     font-size: 32px;
     cursor: pointer;
@@ -664,20 +688,20 @@ kbd {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 140px;
-    width: 56px;
-    gap: 4px;
+    height: 180px;
+    width: 72px;
+    gap: 6px;
 }
 
 .slider-indicator-top {
-    font-size: 24px;
+    font-size: 32px;
     line-height: 1;
     color: rgba(255, 255, 255, 0.7);
     user-select: none;
 }
 
 .slider-indicator-bottom {
-    font-size: 12px;
+    font-size: 18px;
     line-height: 1;
     color: rgba(255, 255, 255, 0.7);
     user-select: none;
@@ -686,26 +710,26 @@ kbd {
 .slider-group-vertical input[type="range"] {
     -webkit-appearance: slider-vertical;
     writing-mode: bt-lr;
-    width: 6px;
-    height: 100px;
+    width: 12px;
+    height: 140px;
     background: rgba(255, 255, 255, 0.2);
-    border-radius: 3px;
+    border-radius: 6px;
     outline: none;
 }
 
 .slider-group-vertical input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 16px;
-    height: 16px;
+    width: 24px;
+    height: 24px;
     background: #4CAF50;
     border-radius: 50%;
     cursor: pointer;
 }
 
 .slider-group-vertical input[type="range"]::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
+    width: 24px;
+    height: 24px;
     background: #4CAF50;
     border-radius: 50%;
     cursor: pointer;

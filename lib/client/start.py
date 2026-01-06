@@ -47,8 +47,10 @@ class ClientContext:
         # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
         # Disable all caching - clients should never cache anything
         # httpx doesn't cache by default, but explicitly disable connection pooling
+        # Create http client with connection timeout separate from read timeout
+        # This prevents hanging if server isn't ready
         self.http_client = httpx.Client(
-            timeout=60,
+            timeout=httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=60.0),
             follow_redirects=True,
             limits=httpx.Limits(
                 max_keepalive_connections=0, max_connections=100
@@ -121,39 +123,9 @@ def create_app(
             for info in series
         ]
 
-        # Fetch completion status and activity from server for each series
-        # Always fetch fresh - never cache activity data locally
-        # Force a fresh request by creating a new client for this request
-        try:
-            # Use a fresh httpx client to avoid any connection reuse or caching
-            with httpx.Client(
-                timeout=10,
-                limits=httpx.Limits(
-                    max_keepalive_connections=0, max_connections=1
-                ),
-            ) as fresh_client:
-                resp = fresh_client.get(
-                    f"{config.server_url.rstrip('/')}/api/series",
-                )
-                if resp.status_code == 200:
-                    server_series = resp.json()
-                # Create a lookup map by (study_uid, series_uid)
-                server_data_map = {
-                    (s["study_uid"], s["series_uid"]): {
-                        "status": s.get("status", "pending"),
-                        "activity": s.get("activity", {}),
-                    }
-                    for s in server_series
-                }
-                # Update videos with server status and activity (fresh from server, not cached)
-                for video in videos:
-                    key = (video["study_uid"], video["series_uid"])
-                    if key in server_data_map:
-                        video["status"] = server_data_map[key]["status"]
-                        video["activity"] = server_data_map[key]["activity"]
-        except Exception:
-            # Non-fatal: continue with default "pending" status and empty activity
-            pass
+        # Don't fetch status from server during page load - it blocks if server isn't ready
+        # Frontend JavaScript will fetch status asynchronously after page loads
+        # This prevents the page from hanging if server isn't available
 
         # Sort by exam_number
         videos.sort(key=lambda v: v["exam_number"] or 0)
@@ -238,31 +210,10 @@ def create_app(
         if not videos:
             return render_template("no_videos.html"), 503
 
-        # Default to first video, but prefer the server-selected "next" series
+        # Don't fetch "next series" from server during page load - it blocks if server isn't ready
+        # Frontend JavaScript will fetch and load the next series asynchronously after page loads
+        # Default to first video - frontend will update to server-selected series after load
         selected_video = videos[0]
-        try:
-            resp = context.http_client.get(
-                f"{config.server_url.rstrip('/')}/api/series/next",
-                headers={"X-User-Email": _current_user_email()},
-                timeout=5,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data and data.get("study_uid") and data.get("series_uid"):
-                    match = next(
-                        (
-                            v
-                            for v in videos
-                            if v["study_uid"] == data["study_uid"]
-                            and v["series_uid"] == data["series_uid"]
-                        ),
-                        None,
-                    )
-                    if match:
-                        selected_video = match
-        except Exception:
-            # Non-fatal: fall back to first video
-            pass
 
         return render_template(
             "viewer.html", videos=videos, selected_video=selected_video
@@ -295,9 +246,10 @@ def create_app(
             return jsonify({"error": str(exc)}), 404
 
         # Proxy entire response from server (server is source of truth)
+        # But if server isn't available, return basic metadata from local data
         try:
             server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
-            resp = context.http_client.get(server_url, timeout=10)
+            resp = context.http_client.get(server_url, timeout=httpx.Timeout(connect=2.0, read=10.0))
             if resp.status_code == 200:
                 # Return server response directly (no local modification)
                 return Response(
@@ -312,7 +264,30 @@ def create_app(
                     status=resp.status_code,
                     headers={"Content-Type": "application/json"},
                 )
+        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.TimeoutException) as exc:
+            # Server not available - return basic metadata so frontend can load video
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Server not available for video metadata, using local fallback: {exc}")
+            # Return minimal response so frontend can at least load the video
+            # Frontend will retry server requests when server becomes available
+            return jsonify({
+                "total_frames": 0,  # Will be updated when server is available
+                "method": method,
+                "study_uid": study_uid,
+                "series_uid": series_uid,
+                "exam_number": info.exam_number if info else None,
+                "status": "pending",
+                "labels": [
+                    {"labelId": config.label_id, "labelName": "Fluid"},
+                    {"labelId": config.empty_id, "labelName": "Empty"},
+                ],
+                "masks_annotations": [],
+                "modified_frames": {},
+            })
         except Exception as exc:
+            # Other errors - log and return error
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error proxying video metadata: {exc}", exc_info=True)
             return jsonify({"error": f"Failed to fetch from server: {exc}"}), 500
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
@@ -662,41 +637,22 @@ def create_app(
 
             proxy_headers = headers.copy()
 
-            # Create a fresh request to avoid any connection reuse or caching
-            # For /api/series, use a completely fresh client to ensure no caching
-            if subpath == "api/series":
-                with httpx.Client(
-                    timeout=60,
-                    limits=httpx.Limits(
-                        max_keepalive_connections=0, max_connections=1
-                    ),
-                ) as fresh_client:
-                    resp = fresh_client.request(
-                        request.method,
-                        url,
-                        params=request.args,
-                        data=data,
-                        json=json_payload,
-                        files=files,
-                        headers=proxy_headers,
-                        follow_redirects=True,
-                    )
-                    # Read content immediately while response is still valid
-                    content = resp.content
-            else:
-                resp = context.http_client.request(
-                    request.method,
-                    url,
-                    params=request.args,
-                    data=data,
-                    json=json_payload,
-                    files=files,
-                    headers=proxy_headers,
-                    timeout=60,
-                    follow_redirects=True,
-                )
-                # Ensure we read the full response content to avoid any streaming/caching issues
-                content = resp.content
+            # Proxy request to server using the shared client
+            resp = context.http_client.request(
+                request.method,
+                url,
+                params=request.args,
+                data=data,
+                json=json_payload,
+                files=files,
+                headers=proxy_headers,
+                timeout=60,
+                follow_redirects=True,
+            )
+            # Ensure we read the full response content to avoid any streaming/caching issues
+            status_code = resp.status_code
+            response_headers_dict = dict(resp.headers)
+            content = resp.content
 
             # Debug: Log response size and first 200 chars for /api/series
             if subpath == "api/series":
@@ -718,7 +674,7 @@ def create_app(
                 except Exception:
                     pass
 
-            logger.debug(f"Proxy response: {resp.status_code} for {subpath}")
+            logger.debug(f"Proxy response: {status_code} for {subpath}")
 
             excluded_headers = {
                 "content-length",
@@ -728,7 +684,7 @@ def create_app(
             }
             response_headers = {
                 key: value
-                for key, value in resp.headers.items()
+                for key, value in response_headers_dict.items()
                 if key.lower() not in excluded_headers
             }
             # Add no-cache headers to prevent browser caching of proxy responses
@@ -738,7 +694,7 @@ def create_app(
             response_headers["Pragma"] = "no-cache"
             response_headers["Expires"] = "0"
             return Response(
-                content, status=resp.status_code, headers=response_headers
+                content, status=status_code, headers=response_headers
             )
         except Exception as exc:
             import traceback
