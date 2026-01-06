@@ -29,7 +29,6 @@
   - [x] Verify temp version blocks concurrent saves during retrack
   - [x] Verify timeout cleanup of stale temp versions
   - [x] Test parallel retrack processing (multiple series simultaneously)
-- [ ] Document multiplayer edge cases and expected behaviors
 
 ### iPad App
 - [ ] **C1: Runtime wrapper** - Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView
