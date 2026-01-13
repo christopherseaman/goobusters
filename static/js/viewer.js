@@ -1220,6 +1220,16 @@ class AnnotationViewer {
             return;
         }
 
+        if (this.videoData && this.videoData.status === 'completed') {
+            const shouldReopen = confirm(
+                'This series is marked as completed. Saving will reopen it and clear the completed status. Continue?'
+            );
+            if (!shouldReopen) {
+                return;
+            }
+            await this.reopenSeries();
+        }
+
         console.log(`Saving ${Object.keys(allAnnotationFrames).length} annotation frames`);
         try {
             // Build tar archive with all annotation frames
@@ -1455,8 +1465,6 @@ class AnnotationViewer {
             this.updateCompletionIndicator();
             // Refresh all series statuses to update dropdown
             await this.refreshAllSeriesStatuses();
-            
-            alert('Series reopened for editing.');
         } catch (e) {
             alert(`Failed to reopen series: ${e.message}`);
         }
