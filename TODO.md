@@ -9,12 +9,12 @@
 ### iPad App
 
 - [ ] **C1: Runtime wrapper** - Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView
-    - [ ] Set up Apple dev account if needed
+    - [x] Set up Apple dev account if needed (Mac/Xcode)
     - [ ] Choose runtime (Pyto vs Pyodide-on-iOS)
-    - [ ] Create native app wrapper
+    - [x] Create native app wrapper (Mac/Xcode)
     - [ ] Integrate shared config loader
-    - [ ] Build IPA, test on physical iPad
-    - [ ] Verify Python process starts and serves local HTTP port
+    - [ ] Build IPA, test on physical iPad (Mac/Xcode)
+    - [ ] Verify Python process starts and serves local HTTP port (Mac/Xcode)
 - [ ] **C2: MD.ai sync** - Implement `client/mdai_client.py` to auth, list series, download exams, and store under `client_cache/data`
     - [ ] Verify MD.ai SDK integration works on iPad
     - [ ] Test downloading real exam (>=500 MB) over Wi-Fi
