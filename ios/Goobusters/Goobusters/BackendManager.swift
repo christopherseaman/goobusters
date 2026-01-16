@@ -1,138 +1,75 @@
-import Combine
-import Darwin
 import Foundation
+import Combine
 
 @MainActor
-final class BackendManager: ObservableObject {
+class BackendManager: ObservableObject {
     @Published var isReady = false
     @Published var statusMessage = "Starting backend..."
+    @Published var errorMessage: String?
 
     private var pythonRunner: PythonBackendRunner?
-    private var checkTimer: Timer?
-    private let healthCheckURL = URL(string: "http://localhost:8080/healthz")
-    private let backendEntryPoint = "lib/client/start.py"
+    private let port = 8080
+    private let entryScript = "python-app/lib/client/start.py"
 
     func start() {
-        guard checkTimer == nil else { return }
-        guard let bundlePath = Bundle.main.resourcePath else {
-            statusMessage = "Unable to determine bundle path"
+        guard let resourcePath = Bundle.main.resourcePath else {
+            errorMessage = "Bundle resource path not found"
+            statusMessage = "Error: Bundle missing"
             return
         }
 
-        statusMessage = "Starting Python backend..."
+        statusMessage = "Initializing Python..."
 
-        configurePythonEnvironment(bundlePath: bundlePath)
+        pythonRunner = PythonBackendRunner(resourcePath: resourcePath)
 
-        Task { [weak self] in
-            guard let self else { return }
-
+        Task {
             do {
-                if self.pythonRunner == nil {
-                    self.pythonRunner = PythonBackendRunner(resourcePath: bundlePath)
-                }
+                try await pythonRunner?.start(entryScriptRelativePath: entryScript)
+                statusMessage = "Starting Flask server..."
 
-                try await self.pythonRunner?.start(entryScriptRelativePath: backendEntryPoint)
-                self.startHealthChecks()
+                // Poll for server readiness
+                await waitForServer()
             } catch {
-                self.statusMessage = "Python start failed: \(error.localizedDescription)"
+                errorMessage = error.localizedDescription
+                statusMessage = "Error: \(error.localizedDescription)"
             }
         }
     }
 
-    private func configurePythonEnvironment(bundlePath: String) {
-        let pythonHome = bundlePath + "/python"
-        var searchPaths: [String] = []
+    private func waitForServer() async {
+        let maxAttempts = 30
+        let url = URL(string: "http://127.0.0.1:\(port)/healthz")!
 
-        if let stdlibPath = pythonStdlibPath(pythonHome: pythonHome) {
-            searchPaths.append(stdlibPath)
-        }
-
-        searchPaths.append(pythonHome + "/lib-dynload")
-        searchPaths.append(bundlePath + "/lib/client")
-        searchPaths.append(bundlePath)
-
-        let pythonPath = searchPaths.joined(separator: ":")
-
-        setEnvironmentVariable("PYTHONHOME", value: pythonHome)
-        setEnvironmentVariable("PYTHONPATH", value: pythonPath)
-        setEnvironmentVariable("PYTHONUNBUFFERED", value: "1")
-        setEnvironmentVariable("PYTHONDONTWRITEBYTECODE", value: "1")
-    }
-
-    private func pythonStdlibPath(pythonHome: String) -> String? {
-        let libDirectory = URL(fileURLWithPath: pythonHome).appendingPathComponent("lib", isDirectory: true)
-
-        guard
-            let contents = try? FileManager.default.contentsOfDirectory(atPath: libDirectory.path),
-            let versionDirectory = contents
-                .filter({ $0.hasPrefix("python3") })
-                .sorted(by: >)
-                .first
-        else {
-            return nil
-        }
-
-        return libDirectory.appendingPathComponent(versionDirectory, isDirectory: true).path
-    }
-
-    private func setEnvironmentVariable(_ key: String, value: String) {
-        key.withCString { keyPointer in
-            value.withCString { valuePointer in
-                setenv(keyPointer, valuePointer, 1)
-            }
-        }
-    }
-
-    private func startHealthChecks() {
-        checkTimer?.invalidate()
-
-        checkTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-            guard let self else {
-                timer.invalidate()
-                return
+        for attempt in 1...maxAttempts {
+            do {
+                let (_, response) = try await URLSession.shared.data(from: url)
+                if let httpResponse = response as? HTTPURLResponse,
+                   httpResponse.statusCode == 200 {
+                    statusMessage = "Backend ready"
+                    isReady = true
+                    return
+                }
+            } catch {
+                // Server not ready yet
             }
 
-            Task { await self.pollBackendReady() }
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            statusMessage = "Waiting for server... (\(attempt)/\(maxAttempts))"
         }
 
-        if let checkTimer {
-            RunLoop.main.add(checkTimer, forMode: .common)
-        }
-    }
-
-    private func pollBackendReady() async {
-        guard let healthCheckURL else { return }
-
-        var request = URLRequest(url: healthCheckURL)
-        request.timeoutInterval = 1.0
-
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-
-            guard
-                let httpResponse = response as? HTTPURLResponse,
-                httpResponse.statusCode == 200
-            else {
-                statusMessage = "Waiting for backend..."
-                return
-            }
-
-            isReady = true
-            statusMessage = "Backend ready"
-            checkTimer?.invalidate()
-            checkTimer = nil
-        } catch {
-            statusMessage = "Waiting for backend..."
-        }
+        errorMessage = "Server failed to start after \(maxAttempts) attempts"
+        statusMessage = "Error: Server timeout"
     }
 
     func stop() {
-        checkTimer?.invalidate()
-        checkTimer = nil
-
         Task {
             await pythonRunner?.stop()
-            pythonRunner = nil
         }
+        isReady = false
+        statusMessage = "Backend stopped"
+    }
+
+    var serverURL: URL {
+        URL(string: "http://127.0.0.1:\(port)")!
     }
 }

@@ -12,7 +12,21 @@ struct GoobustersView: View {
             
             Group {
                 if backendManager.isReady {
-                    WebView(url: URL(string: "http://localhost:8080")!)
+                    WebView(url: backendManager.serverURL)
+                } else if let error = backendManager.errorMessage {
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                            .foregroundColor(.red)
+                        Text("Backend Error")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
                 } else {
                     VStack(spacing: 16) {
                         ProgressView()
@@ -64,4 +78,3 @@ struct WebView: UIViewRepresentable {
         }
     }
 }
-

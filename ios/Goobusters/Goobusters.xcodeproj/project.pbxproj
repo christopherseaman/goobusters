@@ -178,7 +178,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nSCRIPT_DIR=\"$PROJECT_DIR/Goobusters\"\nsource \"$SCRIPT_DIR/Python.xcframework/build/utils.sh\"\ninstall_python Goobusters/Python.xcframework lib/client\n";
+			shellScript = "set -e\nSCRIPT_DIR=\"$PROJECT_DIR/Goobusters\"\nsource \"$SCRIPT_DIR/Python.xcframework/build/utils.sh\"\ninstall_python Goobusters/Python.xcframework Goobusters/python-app\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

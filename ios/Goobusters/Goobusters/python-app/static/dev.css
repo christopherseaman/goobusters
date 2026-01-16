@@ -1,0 +1,54 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 16px;
+  max-width: 1080px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+#controls button {
+  margin-right: 8px;
+}
+
+#series-list .series-item {
+  border: 1px solid #ddd;
+  padding: 8px;
+  margin: 6px 0;
+}
+
+#frame-container {
+  position: relative;
+  display: inline-block;
+}
+
+#frame-img {
+  max-width: 640px;
+  display: block;
+}
+
+#mask-img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: 640px;
+  mix-blend-mode: screen;
+  opacity: 0.6;
+  display: none;
+}
+
+#logs {
+  margin-top: 16px;
+}
+
+#log {
+  background: #111;
+  color: #eee;
+  padding: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+
