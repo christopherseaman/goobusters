@@ -14,3 +14,4 @@ annotations/
 log/
 server_state/
 client_cache/
+.tmp/
