@@ -72,7 +72,9 @@ def _resolve_env(
     defaults_file = base_path / "dot.env.defaults"
     if defaults_file.exists():
         env.update({
-            k: v for k, v in dotenv_values(defaults_file).items() if v is not None
+            k: v
+            for k, v in dotenv_values(defaults_file).items()
+            if v is not None
         })
 
     root_file = base_path / "dot.env"
@@ -106,7 +108,6 @@ def load_config(
     raw = _resolve_env(base_path, role)
 
     required = [
-        "MDAI_TOKEN",
         "DATA_DIR",
         "DOMAIN",
         "PROJECT_ID",
@@ -118,8 +119,12 @@ def load_config(
     if missing:
         raise ConfigError(f"Missing required config keys: {', '.join(missing)}")
 
+    # MDAI_TOKEN is optional - can be set later via /api/settings
+    # Allow "not_configured_yet" placeholder for iOS app
+    mdai_token = raw.get("MDAI_TOKEN", "not_configured_yet")
+
     shared_kwargs = dict(
-        mdai_token=raw["MDAI_TOKEN"],
+        mdai_token=mdai_token,
         data_dir=Path(raw["DATA_DIR"]).expanduser().resolve(),
         domain=raw["DOMAIN"],
         project_id=raw["PROJECT_ID"],
@@ -153,7 +158,7 @@ def load_config(
     if role == "client":
         client_kwargs = dict(
             client_port=int(raw.get("CLIENT_PORT", 8080)),
-            server_url=raw.get("SERVER_URL", "http://localhost:5000"),
+            server_url=raw.get("SERVER_URL") or "http://localhost:5000",
             user_email=raw.get("USER_EMAIL"),
             video_cache_path=Path(
                 raw.get("VIDEO_CACHE_PATH", "client_cache/data")

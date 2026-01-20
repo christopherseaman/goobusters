@@ -152,7 +152,13 @@
     setStatus("Syncing dataset...");
     const { status, body } = await jsonFetch("/api/dataset/sync", { method: "POST" });
     log(`Sync status ${status}: ${JSON.stringify(body)}`);
-    setStatus(`Sync complete (status ${status})`);
+    if (status === 200 && body.series_count !== undefined) {
+      setStatus(`Sync complete: ${body.series_count} series`);
+    } else if (status === 200) {
+      setStatus("Sync complete");
+    } else {
+      setStatus(`Sync failed: ${body.error || "Unknown error"}`);
+    }
   };
 
   document.getElementById("btn-load-series").onclick = async () => {

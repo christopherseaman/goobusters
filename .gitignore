@@ -17,3 +17,4 @@ client_cache/
 .tmp/
 ios/Goobusters/.build/
 ios/Goobusters/DerivedData/
+ios/Goobusters/Frameworks/

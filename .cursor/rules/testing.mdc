@@ -1,0 +1,7 @@
+---
+alwaysApply: true
+---
+
+# Always Test!
+
+Always test code changes by, at minimum, running `run.sh`, checking logs, and instructing the user on what to check.

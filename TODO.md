@@ -3,82 +3,66 @@
 ## To Do
 
 ### Series Completion Workflow
-- [x] Add completion status indicator to viewer UI (show "Completed" badge/icon)
-- [x] Add "Mark as Complete" button/action in viewer
-- [x] Update series list/navigation to display completion status
-- [x] Ensure `/api/series/next` skips completed series (verify smart selection logic)
-- [x] Add "Reopen" functionality to allow re-editing completed series
+
 - [ ] Test completion workflow end-to-end (mark complete → verify skipped in next → reopen → verify available again)
 
-### Multiplayer Testing & Bugfixing
-- [ ] Test concurrent editing conflicts (version ID validation)
-  - [ ] Two users editing same series simultaneously
-  - [ ] Verify HTTP 409 conflict on save when version mismatch
-  - [ ] Verify conflict warning displayed to user
-- [ ] Test activity tracking (keep-alive mechanism) - Implementation complete, testing pending
-  - [ ] Verify activity timestamps update on series access
-  - [ ] Verify recent activity warnings shown to other users
-  - [ ] Test activity timeout/cleanup logic
-- [ ] Test smart selection heuristics (`RECENT_VIEW_THRESHOLD_MINUTES`)
-  - [ ] Verify recently active series are skipped by `/api/series/next`
-  - [ ] Verify fallback to longest-since-viewed when all recent
-- [ ] Test retrack queue conflicts
-  - [ ] Verify temp version blocks concurrent saves during retrack
-  - [ ] Verify timeout cleanup of stale temp versions
-  - [ ] Test parallel retrack processing (multiple series simultaneously)
-- [ ] Document multiplayer edge cases and expected behaviors
-
 ### iPad App
+
 - [ ] **C1: Runtime wrapper** - Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView
-  - [ ] Set up Apple dev account if needed
-  - [ ] Choose runtime (Pyto vs Pyodide-on-iOS)
-  - [ ] Create native app wrapper
-  - [ ] Integrate shared config loader
-  - [ ] Build IPA, test on physical iPad
-  - [ ] Verify Python process starts and serves local HTTP port
+    - [x] Set up Apple dev account if needed (Mac/Xcode)
+    - [ ] Choose runtime (Pyto vs Pyodide-on-iOS)
+    - [x] Create native app wrapper (Mac/Xcode)
+    - [ ] Integrate shared config loader
+    - [ ] Build IPA, test on physical iPad (Mac/Xcode)
+    - [ ] Verify Python process starts and serves local HTTP port (Mac/Xcode)
 - [ ] **C2: MD.ai sync** - Implement `client/mdai_client.py` to auth, list series, download exams, and store under `client_cache/data`
-  - [ ] Verify MD.ai SDK integration works on iPad
-  - [ ] Test downloading real exam (>=500 MB) over Wi-Fi
-  - [ ] Hash compare with MD.ai CLI output for validation
-  - [ ] Handle offline/network error scenarios
+    - [ ] Verify MD.ai SDK integration works on iPad
+    - [ ] Test downloading real exam (>=500 MB) over Wi-Fi
+    - [ ] Hash compare with MD.ai CLI output for validation
+    - [ ] Handle offline/network error scenarios
 - [ ] **C3: Frame extraction** - Use ffmpeg/opencv to split MP4 to frames, maintain manifest consumed by WebView; auto-extract after dataset sync
-  - [ ] Bundle ffmpeg binary for iPad
-  - [ ] Test frame extraction on downloaded video
-  - [ ] Verify frame count matches metadata
-  - [ ] Ensure frames accessible via `file://` path or localhost
-  - [ ] Verify post-sync auto-extraction
-  - [ ] Fix `context.frames` inconsistency (remove unused FrameExtractor references or implement properly)
+    - [ ] Bundle ffmpeg binary for iPad
+    - [ ] Test frame extraction on downloaded video
+    - [ ] Verify frame count matches metadata
+    - [ ] Ensure frames accessible via `file://` path or localhost
+    - [ ] Verify post-sync auto-extraction
+    - [ ] Fix `context.frames` inconsistency (remove unused FrameExtractor references or implement properly)
 - [ ] Test end-to-end iPad workflow: download → extract → view → edit → save → retrack
+- [ ] App build: should not include prepopulated data or preset mdai token
+- [ ] Enable cloudflare tunnel access to server when CF-Access-Client-Id and CF-Access-Client-Secret set
+- [ ] Test that cloudflare tunnel hasn't broken the front-end
 
 ### UI/UX Improvements
-- [ ] Navigate series through current series indicator (add prev/next series navigation, show current position in series list)
-- [ ] Simplify/consolidate right toolbar (reduce button clutter, combine related actions, improve organization)
-- [ ] Scrubline frame highlight width tweaks
-- [ ] Brush size scales with series size not viewport
 
-### Other Tasks
-- [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
-- [ ] Combine (i) and video button
-- [ ] Change revert button behavior? Revert to mdai? Or last saved?
-- [ ] Indicator for verified empty frames (EMPTY_ID)
-- [ ]Ensure we are consistently using 0-based frame counting, to be consistent with mdai json
+- [ ] (lower priority) improved series navigation modal
+
+### Onboarding & Auth
+
+- [ ] Persist failstate on app first start and not getting username (not email) or mdai token
+
+### Device QA
+
+- [ ] (low priority) smaller device testing
+
+### Architecture
+
+- [ ] Simplify client backend architecture - frontend should talk directly to server for everything except MD.ai images/videos
+    - Client backend should only: serve static files, serve MD.ai videos/images from local cache, dataset sync, user settings
+    - Remove proxy layer (`/proxy/<path>`) - frontend can use `SERVER_URL` from config to talk directly to server
+    - Server already has series list from MD.ai annotations, so `/api/videos`, `/api/video`, `/api/frames` can be server-only
+    - This eliminates caching issues and simplifies the architecture
+
+### Data & Annotation Handling
+
+- [ ] Ensure we are consistently using 0-based frame counting, to be consistent with mdai json
 - [ ] Handle series with no fluid annotations gracefully (serve blank masks/metadata so client can open; no tracking needed)
-  - [ ] Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frameNumber 0 (`"id": "A_gp58a1"`) & 41 (`"id": "A_AYxjY2"`) of 143, 0-based counting)"
-  - StudyInstanceUID = "1.2.826.0.1.3680043.8 498. 21582572478922879563110991046360588727"
-  - SeriesInstranceUID = "1.2.826.0.1.3680043.8.498.88798124921994953570699988775039906436"
-- [ ] Local annotaion feedback loop? See references/teef for simpler example app with single annotation type
-  - Server for reviewing/modifying annotations (LABEL_ID, EMPTY_ID, and TRACK_ID)
-  - Save human reviewed/modified free fluid (LABEL_ID), no fluid (EMPTY_ID) annotations outside data/ bc data reflects mdai truth (maybe local db? duckdb with file?); may be better to store as masks (grayscale images) for local iterations, update annotation from masks on tracking runs (think this happens already but may need fixing)
-  - Re-run tracking with locally updated annotations (LABEL_ID & EMPTY_ID annotations, no TRACK_ID; if in local db then don't source mdai annotations json)
-  - Select model output if multiple subdirs exist in output/ ; if only one, select that one
-  - Need to be able to scrub forward/backward by frame as well as "play" forward and backward
-  - Need to be able to edit masks
-  - Need to be able to "no fluid" a frame (remove TRACK_ID and LABEL_ID masks from frame, apply frame-level EMPTY_ID annotation)
-  - Need to be able to switch to next/prev video
-  - Need to be able to open list of videos to select from
-  - New entrypoint, app.py, with separate library subdir for utility functions if needed.
-  - Okay to rely on track.py lib/ functions; additional tracking functions should be made in lib/ (keep app and tracking in clear separation of concerns)
-  - May need track.py to run before app can function (to fill in the tracking and make it available)
+    - Validate "No Fluid" frame annotation compatible with mdai json syntax. Example (frameNumber 0 (`"id": "A_gp58a1"`) & 41 (`"id": "A_AYxjY2"`) of 143, 0-based counting)"
+    - StudyInstanceUID = "1.2.826.0.1.3680043.8 498. 21582572478922879563110991046360588727"
+    - SeriesInstranceUID = "1.2.826.0.1.3680043.8.498.88798124921994953570699988775039906436"
+
+### Investigations
+
+- [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: exam 19; 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
 
 ## Blocked
 
@@ -89,29 +73,66 @@
 
 ## Done
 
+### Series Completion Workflow
+
+- [x] Add completion status indicator to viewer UI (show "Completed" badge/icon)
+- [x] Add "Mark as Complete" button/action in viewer
+- [x] Update series list/navigation to display completion status
+- [x] Ensure `/api/series/next` skips completed series (verify smart selection logic)
+- [x] Add "Reopen" functionality to allow re-editing completed series
+
+### Multiplayer Testing & Bugfixing
+
+- [x] Test concurrent editing conflicts (version ID validation)
+    - [x] Two users editing same series simultaneously
+    - [x] Verify HTTP 409 conflict on save when version mismatch
+    - [x] Verify conflict warning displayed to user
+- [x] Test activity tracking (keep-alive mechanism) - Implementation complete, testing complete
+    - [x] Verify activity timestamps update on series access
+    - [x] Verify recent activity warnings shown to other users
+    - [x] Test activity timeout/cleanup logic (24h expiration confirmed)
+- [x] Test smart selection heuristics (`RECENT_VIEW_THRESHOLD_MINUTES`)
+    - [x] User A opens series (page load or manual selection) → marks activity
+    - [x] User B loads page (calls `loadNextSeries()` on init) → verified warning message retained (same series selected is acceptable - warning provides visibility)
+    - [x] User B marks series complete (calls `loadNextSeries()`) → verify User B doesn't get User A's active series
+    - [x] All series recently active → verify fallback to longest-since-viewed
+    - [x] User A was recently active on Series 1 → User A loads page → verify User A can still get Series 1 (own activity doesn't block)
+- [x] Test retrack queue conflicts
+    - [x] Verify temp version blocks concurrent saves during retrack
+    - [x] Verify timeout cleanup of stale temp versions
+    - [x] Test parallel retrack processing (multiple series simultaneously)
+
+### UI/UX Improvements
+
+- [x] Navigate series through current series indicator (add prev/next series navigation, show current position in series list)
+- [x] Simplify/consolidate right toolbar (reduce button clutter, combine related actions, improve organization)
+- [x] Scrubline frame highlight width tweaks
+- [x] Brush size scales with series size not viewport
+- [x] Performance check on initial page load (measure time to interactive, identify bottlenecks)
+
 - [x] lib/optical.py cleanup - 1998 lines but only 2 exported functions used (create_identity_file, copy_annotations_to_output). Consider refactoring or removing dead code.
-  - lib/optical.py - 90% dead code (1,800 of 1,998 lines)
-    - Only 2 functions are actually used: create_identity_file and copy_annotations_to_output
-    - Contains entire unused classes: OpticalFlowTracker (1,385 lines), MultiAnnotationProcessor (300 lines)
-    - Can be reduced from 1,998 → ~200 lines
-    - combine with opticalflowprocessor
-  - lib/multi_frame_tracker.py - 25% vestigial code (~250 lines)
-    - 13+ instance variables initialized but never used (e.g., tracking_strategy_weight, feedback_loop_mode, tracks, track_id_counter)
-    - 4 unused methods: \_track_forward, \_track_backward, \_get_previous_frame, `_get_next_frame`
-    - Logger bugs: self.logger used but never initialized (will cause AttributeError)
-  - lib/debug_visualization.py - 100% orphaned (242 lines)
-    - Entire file unused, not imported anywhere
-    - Should be deleted or moved to debug_tools/
-  - lib/video_capture_manager.py - 61% unused (78 of 127 lines)
-    - VideoCaptureManager class and read_frame_at_position() are unused
-    - Only video_capture() and get_video_properties() are actually used
-  - lib/opticalflowprocessor.py - 24% unused
-    - apply_optical_flow() method defined but never called
+    - lib/optical.py - 90% dead code (1,800 of 1,998 lines)
+        - Only 2 functions are actually used: create_identity_file and copy_annotations_to_output
+        - Contains entire unused classes: OpticalFlowTracker (1,385 lines), MultiAnnotationProcessor (300 lines)
+        - Can be reduced from 1,998 → ~200 lines
+        - combine with opticalflowprocessor
+    - lib/multi_frame_tracker.py - 25% vestigial code (~250 lines)
+        - 13+ instance variables initialized but never used (e.g., tracking_strategy_weight, feedback_loop_mode, tracks, track_id_counter)
+        - 4 unused methods: \_track_forward, \_track_backward, \_get_previous_frame, `_get_next_frame`
+        - Logger bugs: self.logger used but never initialized (will cause AttributeError)
+    - lib/debug_visualization.py - 100% orphaned (242 lines)
+        - Entire file unused, not imported anywhere
+        - Should be deleted or moved to debug_tools/
+    - lib/video_capture_manager.py - 61% unused (78 of 127 lines)
+        - VideoCaptureManager class and read_frame_at_position() are unused
+        - Only video_capture() and get_video_properties() are actually used
+    - lib/opticalflowprocessor.py - 24% unused
+        - apply_optical_flow() method defined but never called
 - [x] Update mdai integration to ONLY pull the PROJECT_ID and DATASET_ID from dot.env (not all data from the project) `mdai_client.project(project_id=PROJECT_ID, dataset_id=DATASET_ID, path=DATA_DIR)` from <https://docs.md.ai/annotator/python/guides/general/>
 - [x] Clean code and remove unused or overly complex bits in the current fork (incl. remove deepflow as too slow to be practical)
-  - [x] Removed deepflow
-  - [x] Removed temporal smoothing (unproven complexity)
-  - [x] Removed unused files: parallel_processor.py, video_capture_manager.py, diagnose.py
+    - [x] Removed deepflow
+    - [x] Removed temporal smoothing (unproven complexity)
+    - [x] Removed unused files: parallel_processor.py, video_capture_manager.py, diagnose.py
 - [x] Empty frame annotations (allow annotations for frames with no fluid in bidirectional tracking with EMPTY_ID from dot.env)
 - [x] Jerky tracking? Tracking seems to jump frame-to-frame (noted, no changes made)
 - [x] Performance tuning? Anything to be done with cpu vs gpu accel or parallelization? (reviewed, already optimized)

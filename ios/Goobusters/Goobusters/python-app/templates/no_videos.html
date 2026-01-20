@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Welcome to Goobusters</title>
+    <link rel="stylesheet" href="/static/css/viewer.css">
+    <style>
+        body {
+            background: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 2rem;
+        }
+        .welcome-container {
+            max-width: 500px;
+            text-align: center;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            color: #4CAF50;
+        }
+        h2 {
+            font-size: 1.5rem;
+            margin-bottom: 2rem;
+            color: #f44336;
+        }
+        .setup-box {
+            background: #1a1a1a;
+            padding: 2rem;
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            border: 2px solid #333;
+        }
+        .step {
+            text-align: left;
+            margin: 1.5rem 0;
+            line-height: 1.6;
+        }
+        .step-number {
+            display: inline-block;
+            width: 2rem;
+            height: 2rem;
+            background: #4CAF50;
+            color: #000;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 2rem;
+            font-weight: bold;
+            margin-right: 0.5rem;
+        }
+        .btn {
+            padding: 1rem 2rem;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        .btn:active {
+            background: #45a049;
+        }
+        code {
+            background: #333;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="welcome-container">
+        <h1>Goobusters</h1>
+        <h2>⚠️ Setup Required</h2>
+        
+        <div class="setup-box">
+            <p style="margin-bottom: 1.5rem;">To view and annotate videos, you need to configure your MD.ai credentials and sync the dataset.</p>
+            
+            <div class="step">
+                <span class="step-number">1</span>
+                <strong>Get your MD.ai API token</strong><br>
+                Visit <a href="https://public.md.ai/annotator/project" style="color: #4CAF50;">public.md.ai</a> and copy your API token from Settings
+            </div>
+            
+            <div class="step">
+                <span class="step-number">2</span>
+                <strong>Enter credentials</strong><br>
+                Tap the <strong>Settings (⚙️)</strong> button and enter your name and MD.ai token
+            </div>
+            
+            <div class="step">
+                <span class="step-number">3</span>
+                <strong>Sync dataset</strong><br>
+                After saving settings, the app will sync videos from the server
+            </div>
+        </div>
+
+        <button class="btn" onclick="openSettings()">
+            ⚙️ Open Settings
+        </button>
+        
+        <button class="btn" onclick="location.reload()" style="background: #666; margin-top: 0.5rem;">
+            🔄 Refresh Page
+        </button>
+    </div>
+
+    <script>
+        function openSettings() {
+            // Redirect to main viewer where Settings modal can be opened
+            window.location.href = '/';
+        }
+    </script>
+</body>
+</html>

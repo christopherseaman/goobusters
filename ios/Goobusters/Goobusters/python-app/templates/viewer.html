@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <title>Goobusters</title>
+    <link rel="stylesheet" href="/static/css/viewer.css">
+</head>
+<body>
+    <!-- Dataset version mismatch warning -->
+    <div id="datasetWarning" class="dataset-warning hidden">
+        ⚠ Dataset on this client may be out of sync with the server. Run client dataset sync before trusting masks.
+    </div>
+
+    <!-- Multiplayer warning banner -->
+    <div id="multiplayerWarning" class="multiplayer-warning hidden"></div>
+
+    <!-- Full-screen canvas for video -->
+    <canvas id="canvas"></canvas>
+    <!-- Overlay canvas for mask (stacked on top) -->
+    <canvas id="overlayCanvas"></canvas>
+    <!-- Empty frame glow indicator (positioned to match image) -->
+    <div id="emptyFrameGlow"></div>
+
+    <!-- Brush size preview circle -->
+    <div id="brushPreview" class="brush-preview"></div>
+
+    <!-- Floating tool buttons (top-left) -->
+    <div class="tool-buttons top-left" id="toolButtons">
+        <button class="tool-btn warning" id="markEmpty" title="Mark Empty">🚫</button>
+        <button class="tool-btn" id="eraseMode" title="Erase">🧽</button>
+        <button class="tool-btn active" id="drawMode" title="Draw">🖌️</button>
+        <div class="slider-spacer"></div>
+        <div class="slider-group-vertical">
+            <div class="slider-indicator-top">●</div>
+            <input type="range" id="brushSizeInline" min="5" max="50" value="15" orient="vertical">
+            <div class="slider-indicator-bottom">●</div>
+        </div>
+    </div>
+
+    <!-- Floating control buttons (right, center 1/3 down) -->
+    <div class="control-buttons right-center" id="controlButtons">
+        <button class="control-btn" id="markComplete" title="Mark Complete & Get Next Series">✅</button>
+        <button class="control-btn" id="infoBtn" title="Info">ℹ️</button>
+        <button class="control-btn" id="settingsBtn" title="Settings">⚙️</button>
+        <button class="control-btn" id="resetMask" title="Reset">↺</button>
+    </div>
+    
+    <!-- Exam badge (top-right, clickable for navigation) -->
+    <div class="control-badge clickable" id="examBadge" title="Click to select series"># --</div>
+
+    <!-- Save button (bottom-left) -->
+    <div class="save-button bottom-left">
+        <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
+        <div class="frame-counter" id="frameCounter">0 / 0</div>
+    </div>
+
+    <!-- Playback controls (top-center) -->
+    <div class="playback-buttons top-center" id="playbackButtons">
+        <button class="playback-btn" id="prevFrame" title="Previous Frame">⏮</button>
+        <button class="playback-btn" id="playPause" title="Play/Pause">▶️</button>
+        <button class="playback-btn" id="nextFrame" title="Next Frame">⏭</button>
+        <button class="playback-btn" id="toggleMask" title="Toggle Mask">🥸</button>
+    </div>
+
+    <!-- Frame slider (bottom) -->
+    <div class="slider-container" id="sliderContainer">
+        <div class="slider-wrapper">
+            <span class="slider-label" id="sliderMin">0</span>
+            <canvas id="sliderTypeBar" class="slider-type-bar"></canvas>
+            <input type="range" id="frameSlider" min="0" max="100" value="0">
+            <span class="slider-label" id="sliderMax">0</span>
+        </div>
+    </div>
+
+    <!-- Info Modal -->
+    <div class="modal" id="infoModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeInfo">✕</button>
+            <h2>Video Info</h2>
+            <div class="info-section">
+                <p><strong>Method:</strong> <span id="infoMethod">{{ selected_video.method }}</span></p>
+                <p><strong>Exam:</strong> <span id="infoExam">{{ selected_video.exam_number }}</span></p>
+                <p><strong>Study:</strong> <span id="infoStudy" class="monospace">{{ selected_video.study_uid }}</span></p>
+                <p><strong>Series:</strong> <span id="infoSeries" class="monospace">{{ selected_video.series_uid }}</span></p>
+            </div>
+
+            <h3>Current Frame</h3>
+            <div class="info-section">
+                <p><strong>Frame:</strong> <span id="frameInfo">0 / 0</span></p>
+                <p><strong>Type:</strong> <span id="frameType">-</span></p>
+                <p><strong>Label:</strong> <span id="frameLabelId" class="monospace">-</span></p>
+                <p><strong>Modified:</strong> <span id="frameModified">No</span></p>
+            </div>
+
+            <h3>Color Guide</h3>
+            <div class="info-section">
+                <div class="label-item">
+                    <span class="color-box" style="background: rgba(0, 255, 0, 0.5);"></span>
+                    <span>Human annotation (LABEL_ID)</span>
+                </div>
+                <div class="label-item">
+                    <span class="color-box" style="background: rgba(255, 165, 0, 0.5);"></span>
+                    <span>Tracking prediction (TRACK_ID)</span>
+                </div>
+            </div>
+
+            <div class="nav-section">
+                <h3>Advanced</h3>
+                <button class="modal-btn warning" id="resetRetrackBtn" style="width: 100%; margin-top: 10px;">
+                    🔄 Reset Retrack Data (Current Series)
+                </button>
+                <button class="modal-btn warning" id="resetRetrackAllBtn" style="width: 100%; margin-top: 10px;">
+                    🔄 Reset Retrack Data (All Series)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Keyboard Shortcuts Modal -->
+    <div class="modal" id="keyboardShortcutsModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeKeyboardShortcuts">✕</button>
+            <h2>Keyboard Shortcuts</h2>
+            <div class="info-section">
+                <div class="shortcuts">
+                    <div><kbd>Space</kbd> Play/Pause</div>
+                    <div><kbd>←</kbd> <kbd>→</kbd> Navigate frames</div>
+                    <div><kbd>D</kbd> Draw mode</div>
+                    <div><kbd>E</kbd> Erase mode</div>
+                    <div><kbd>⌘S</kbd> Save changes</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeSettings">✕</button>
+            <h2>Settings</h2>
+            <div class="info-section settings-form">
+                <label for="settingsEmail">User Name (for activity/save headers)</label>
+                <input type="text" id="settingsEmail" placeholder="Your Name">
+                <label for="settingsToken">MD.ai API Token</label>
+                <input type="password" id="settingsToken" placeholder="Set or update token">
+                <p class="muted">Leave token blank to keep the current token. Token is stored for this session only.</p>
+                <div class="token-status" id="tokenStatus">Token: unknown</div>
+                <div class="settings-actions">
+                    <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
+                </div>
+                <div style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #ddd;">
+                    <h3 style="margin-top: 0;">Dataset Sync</h3>
+                    <p class="muted" style="margin-bottom: 1rem;">Download the latest dataset from MD.ai. This may take a few minutes.</p>
+                    <button class="control-btn" id="syncDatasetBtn" title="Sync Dataset from MD.ai">🔄</button>
+                    <div id="syncStatus" style="margin-top: 0.5rem; font-size: 0.9em; color: #666;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Series Selection Modal (opened from exam badge) -->
+    <div class="modal" id="seriesSelectModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeSeriesSelect">✕</button>
+            <h2>Select Series</h2>
+
+            <div class="nav-section">
+                <select id="videoSelect" class="video-select">
+                    {% for video in videos|sort(attribute='exam_number') %}
+                    <option value="{{ video.method }}|{{ video.study_uid }}|{{ video.series_uid }}"
+                            {% if video == selected_video %}selected{% endif %}>
+                        ◻️ Exam {{ video.exam_number }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- Completion confirmation modal -->
+    <div class="modal" id="completeModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeComplete">✕</button>
+            <h2>Mark series as done?</h2>
+            <div class="info-section">
+                <p>This will remove the current series from normal rotation.</p>
+                <p>You can reopen it later if needed.</p>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn" id="confirmComplete">✅ Mark Done</button>
+                <button class="modal-btn" id="cancelComplete">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Conflict modal (version mismatch or retrack in progress) -->
+    <div class="modal" id="conflictModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeConflict">✕</button>
+            <h2 id="conflictTitle">Save Conflict</h2>
+            <div class="info-section">
+                <p id="conflictMessage"></p>
+                <div id="conflictDetails" class="monospace" style="font-size: 0.9em; margin-top: 10px; color: #666;"></div>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn warning" id="resetAndReload">🔄 Reset & Reload</button>
+                <button class="modal-btn" id="cancelConflict">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reset retrack confirmation modal -->
+    <div class="modal" id="resetRetrackModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeResetRetrack">✕</button>
+            <h2>Reset Retrack Data?</h2>
+            <div class="info-section">
+                <p><strong>This will permanently remove:</strong></p>
+                <ul style="text-align: left; margin: 15px 0;">
+                    <li>All retracked masks and data</li>
+                    <li>Retrack queue jobs for this series</li>
+                    <li>Version history (resets to initial tracking)</li>
+                    <li>Uploaded mask archives</li>
+                </ul>
+                <p style="color: #ff9800; font-weight: bold;">This action cannot be undone!</p>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn warning" id="confirmResetRetrack">🔄 Reset</button>
+                <button class="modal-btn" id="cancelResetRetrack">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reset all retrack confirmation modal -->
+    <div class="modal" id="resetRetrackAllModal">
+        <div class="modal-content">
+            <button class="modal-close" id="closeResetRetrackAll">✕</button>
+            <h2>Reset Retrack Data for ALL Series?</h2>
+            <div class="info-section">
+                <p><strong>This will permanently remove for ALL series:</strong></p>
+                <ul style="text-align: left; margin: 15px 0;">
+                    <li>All retracked masks and data</li>
+                    <li>All retrack queue jobs</li>
+                    <li>All version history (resets to initial tracking)</li>
+                    <li>All uploaded mask archives</li>
+                </ul>
+                <p style="color: #ff9800; font-weight: bold;">This action cannot be undone!</p>
+            </div>
+            <div class="button-row">
+                <button class="modal-btn warning" id="confirmResetRetrackAll">🔄 Reset All</button>
+                <button class="modal-btn" id="cancelResetRetrackAll">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocking setup modal (shown when token not configured) -->
+    <div class="modal active" id="setupModal" style="z-index: 10001; display: none; pointer-events: auto;">
+        <div class="modal-content" style="max-width: 500px;">
+            <h2>⚠️ Setup Required</h2>
+            <div class="info-section">
+                <p style="margin-bottom: 1.5rem;">To view and annotate videos, you need to configure your MD.ai credentials.</p>
+                
+                <div style="text-align: left; margin: 1.5rem 0; line-height: 1.6;">
+                    <div style="margin: 1rem 0;">
+                        <span style="display: inline-block; width: 2rem; height: 2rem; background: #4CAF50; color: #000; border-radius: 50%; text-align: center; line-height: 2rem; font-weight: bold; margin-right: 0.5rem;">1</span>
+                        <strong>Get your MD.ai API token</strong><br>
+                        Visit <a href="https://public.md.ai/annotator/project" target="_blank" style="color: #4CAF50;">public.md.ai</a> and copy your API token from Settings
+                    </div>
+                    
+                    <div style="margin: 1rem 0;">
+                        <span style="display: inline-block; width: 2rem; height: 2rem; background: #4CAF50; color: #000; border-radius: 50%; text-align: center; line-height: 2rem; font-weight: bold; margin-right: 0.5rem;">2</span>
+                        <strong>Enter credentials below</strong><br>
+                        Enter your name and MD.ai token, then click Save
+                    </div>
+                </div>
+                
+                <div class="settings-form" style="margin-top: 2rem;">
+                    <label for="setupEmail">User Name (for activity/save headers)</label>
+                    <input type="text" id="setupEmail" placeholder="Your Name">
+                    <label for="setupToken">MD.ai API Token <span style="color: #f44336;">*</span></label>
+                    <input type="password" id="setupToken" placeholder="Enter your MD.ai API token" required>
+                    <div class="token-status" id="setupTokenStatus" style="margin-top: 0.5rem;">Token: not set</div>
+                    <div class="settings-actions" style="margin-top: 1rem;">
+                        <button class="control-btn" id="saveSetup" title="Save Settings">💾</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocking loading overlay for retrack operations -->
+    <div class="modal" id="retrackLoadingModal" style="z-index: 10000; background: rgba(0, 0, 0, 0.85);">
+        <div class="modal-content" style="background: transparent; border: none; box-shadow: none; max-width: 300px;">
+            <div class="retrack-loading-content">
+                <div class="hourglass-container">
+                    <div class="hourglass">⏳</div>
+                </div>
+                <div class="retrack-loading-text" id="retrackLoadingText">Processing retrack...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const INITIAL_VIDEO = {
+            method: '{{ selected_video.method }}',
+            studyUid: '{{ selected_video.study_uid }}',
+            seriesUid: '{{ selected_video.series_uid }}'
+        };
+    </script>
+    <script src="/static/js/viewer.js"></script>
+</body>
+</html>

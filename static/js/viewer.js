@@ -234,9 +234,10 @@ class AnnotationViewer {
     setupEventListeners() {
         // Modal controls
         document.getElementById('infoBtn').addEventListener('click', () => this.showModal('infoModal'));
-        document.getElementById('navBtn').addEventListener('click', () => this.showModal('navModal'));
+        document.getElementById('examBadge').addEventListener('click', () => this.showModal('seriesSelectModal'));
         document.getElementById('closeInfo').addEventListener('click', () => this.hideModal('infoModal'));
-        document.getElementById('closeNav').addEventListener('click', () => this.hideModal('navModal'));
+        document.getElementById('closeSeriesSelect').addEventListener('click', () => this.hideModal('seriesSelectModal'));
+        document.getElementById('closeKeyboardShortcuts').addEventListener('click', () => this.hideModal('keyboardShortcutsModal'));
         document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
         document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
         const saveSettingsBtn = document.getElementById('saveSettings');
@@ -267,17 +268,16 @@ class AnnotationViewer {
         if (cancelConflict) cancelConflict.addEventListener('click', () => this.hideModal('conflictModal'));
         if (resetAndReload) resetAndReload.addEventListener('click', () => this.handleResetAndReload());
 
-        // Reset retrack modal (current series)
-        // Reset retrack buttons (no modals - direct action)
+        // Reset retrack buttons (moved to info modal)
         const resetRetrackBtn = document.getElementById('resetRetrackBtn');
         if (resetRetrackBtn) resetRetrackBtn.addEventListener('click', () => {
-            this.hideModal('navModal');
+            this.hideModal('infoModal');
             this.confirmResetRetrack();
         });
 
         const resetRetrackAllBtn = document.getElementById('resetRetrackAllBtn');
         if (resetRetrackAllBtn) resetRetrackAllBtn.addEventListener('click', () => {
-            this.hideModal('navModal');
+            this.hideModal('infoModal');
             this.confirmResetRetrackAll();
         });
 
@@ -288,7 +288,14 @@ class AnnotationViewer {
             videoSelect.addEventListener('change', async (e) => {
                 const [method, studyUid, seriesUid] = e.target.value.split('|');
                 // Mark activity immediately when selecting from dropdown
-                await this.markSeriesActivity(studyUid, seriesUid);
+                const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
+                // Update warnings from activity response
+                if (activityResponse && activityResponse.ok) {
+                    const activityData = await activityResponse.json().catch(() => null);
+                    if (activityData) {
+                        await this.updateMultiplayerWarning(activityData);
+                    }
+                }
                 await this.loadVideo(method, studyUid, seriesUid);
             });
         }
@@ -311,32 +318,29 @@ class AnnotationViewer {
         document.getElementById('eraseMode').addEventListener('click', () => this.setDrawMode('erase'));
         document.getElementById('markEmpty').addEventListener('click', () => this.markEmpty());
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
-        document.getElementById('resetMask').addEventListener('click', () => this.resetMask());
+        document.getElementById('resetMask').addEventListener('click', () => this.handleResetAndReload());
 
-        // Brush size sliders (both modal and inline)
-        const brushSizeModal = document.getElementById('brushSize');
+        // Brush size slider (inline only - modal slider removed)
         const brushSizeInline = document.getElementById('brushSizeInline');
+        if (brushSizeInline) {
+            brushSizeInline.addEventListener('input', (e) => {
+                this.brushSize = parseInt(e.target.value);
+                this.updateBrushPreview();
+            });
+        }
 
-        brushSizeModal.addEventListener('input', (e) => {
-            this.brushSize = parseInt(e.target.value);
-            brushSizeInline.value = this.brushSize;
-            document.getElementById('brushSizeValue').textContent = this.brushSize;
-            this.updateBrushPreview();
-        });
-
-        brushSizeInline.addEventListener('input', (e) => {
-            this.brushSize = parseInt(e.target.value);
-            brushSizeModal.value = this.brushSize;
-            document.getElementById('brushSizeValue').textContent = this.brushSize;
-            this.updateBrushPreview();
-        });
-
-        // Mask opacity
-        document.getElementById('maskOpacity').addEventListener('input', (e) => {
-            this.maskOpacity = parseInt(e.target.value) / 100;
-            document.getElementById('maskOpacityValue').textContent = e.target.value;
-            this.render();
-        });
+        // Mask opacity (optional - was in nav modal which was removed)
+        const maskOpacityEl = document.getElementById('maskOpacity');
+        if (maskOpacityEl) {
+            maskOpacityEl.addEventListener('input', (e) => {
+                this.maskOpacity = parseInt(e.target.value) / 100;
+                const maskOpacityValueEl = document.getElementById('maskOpacityValue');
+                if (maskOpacityValueEl) {
+                    maskOpacityValueEl.textContent = e.target.value;
+                }
+                this.render();
+            });
+        }
 
         // Drawing events (mouse)
         this.canvas.addEventListener('mousedown', (e) => this.startDrawing(e));
@@ -369,6 +373,10 @@ class AnnotationViewer {
             if (e.target.tagName === 'INPUT') return;
 
             switch(e.key) {
+                case '?':
+                    e.preventDefault();
+                    this.showModal('keyboardShortcutsModal');
+                    break;
                 case ' ':
                     e.preventDefault();
                     // If at end of video, restart from beginning; otherwise toggle play/pause
@@ -405,6 +413,7 @@ class AnnotationViewer {
 
     updateBrushPreview(e) {
         const preview = document.getElementById('brushPreview');
+        if (!preview) return;
 
         // Calculate display scale (mask pixels to screen pixels)
         const scale = this.renderRect ? (this.renderRect.width / this.maskCanvas.width) : 1;
@@ -432,14 +441,18 @@ class AnnotationViewer {
 
 
     hideBrushPreview() {
-        document.getElementById('brushPreview').style.display = 'none';
+        const preview = document.getElementById('brushPreview');
+        if (preview) {
+            preview.style.display = 'none';
+        }
     }
 
-    async loadVideoData() {
+    async loadVideoData(skipModifiedFrames = false) {
         if (!this.currentVideo) {
             throw new Error('No current video set');
         }
         const { method, studyUid, seriesUid } = this.currentVideo;
+        // Client backend proxies to server (no local caching)
         const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
         const data = await response.json();
         this.totalFrames = data.total_frames;
@@ -471,7 +484,8 @@ class AnnotationViewer {
         
         // Override with modified_frames (user modifications take precedence)
         // Modified masks are always human-verified annotations (both fluid AND empty)
-        if (data.modified_frames) {
+        // Skip if resetting (skipModifiedFrames = true)
+        if (data.modified_frames && !skipModifiedFrames) {
             for (const [frameNum, frameData] of Object.entries(data.modified_frames)) {
                 const num = parseInt(frameNum);
                 if (this.videoData.mask_data[num]) {
@@ -501,7 +515,7 @@ class AnnotationViewer {
         document.getElementById('frameSlider').min = 0;
         document.getElementById('frameSlider').max = this.totalFrames - 1;
         this.updateFrameCounter();
-        this.updateSliderTypeBar();
+        // Don't update scrubline here - it will be updated after masks archive metadata is loaded
     }
     
     updateSliderTypeBar() {
@@ -564,17 +578,8 @@ class AnnotationViewer {
             }
             
             // Draw scrubline (thin line) across entire width
-            // Check if current frame is empty (saved or unsaved) to determine color
-            let isCurrentEmpty = false;
-            if (videoModifiedFrames.has(this.currentFrame)) {
-                const modified = videoModifiedFrames.get(this.currentFrame);
-                isCurrentEmpty = modified.maskType === 'empty';
-            } else {
-                const currentFrameData = this.videoData?.mask_data?.[this.currentFrame];
-                isCurrentEmpty = currentFrameData && currentFrameData.type === 'empty';
-            }
-            
-            const scrublineColor = isCurrentEmpty ? 'rgba(255, 0, 0, 0.9)' : 'rgba(76, 175, 80, 0.9)';
+            // Scrubline is always green - empty_id frames are indicated by the red glow around the image
+            const scrublineColor = 'rgba(76, 175, 80, 0.9)';
             
             // Draw scrubline across entire width (draw on top of colored sections)
             const scrublineY = height / 2;
@@ -748,12 +753,12 @@ class AnnotationViewer {
         this.maskCtx.putImageData(this.maskImageData, 0, 0);
         
         // Check if this frame was already modified in this session
+        // Only restore if hasUnsavedChanges is true (prevents restoring after reset)
         const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        if (videoModifiedFrames.has(this.currentFrame)) {
+        if (this.hasUnsavedChanges && videoModifiedFrames.has(this.currentFrame)) {
             const saved = videoModifiedFrames.get(this.currentFrame);
             this.maskImageData = saved.maskData;
             this.maskType = saved.maskType;
-            this.hasUnsavedChanges = true;
         } else {
             this.hasUnsavedChanges = false;
         }
@@ -812,11 +817,18 @@ class AnnotationViewer {
         const frameData = this.videoData?.mask_data?.[this.currentFrame];
         const isEmptyFrame = (frameData && frameData.type === 'empty') || this.maskType === 'empty';
         
-        // Add/remove empty frame indicator class on canvas
-        if (isEmptyFrame) {
-            this.canvas.classList.add('empty-frame-indicator');
-        } else {
-            this.canvas.classList.remove('empty-frame-indicator');
+        // Position and show/hide empty frame glow indicator to match image area
+        const glowElement = document.getElementById('emptyFrameGlow');
+        if (glowElement && this.renderRect) {
+            if (isEmptyFrame) {
+                glowElement.style.display = 'block';
+                glowElement.style.left = `${this.renderRect.x}px`;
+                glowElement.style.top = `${this.renderRect.y}px`;
+                glowElement.style.width = `${this.renderRect.width}px`;
+                glowElement.style.height = `${this.renderRect.height}px`;
+            } else {
+                glowElement.style.display = 'none';
+            }
         }
         
         // Scrubline is now drawn on type bar canvas, so update it
@@ -889,12 +901,18 @@ class AnnotationViewer {
         }
 
         console.log('Start drawing - Mode:', this.drawMode, 'Type:', this.maskType);
+        
+        if (!this.maskImageData) {
+            console.error('Cannot start drawing: maskImageData not initialized');
+            this.isDrawing = false;
+            return;
+        }
 
         this.draw(e);
     }
 
     draw(e) {
-        if (!this.isDrawing) return;
+        if (!this.isDrawing || !this.maskImageData) return;
 
         const coords = this.getCanvasCoordinates(e);
         this.drawLine(this.lastX, this.lastY, coords.x, coords.y);
@@ -934,6 +952,8 @@ class AnnotationViewer {
 
     // Draw circular brush (like teef)
     drawPoint(x, y) {
+        if (!this.maskImageData) return;
+        
         const value = this.drawMode === 'draw' ? 255 : 0;
 
         for (let dx = -this.brushSize; dx <= this.brushSize; dx++) {
@@ -1200,6 +1220,16 @@ class AnnotationViewer {
             return;
         }
 
+        if (this.videoData && this.videoData.status === 'completed') {
+            const shouldReopen = confirm(
+                'This series is marked as completed. Saving will reopen it and clear the completed status. Continue?'
+            );
+            if (!shouldReopen) {
+                return;
+            }
+            await this.reopenSeries();
+        }
+
         console.log(`Saving ${Object.keys(allAnnotationFrames).length} annotation frames`);
         try {
             // Build tar archive with all annotation frames
@@ -1315,12 +1345,12 @@ class AnnotationViewer {
                 }
                 this.hasUnsavedChanges = false;
                 
-                // Reload from server with cache busting to ensure fresh masks
+                // Reload from server to ensure fresh masks
                 this.frameCache.clear();
                 this.framesArchive = null;
                 this.masksArchive = {};
                 await this.loadVideoData();
-                await this.loadFramesArchive(true); // Force cache bust
+                await this.loadFramesArchive();
                 // Force reload current frame to ensure fresh masks are displayed
                 const currentFrameNum = this.currentFrame;
                 this.currentFrame = -1; // Force reload
@@ -1350,25 +1380,6 @@ class AnnotationViewer {
     }
 
 
-    resetMask() {
-        // Reset to the last saved state (from annotations/ if exists, else output/)
-        this.maskImageData = this.cloneImageData(this.originalMaskImageData);
-        this.maskType = this.originalMaskType;
-        
-        // Clear any unsaved edits for this frame (whether from modifiedFrames or pending retrack)
-        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        const hadUnsavedEdit = videoModifiedFrames.has(this.currentFrame);
-        
-        if (hadUnsavedEdit) {
-            // Remove from modified frames - resetting clears the unsaved edit
-            videoModifiedFrames.delete(this.currentFrame);
-            // Update unsaved changes state
-            this.hasUnsavedChanges = videoModifiedFrames.size > 0;
-        }
-        
-        this.updateSaveButtonState();
-                        this.render();
-                    }
 
     /**
      * Show completion confirmation modal.
@@ -1454,8 +1465,6 @@ class AnnotationViewer {
             this.updateCompletionIndicator();
             // Refresh all series statuses to update dropdown
             await this.refreshAllSeriesStatuses();
-            
-            alert('Series reopened for editing.');
         } catch (e) {
             alert(`Failed to reopen series: ${e.message}`);
         }
@@ -1495,6 +1504,53 @@ class AnnotationViewer {
             } else {
                 examBadge.textContent = examText.replace('#✓ ', '#');
             }
+        }
+    }
+
+    /**
+     * Populate video select dropdown from local series endpoint.
+     * This is needed for iOS client which doesn't use server-side Jinja2 templates.
+     */
+    async populateVideoSelectFromLocal() {
+        const videoSelect = document.getElementById('videoSelect');
+        if (!videoSelect) {
+            return;
+        }
+        
+        try {
+            // Try local endpoint first (iOS client)
+            let resp = await fetch('/api/local/series');
+            if (!resp.ok) {
+                // Fall back to server endpoint if local fails
+                resp = await fetch('/proxy/api/series');
+                if (!resp.ok) {
+                    console.warn('Failed to fetch series list:', resp.status);
+                    return;
+                }
+            }
+            
+            const allSeries = await resp.json();
+            
+            // Clear existing options
+            videoSelect.innerHTML = '';
+            
+            // Sort by exam_number
+            const sortedSeries = [...allSeries].sort((a, b) => {
+                const aNum = a.exam_number || 0;
+                const bNum = b.exam_number || 0;
+                return aNum - bNum;
+            });
+            
+            // Populate dropdown
+            for (const series of sortedSeries) {
+                const option = document.createElement('option');
+                const method = series.method || 'dis';
+                option.value = `${method}|${series.study_uid}|${series.series_uid}`;
+                option.text = `◻️ Exam ${series.exam_number || '-'}`;
+                videoSelect.appendChild(option);
+            }
+        } catch (e) {
+            console.warn('Failed to populate video select dropdown:', e);
         }
     }
 
@@ -1558,11 +1614,16 @@ class AnnotationViewer {
         }
         
         try {
-            // Fetch all series with statuses and activity from server
-            const resp = await fetch('/proxy/api/series');
+            // Try local endpoint first (iOS client), fall back to server endpoint
+            let resp = await fetch('/api/local/series');
+            let isLocal = true;
+            if (!resp.ok) {
+                resp = await fetch('/proxy/api/series');
+                isLocal = false;
             if (!resp.ok) {
                 console.warn('Failed to fetch series list:', resp.status);
                 return;
+                }
             }
             
             const allSeries = await resp.json();
@@ -1587,28 +1648,30 @@ class AnnotationViewer {
                     return '✅';
                 }
                 
-                // Priority 2: Active with someone (current user or other) in last 24h
+                // Priority 2: Other user active in last 24h (trumps current user activity)
                 if (activity && Object.keys(activity).length > 0) {
-                    // Find most recent activity
-                    let mostRecentUser = null;
-                    let mostRecentTime = null;
+                    let hasOtherUserActivity = false;
+                    let hasCurrentUserActivity = false;
+                    
                     for (const [userEmail, timestamp] of Object.entries(activity)) {
                         const activityTime = new Date(timestamp);
-                        if (!mostRecentTime || activityTime > mostRecentTime) {
-                            mostRecentTime = activityTime;
-                            mostRecentUser = userEmail;
+                        if (activityTime >= twentyFourHoursAgo) {
+                            if (userEmail === currentUserEmail) {
+                                hasCurrentUserActivity = true;
+                            } else {
+                                hasOtherUserActivity = true;
+                            }
                         }
                     }
                     
-                    if (mostRecentTime && mostRecentTime >= twentyFourHoursAgo) {
-                        // Active in last 24h
-                        if (mostRecentUser === currentUserEmail) {
-                            // Priority 3: Last active with current user but not complete
-                            return '✏️';
-                        } else {
-                            // Priority 2: Last active with someone else in last 24h
-                            return '⚠️';
-                        }
+                    // Priority 2: Other user active in last 24h (warning trumps current user)
+                    if (hasOtherUserActivity) {
+                        return '⚠️';
+                    }
+                    
+                    // Priority 3: Only current user active in last 24h
+                    if (hasCurrentUserActivity) {
+                        return '🖌️';
                     }
                 }
                 
@@ -1689,18 +1752,21 @@ class AnnotationViewer {
             this.hasUnsavedChanges = false;
             this.updateSaveButtonState();
             
-            // Reload current series with reset masks (initial tracking) - add cache busting
+            // Reload current series with reset masks (initial tracking)
             // Clear ALL caches first
-                    this.frameCache.clear();
-                    this.framesArchive = null;
-                    this.masksArchive = {};
+            this.frameCache.clear();
+            this.framesArchive = null;
+            this.masksArchive = {};
+            // Clear videoData to force fresh fetch from server (no client caching)
+            this.videoData = null;
 
             // Reload current series directly (don't call loadNextSeries - stay on current series)
             // The user was just active on this series, so it should be returned by /api/series/next
             // But to be safe, reload the current series directly first, then verify with /api/series/next
             const currentFrameNum = this.currentFrame;
-                    await this.loadVideoData();
-            await this.loadFramesArchive(true);
+            // Force fresh fetch by skipping modified_frames (they're gone after reset)
+            await this.loadVideoData(true); // skipModifiedFrames = true
+            await this.loadFramesArchive();
             this.currentFrame = -1;
             await this.goToFrame(currentFrameNum);
             
@@ -1763,7 +1829,7 @@ class AnnotationViewer {
                 // Reload current series directly (don't call loadNextSeries - stay on current series)
                 const currentFrameNum = this.currentFrame;
                 await this.loadVideoData(); // This will fetch fresh status from server
-                await this.loadFramesArchive(true);
+                await this.loadFramesArchive();
                 this.currentFrame = -1;
                 await this.goToFrame(currentFrameNum);
                 
@@ -1794,30 +1860,25 @@ class AnnotationViewer {
     async handleResetAndReload() {
         this.hideModal('conflictModal');
         
-        const { studyUid, seriesUid } = this.currentVideo;
-        const videoKey = `${studyUid}__${seriesUid}`;
+        if (!this.currentVideo) {
+            console.error('Cannot reset: no current video');
+            return;
+        }
         
-        // Clear all local edits for this video
+        const { studyUid, seriesUid, method } = this.currentVideo;
+        const videoKey = this.getVideoKey(method, studyUid, seriesUid);
+        
+        // Clear unsaved edits - ensure Map is completely removed
         this.modifiedFrames.delete(videoKey);
         this.hasUnsavedChanges = false;
+        
+        // Reload fresh from server (skip modified_frames)
+        // This clears all caches, rebuilds videoData.mask_data from server, and updates UI
+        await this.loadVideo(method, studyUid, seriesUid, true);
+        
+        // Force UI updates after reload to ensure fresh state is displayed
         this.updateSaveButtonState();
-        
-        // Clear frame cache
-        this.frameCache.clear();
-        this.framesArchive = null;
-        this.masksArchive = {};
-        
-        // Reload from server
-        console.log('Resetting and reloading from server...');
-        try {
-            await this.loadVideoData();
-            await this.loadFramesArchive();
-            await this.goToFrame(this.currentFrame);
-            console.log('✅ Reloaded from server');
-        } catch (error) {
-            console.error('Error reloading from server:', error);
-            alert(`Error reloading: ${error.message}`);
-        }
+        this.updateSliderTypeBar();
     }
 
     markEmpty() {
@@ -1894,25 +1955,40 @@ class AnnotationViewer {
             });
             
             if (!response.ok) {
-                throw new Error(`Failed to fetch next series: ${response.statusText}`);
+                const errorText = await response.text().catch(() => response.statusText);
+                throw new Error(`Failed to fetch next series: ${response.status} ${errorText}`);
             }
             
-            const data = await response.json();
+            let data;
+            try {
+                data = await response.json();
+            } catch (e) {
+                const text = await response.text();
+                throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`);
+            }
             
             if (data.no_available_series) {
                 alert('No available series to work on. All series may be completed or in progress.');
                 return;
             }
             
-            // Mark activity immediately when server selects a series for us
-            // This happens before any local checks or loading
-            await this.markSeriesActivity(data.study_uid, data.series_uid);
-            
             // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
             // We need to determine the method - for now, use flow_method from config or default
             // The server doesn't return method, so we'll need to infer it or use a default
             // For now, assume method is 'dis' (the flow method)
             const method = 'dis'; // TODO: Get from server response or config
+            
+            // Mark activity IMMEDIATELY when server selects a series (before any local checks)
+            // This ensures other clients see activity right away
+            const activityResponse = await this.markSeriesActivity(data.study_uid, data.series_uid);
+            
+            // Update warnings from the activity response (includes updated activity data)
+            if (activityResponse && activityResponse.ok) {
+                const activityData = await activityResponse.json().catch(() => null);
+                if (activityData) {
+                    await this.updateMultiplayerWarning(activityData);
+                }
+            }
             
             // Check if series exists locally before trying to load
             // The client needs to have synced its dataset to include this series
@@ -1930,7 +2006,8 @@ class AnnotationViewer {
             await this.loadVideo(method, data.study_uid, data.series_uid);
         } catch (error) {
             console.error('Error loading next series:', error);
-            alert(`Failed to load next series: ${error.message}`);
+            // Re-throw so caller can handle fallback (e.g., to INITIAL_VIDEO)
+            throw error;
         }
     }
     
@@ -1991,7 +2068,7 @@ class AnnotationViewer {
      */
     async markSeriesActivity(studyUid, seriesUid) {
         if (!studyUid || !seriesUid) {
-            return;
+            return null;
         }
         
         try {
@@ -2007,11 +2084,14 @@ class AnnotationViewer {
             
             if (!response.ok) {
                 console.warn(`Activity mark failed: ${response.status} ${response.statusText}`);
+                return null;
             } else {
                 console.debug('Activity marked successfully');
+                return response; // Return response so caller can get updated data
             }
         } catch (error) {
             console.warn('Activity mark error:', error);
+            return null;
         }
     }
     
@@ -2025,7 +2105,92 @@ class AnnotationViewer {
         }
         
         // Use the shared method
-        await this.markSeriesActivity(this.currentVideo.studyUid, this.currentVideo.seriesUid);
+        const response = await this.markSeriesActivity(this.currentVideo.studyUid, this.currentVideo.seriesUid);
+        
+        // Update warnings after activity ping (response includes updated activity data)
+        if (response && response.ok) {
+            const data = await response.json().catch(() => null);
+            if (data) {
+                await this.updateMultiplayerWarning(data);
+            }
+        }
+    }
+    
+    /**
+     * Fetch series detail and update warnings.
+     */
+    async fetchAndUpdateWarnings() {
+        if (!this.currentVideo || !this.currentVideo.studyUid) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(
+                `/proxy/api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`
+            );
+            if (response.ok) {
+                const data = await response.json();
+                await this.updateMultiplayerWarning(data);
+            }
+        } catch (error) {
+            console.warn('Failed to fetch series detail for warnings:', error);
+        }
+    }
+    
+    /**
+     * Check for multiplayer warnings and update the banner.
+     * Warnings shown for:
+     * - Series is completed (status === 'completed')
+     * - Other users have been active recently (within 24 hours)
+     */
+    async updateMultiplayerWarning(seriesData) {
+        const warningEl = document.getElementById('multiplayerWarning');
+        if (!warningEl || !this.currentVideo) {
+            return;
+        }
+        
+        const currentUserEmail = this.getUserEmail();
+        const warnings = [];
+        
+        // Check if series is completed
+        if (seriesData.status === 'completed') {
+            warnings.push('⚠️ This series is marked as completed');
+        }
+        
+        // Check for recent activity from other users
+        if (seriesData.activity) {
+            const now = new Date();
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            let mostRecentOtherUser = null;
+            let mostRecentOtherTime = null;
+            
+            for (const [userEmail, timestamp] of Object.entries(seriesData.activity)) {
+                if (userEmail === currentUserEmail) {
+                    continue; // Skip current user
+                }
+                const activityTime = new Date(timestamp);
+                if (activityTime >= twentyFourHoursAgo) {
+                    if (!mostRecentOtherTime || activityTime > mostRecentOtherTime) {
+                        mostRecentOtherTime = activityTime;
+                        mostRecentOtherUser = userEmail;
+                    }
+                }
+            }
+            
+            if (mostRecentOtherUser) {
+                const timeAgo = Math.round((now - mostRecentOtherTime) / (1000 * 60)); // minutes ago
+                const timeStr = timeAgo < 60 ? `${timeAgo}m ago` : `${Math.round(timeAgo / 60)}h ago`;
+                warnings.push(`⚠️ Another user (${mostRecentOtherUser}) was active ${timeStr}`);
+            }
+        }
+        
+        // Update banner
+        if (warnings.length > 0) {
+            warningEl.textContent = warnings.join(' • ');
+            warningEl.classList.remove('hidden');
+        } else {
+            warningEl.classList.add('hidden');
+        }
     }
 
     getVideoKey(method, studyUid, seriesUid) {
@@ -2040,7 +2205,7 @@ class AnnotationViewer {
         return this.modifiedFrames.get(videoKey);
     }
 
-    async loadVideo(method, studyUid, seriesUid) {
+    async loadVideo(method, studyUid, seriesUid, skipModifiedFrames = false) {
         // Stop activity pings for previous video (if any)
         this.stopActivityPings();
         
@@ -2054,7 +2219,7 @@ class AnnotationViewer {
         this.currentVersionId = null; // Reset version ID - will be set from server response
         this.currentVideo = { method, studyUid, seriesUid };
         // Load video data first so we know which frames are modified
-        await this.loadVideoData();
+        await this.loadVideoData(skipModifiedFrames);
         await this.loadFramesArchive();
         this.currentFrame = -1;
         await this.goToFrame(0);
@@ -2063,6 +2228,9 @@ class AnnotationViewer {
         this.updateCompletionIndicator(); // Update completion status indicator
         this.updateVideoSelect(); // Update dropdown to show current series
         await this.refreshAllSeriesStatuses(); // Update all indicators with activity data
+        
+        // Fetch series detail to get activity data and update warnings
+        await this.fetchAndUpdateWarnings();
         
         // Start activity pings for this video (every 30s)
         this.startActivityPings();
@@ -2075,7 +2243,7 @@ class AnnotationViewer {
         this.stopActivityPings();
     }
     
-    async loadFramesArchive(forceCacheBust = false) {
+    async loadFramesArchive() {
         const loadingDiv = document.getElementById('loadingIndicator') || (() => {
             const d = document.createElement('div');
             d.id = 'loadingIndicator';
@@ -2088,10 +2256,8 @@ class AnnotationViewer {
 
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
-            let url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
-            if (forceCacheBust) {
-                url += `?t=${Date.now()}`;
-            }
+            // Client backend proxies to server (no local caching)
+            const url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
             const response = await fetch(url);
             
             if (!response.ok) {
@@ -2115,6 +2281,7 @@ class AnnotationViewer {
             }
 
             // Load frames archive (.tar format, no gzip)
+            // Client backend proxies to server (no local caching)
             const framesArchiveResponse = await fetch(framesUrl);
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesTarData = new Uint8Array(framesArrayBuffer);
@@ -2142,13 +2309,9 @@ class AnnotationViewer {
             }
 
             // Load masks archive (.tar format, no gzip) - get version ID from headers
-            // Add cache busting if forceCacheBust is true
             this.masksArchive = {};
             if (masksUrl) {
-                if (forceCacheBust) {
-                    const separator = masksUrl.includes('?') ? '&' : '?';
-                    masksUrl = `${masksUrl}${separator}t=${Date.now()}`;
-                }
+                // Client backend proxies to server (no local caching)
                 const masksArchiveResponse = await fetch(masksUrl);
                 
                 if (!masksArchiveResponse.ok) {
@@ -2232,12 +2395,13 @@ class AnnotationViewer {
     }
 
     async showModal(modalId) {
-        // If showing navigation modal, refresh series statuses first to ensure fresh data
-        if (modalId === 'navModal') {
+        // If showing series selection modal, refresh series statuses first to ensure fresh data
+        if (modalId === 'seriesSelectModal') {
             await this.refreshAllSeriesStatuses();
+            this.updateVideoSelect(); // Update dropdown to show current selection
         }
         
-        // Show modal after statuses are refreshed (for navModal) or immediately (for others)
+        // Show modal after statuses are refreshed (for seriesSelectModal) or immediately (for others)
         document.getElementById(modalId).classList.add('active');
     }
 
@@ -2267,25 +2431,37 @@ class AnnotationViewer {
 
     updateVideoInfo() {
         // Update video-level info (study, series, method, exam)
-        if (this.videoData) {
-            const infoStudy = document.getElementById('infoStudy');
-            const infoSeries = document.getElementById('infoSeries');
-            const infoMethod = document.getElementById('infoMethod');
-            const infoExam = document.getElementById('infoExam');
-            const examBadge = document.getElementById('examBadge');
-            
-            if (infoStudy) infoStudy.textContent = this.videoData.study_uid || this.currentVideo.studyUid;
-            if (infoSeries) infoSeries.textContent = this.videoData.series_uid || this.currentVideo.seriesUid;
-            if (infoMethod) infoMethod.textContent = this.videoData.method || this.currentVideo.method;
-            const examValue = this.videoData.exam_number || 'Unknown';
-            if (infoExam) infoExam.textContent = examValue;
-            if (examBadge) {
-                const badgeText = typeof examValue === 'number' || /^\d+$/.test(String(examValue))
-                    ? `# ${examValue}`
-                    : '# --';
-                examBadge.textContent = badgeText;
-                examBadge.title = `Exam ${examValue}`;
+        const infoStudy = document.getElementById('infoStudy');
+        const infoSeries = document.getElementById('infoSeries');
+        const infoMethod = document.getElementById('infoMethod');
+        const infoExam = document.getElementById('infoExam');
+        const examBadge = document.getElementById('examBadge');
+        
+        // Use videoData if available, otherwise fall back to currentVideo
+        const studyUid = this.videoData?.study_uid || this.currentVideo?.studyUid;
+        const seriesUid = this.videoData?.series_uid || this.currentVideo?.seriesUid;
+        const method = this.videoData?.method || this.currentVideo?.method;
+        const examValue = this.videoData?.exam_number || 'Unknown';
+        
+        if (infoStudy && studyUid) infoStudy.textContent = studyUid;
+        if (infoSeries && seriesUid) infoSeries.textContent = seriesUid;
+        if (infoMethod && method) infoMethod.textContent = method;
+        if (infoExam) infoExam.textContent = examValue;
+        
+        // Always update exam badge if we have any video info
+        if (examBadge) {
+            // Try to get exam number from videoData first, then from API response
+            let finalExamValue = examValue;
+            if ((!finalExamValue || finalExamValue === 'Unknown') && this.videoData) {
+                // Check if exam_number was set in loadVideoData
+                finalExamValue = this.videoData.exam_number || 'Unknown';
             }
+            
+            const badgeText = (finalExamValue && finalExamValue !== 'Unknown' && (typeof finalExamValue === 'number' || /^\d+$/.test(String(finalExamValue))))
+                ? `# ${finalExamValue}`
+                : '# --';
+            examBadge.textContent = badgeText;
+            examBadge.title = finalExamValue && finalExamValue !== 'Unknown' ? `Exam ${finalExamValue}` : 'Click to select series';
         }
     }
     
@@ -2307,8 +2483,11 @@ class AnnotationViewer {
 
 AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
     try {
-        const resp = await fetch('/api/dataset/version_status');
-        if (!resp.ok) return;
+        const resp = await fetch('/api/dataset/version_status').catch(() => null);
+        if (!resp || !resp.ok) {
+            // Silently fail - dataset sync status is not critical
+            return;
+        }
         const data = await resp.json();
         const banner = document.getElementById('datasetWarning');
         if (!banner) return;
@@ -2318,6 +2497,7 @@ AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
             banner.classList.remove('hidden');
         }
     } catch (e) {
+        // Silently fail - dataset sync status is not critical
         const banner = document.getElementById('datasetWarning');
         if (banner) banner.classList.add('hidden');
     }

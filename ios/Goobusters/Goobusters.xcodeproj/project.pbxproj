@@ -1,0 +1,430 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 71;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		9DB589B52F1AADFA00DE9F33 /* PythonKit in Frameworks */ = {isa = PBXBuildFile; productRef = 9DB589B42F1AADFA00DE9F33 /* PythonKit */; };
+		GOOB0012BE5A1B400AAE5A9 /* GoobustersApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = GOOB0022BE5A1B400AAE5A9 /* GoobustersApp.swift */; };
+		GOOB0032BE5A1B400AAE5A9 /* GoobustersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GOOB0042BE5A1B400AAE5A9 /* GoobustersView.swift */; };
+		GOOB0052BE5A1B400AAE5A9 /* BackendManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = GOOB0062BE5A1B400AAE5A9 /* BackendManager.swift */; };
+		GOOB0072BE5A1B400AAE5A9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = GOOB0082BE5A1B400AAE5A9 /* Assets.xcassets */; };
+		GOOB0192C1234D5678EF9012 /* BackendPythonRunner.mm in Sources */ = {isa = PBXBuildFile; fileRef = GOOB0193C1234D5678EF9012 /* BackendPythonRunner.mm */; };
+		GOOB0194C1234D5678EF9012 /* Python.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = GOOB0195C1234D5678EF9012 /* Python.xcframework */; };
+		GOOB0196C1234D5678EF9012 /* Python.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = GOOB0195C1234D5678EF9012 /* Python.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		GOOB01A3C1234D5678EF9012 /* PythonBackendRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = GOOB01A2C1234D5678EF9012 /* PythonBackendRunner.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		GOOB0199C1234D5678EF9012 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				GOOB0196C1234D5678EF9012 /* Python.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		GOOB0022BE5A1B400AAE5A9 /* GoobustersApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoobustersApp.swift; sourceTree = "<group>"; };
+		GOOB0042BE5A1B400AAE5A9 /* GoobustersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoobustersView.swift; sourceTree = "<group>"; };
+		GOOB0062BE5A1B400AAE5A9 /* BackendManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendManager.swift; sourceTree = "<group>"; };
+		GOOB0082BE5A1B400AAE5A9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		GOOB0092BE5A1B400AAE5A9 /* Goobusters.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Goobusters.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		GOOB00A2BE5A1B400AAE5A9 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		GOOB0193C1234D5678EF9012 /* BackendPythonRunner.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BackendPythonRunner.mm; sourceTree = "<group>"; };
+		GOOB0195C1234D5678EF9012 /* Python.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Python.xcframework; sourceTree = "<group>"; };
+		GOOB0197C1234D5678EF9012 /* BackendPythonRunner.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BackendPythonRunner.h; sourceTree = "<group>"; };
+		GOOB019BC1234D5678EF9012 /* Goobusters-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Goobusters-Bridging-Header.h"; sourceTree = "<group>"; };
+		GOOB01A2C1234D5678EF9012 /* PythonBackendRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PythonBackendRunner.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		GOOB00B2BE5A1B400AAE5A9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				GOOB0194C1234D5678EF9012 /* Python.xcframework in Frameworks */,
+				9DB589B52F1AADFA00DE9F33 /* PythonKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		GOOB00C2BE5A1B400AAE5A9 = {
+			isa = PBXGroup;
+			children = (
+				GOOB00D2BE5A1B400AAE5A9 /* Goobusters */,
+				GOOB00E2BE5A1B400AAE5A9 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		GOOB00D2BE5A1B400AAE5A9 /* Goobusters */ = {
+			isa = PBXGroup;
+			children = (
+				GOOB0022BE5A1B400AAE5A9 /* GoobustersApp.swift */,
+				GOOB0042BE5A1B400AAE5A9 /* GoobustersView.swift */,
+				GOOB0062BE5A1B400AAE5A9 /* BackendManager.swift */,
+				GOOB0197C1234D5678EF9012 /* BackendPythonRunner.h */,
+				GOOB0193C1234D5678EF9012 /* BackendPythonRunner.mm */,
+				GOOB019BC1234D5678EF9012 /* Goobusters-Bridging-Header.h */,
+				GOOB01A2C1234D5678EF9012 /* PythonBackendRunner.swift */,
+				GOOB0082BE5A1B400AAE5A9 /* Assets.xcassets */,
+				GOOB00A2BE5A1B400AAE5A9 /* Info.plist */,
+				GOOB0195C1234D5678EF9012 /* Python.xcframework */,
+			);
+			path = Goobusters;
+			sourceTree = "<group>";
+		};
+		GOOB00E2BE5A1B400AAE5A9 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				GOOB0092BE5A1B400AAE5A9 /* Goobusters.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		GOOB00F2BE5A1B400AAE5A9 /* Goobusters */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = GOOB0102BE5A1B400AAE5A9 /* Build configuration list for PBXNativeTarget "Goobusters" */;
+			buildPhases = (
+				GOOB019AC1234D5678EF9012 /* Sources */,
+				GOOB0198C1234D5678EF9012 /* Prepare Python Runtime */,
+				GOOB00B2BE5A1B400AAE5A9 /* Frameworks */,
+				GOOB0199C1234D5678EF9012 /* Embed Frameworks */,
+				GOOB0122BE5A1B400AAE5A9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Goobusters;
+			productName = Goobusters;
+			productReference = GOOB0092BE5A1B400AAE5A9 /* Goobusters.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		GOOB0132BE5A1B400AAE5A9 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 1530;
+				LastUpgradeCheck = 1530;
+				TargetAttributes = {
+					GOOB00F2BE5A1B400AAE5A9 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = GOOB0142BE5A1B400AAE5A9 /* Build configuration list for PBXProject "Goobusters" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = GOOB00C2BE5A1B400AAE5A9;
+			packageReferences = (
+				9DB589B32F1AADFA00DE9F33 /* XCRemoteSwiftPackageReference "PythonKit" */,
+			);
+			productRefGroup = GOOB00E2BE5A1B400AAE5A9 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				GOOB00F2BE5A1B400AAE5A9 /* Goobusters */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		GOOB0122BE5A1B400AAE5A9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				GOOB0072BE5A1B400AAE5A9 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		GOOB0198C1234D5678EF9012 /* Prepare Python Runtime */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Prepare Python Runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nSCRIPT_DIR=\"$PROJECT_DIR/Goobusters\"\nsource \"$SCRIPT_DIR/Python.xcframework/build/utils.sh\"\ninstall_python Goobusters/Python.xcframework Goobusters/python-app\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		GOOB019AC1234D5678EF9012 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				GOOB0012BE5A1B400AAE5A9 /* GoobustersApp.swift in Sources */,
+				GOOB0032BE5A1B400AAE5A9 /* GoobustersView.swift in Sources */,
+				GOOB0052BE5A1B400AAE5A9 /* BackendManager.swift in Sources */,
+				GOOB0192C1234D5678EF9012 /* BackendPythonRunner.mm in Sources */,
+				GOOB01A3C1234D5678EF9012 /* PythonBackendRunner.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		GOOB0152BE5A1B400AAE5A9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		GOOB0162BE5A1B400AAE5A9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+		GOOB0172BE5A1B400AAE5A9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = KTGSS9PB3A;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Goobusters";
+				INFOPLIST_FILE = Goobusters/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					Python,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.badmath.goobusters;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Goobusters/Goobusters-Bridging-Header.h";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Debug;
+		};
+		GOOB0182BE5A1B400AAE5A9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = KTGSS9PB3A;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"PYTHON_XCFRAMEWORK_PATH=\"$(PROJECT_DIR)/Goobusters/Python.xcframework\"",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(PROJECT_DIR)/Goobusters";
+				INFOPLIST_FILE = Goobusters/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					Python,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.badmath.goobusters;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "Goobusters/Goobusters-Bridging-Header.h";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		GOOB0102BE5A1B400AAE5A9 /* Build configuration list for PBXNativeTarget "Goobusters" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				GOOB0172BE5A1B400AAE5A9 /* Debug */,
+				GOOB0182BE5A1B400AAE5A9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		GOOB0142BE5A1B400AAE5A9 /* Build configuration list for PBXProject "Goobusters" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				GOOB0152BE5A1B400AAE5A9 /* Debug */,
+				GOOB0162BE5A1B400AAE5A9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		9DB589B32F1AADFA00DE9F33 /* XCRemoteSwiftPackageReference "PythonKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/pvieito/PythonKit.git";
+			requirement = {
+				branch = master;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		9DB589B42F1AADFA00DE9F33 /* PythonKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9DB589B32F1AADFA00DE9F33 /* XCRemoteSwiftPackageReference "PythonKit" */;
+			productName = PythonKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = GOOB0132BE5A1B400AAE5A9 /* Project object */;
+}
