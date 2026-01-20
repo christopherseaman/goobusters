@@ -180,7 +180,13 @@ class AnnotationViewer {
                 this.hideServerConnectionScreen();
                 return true;
             } catch (error) {
-                console.error(`Server connection attempt ${this.serverConnectionRetryCount + 1} failed:`, error);
+                console.error(`[connectToServerWithRetry] Server connection attempt ${this.serverConnectionRetryCount + 1} failed:`, error);
+                console.error(`[connectToServerWithRetry] Error details:`, {
+                    message: error.message,
+                    stack: error.stack,
+                    name: error.name,
+                    serverUrl: this.serverUrl
+                });
                 this.serverConnectionRetryCount++;
                 
                 if (this.serverConnectionRetryCount >= maxRetries) {
@@ -2476,18 +2482,25 @@ class AnnotationViewer {
      */
     async loadNextSeries() {
         try {
-            const response = await fetch(this.serverUrlFor('api/series/next'), {
+            const url = this.serverUrlFor('api/series/next');
+            console.log('[loadNextSeries] Fetching from:', url);
+            const response = await fetch(url, {
                 headers: {
                     'X-User-Email': this.getUserEmail() || ''
                 }
             });
             
+            console.log('[loadNextSeries] Response status:', response.status, response.statusText);
+            console.log('[loadNextSeries] Response headers:', Object.fromEntries(response.headers.entries()));
+            
             if (!response.ok) {
                 if (response.status === 0 || response.status >= 500) {
                     // Network error or server error - connection issue
+                    console.error('[loadNextSeries] Network/server error:', response.status);
                     throw new Error('Server unavailable');
                 }
                 const errorText = await response.text().catch(() => response.statusText);
+                console.error('[loadNextSeries] HTTP error:', response.status, errorText);
                 throw new Error(`Failed to fetch next series: ${response.status} ${errorText}`);
             }
             
@@ -2526,7 +2539,12 @@ class AnnotationViewer {
             // Note: loadVideo() will also mark activity (redundant but safe)
             await this.loadVideo(method, data.study_uid, data.series_uid);
         } catch (error) {
-            console.error('Error loading next series:', error);
+            console.error('[loadNextSeries] Error loading next series:', error);
+            console.error('[loadNextSeries] Error details:', {
+                message: error.message,
+                stack: error.stack,
+                name: error.name
+            });
             // Re-throw so caller can handle fallback (e.g., to INITIAL_VIDEO)
             throw error;
         }

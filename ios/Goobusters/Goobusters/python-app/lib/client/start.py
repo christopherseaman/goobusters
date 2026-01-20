@@ -665,7 +665,7 @@ def create_app(
             return jsonify({"error": "Series not found locally"}), 404
 
         try:
-            video_path = context.dataset.resolve_video(study_uid, series_uid)
+            video_path = context.resolve_video(study_uid, series_uid)
         except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
 
