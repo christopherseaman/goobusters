@@ -214,7 +214,10 @@ def create_app(
         selected_video = videos[0]
 
         return render_template(
-            "viewer.html", videos=videos, selected_video=selected_video
+            "viewer.html", 
+            videos=videos, 
+            selected_video=selected_video,
+            server_url=config.server_url
         )
 
     @app.get("/api/videos")
@@ -227,11 +230,12 @@ def create_app(
             return jsonify({"error": "Dataset not ready"}), 503
         return jsonify(videos)
 
+
     @app.get("/api/video/<method>/<study_uid>/<series_uid>")
     def api_video(method: str, study_uid: str, series_uid: str):
         """
-        Proxy video metadata from server (no local caching).
-        Server is source of truth for masks_annotations and modified_frames.
+        Proxy video metadata from server. Server is source of truth.
+        No fallbacks - if server unavailable, return error so frontend can show blocking screen.
         """
         # Verify series exists locally (for dataset sync check)
         info = _find_series_info(study_uid, series_uid)
@@ -244,27 +248,21 @@ def create_app(
             return jsonify({"error": str(exc)}), 404
 
         # Proxy entire response from server (server is source of truth)
+        # No fallbacks - frontend handles server unavailability with blocking screen
         try:
             server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
             resp = context.http_client.get(server_url, timeout=10)
-            if resp.status_code == 200:
-                # Return server response directly (no local modification)
-                return Response(
-                    resp.content,
-                    status=resp.status_code,
-                    headers={"Content-Type": "application/json"},
-                )
-            else:
-                # Server error - return error response
-                return Response(
-                    resp.content,
-                    status=resp.status_code,
-                    headers={"Content-Type": "application/json"},
-                )
+            return Response(
+                resp.content,
+                status=resp.status_code,
+                headers={"Content-Type": "application/json"},
+            )
         except Exception as exc:
             return jsonify({
-                "error": f"Failed to fetch from server: {exc}"
-            }), 500
+                "error": "Server unavailable",
+                "error_message": f"Failed to connect to server: {exc}",
+                "server_url": config.server_url,
+            }), 503
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
     def api_frames(method: str, study_uid: str, series_uid: str):
@@ -278,10 +276,11 @@ def create_app(
         if not info:
             return jsonify({"error": "Series not found locally"}), 404
 
+        # Return direct server URLs (no proxy)
         frames_archive_url = (
-            f"/proxy/api/frames_archive/{study_uid}/{series_uid}.tar"
+            f"{config.server_url.rstrip('/')}/api/frames_archive/{study_uid}/{series_uid}.tar"
         )
-        masks_archive_url = f"/proxy/api/masks/{study_uid}/{series_uid}"
+        masks_archive_url = f"{config.server_url.rstrip('/')}/api/masks/{study_uid}/{series_uid}"
         return jsonify({
             "frames_archive_url": frames_archive_url,
             "masks_archive_url": masks_archive_url,
@@ -570,123 +569,6 @@ def create_app(
             "error": "Retrack status uses study/series, not task_id. Update viewer.js."
         }), 400
 
-    @app.route(
-        "/proxy/<path:subpath>",
-        methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    )
-    def proxy_to_server(subpath: str):
-        """Forward requests to the centralized tracking server."""
-        try:
-            url = f"{config.server_url.rstrip('/')}/{subpath}"
-            headers = {
-                key: value
-                for key, value in request.headers
-                if key.lower()
-                not in {"host", "content-length", "connection", "authorization"}
-            }
-
-            if "X-User-Email" not in headers:
-                frontend_email = request.headers.get("X-User-Email")
-                if frontend_email:
-                    headers["X-User-Email"] = frontend_email
-                else:
-                    current_email = _current_user_email()
-                    if current_email:
-                        headers["X-User-Email"] = current_email
-
-            files = None
-            if request.files:
-                files = {
-                    name: (file.filename, file.stream, file.mimetype)
-                    for name, file in request.files.items()
-                }
-
-            data = None
-            json_payload = None
-            if request.is_json and not request.data:
-                json_payload = request.get_json(silent=True)
-            else:
-                data = request.get_data()
-
-            logger = logging.getLogger(__name__)
-            logger.debug(f"Proxying {request.method} {subpath} to {url}")
-
-            proxy_headers = headers.copy()
-
-            # Proxy request to server using the shared client
-            resp = context.http_client.request(
-                request.method,
-                url,
-                params=request.args,
-                data=data,
-                json=json_payload,
-                files=files,
-                headers=proxy_headers,
-                timeout=60,
-                follow_redirects=True,
-            )
-            # Ensure we read the full response content to avoid any streaming/caching issues
-            status_code = resp.status_code
-            response_headers_dict = dict(resp.headers)
-            content = resp.content
-
-            # Debug: Log response size and first 200 chars for /api/series
-            if subpath == "api/series":
-                logger.debug(
-                    f"Proxy /api/series response size: {len(content)} bytes"
-                )
-                try:
-                    import json
-
-                    data = json.loads(content.decode("utf-8"))
-                    if data and isinstance(data, list):
-                        exam_429 = [
-                            x for x in data if x.get("exam_number") == 429
-                        ]
-                        if exam_429:
-                            logger.debug(
-                                f"Exam 429 activity in proxy response: {exam_429[0].get('activity', {})}"
-                            )
-                except Exception:
-                    pass
-
-            logger.debug(f"Proxy response: {status_code} for {subpath}")
-
-            excluded_headers = {
-                "content-length",
-                "content-encoding",
-                "transfer-encoding",
-                "connection",
-            }
-            response_headers = {
-                key: value
-                for key, value in response_headers_dict.items()
-                if key.lower() not in excluded_headers
-            }
-            # Add no-cache headers to prevent browser caching of proxy responses
-            response_headers["Cache-Control"] = (
-                "no-store, no-cache, must-revalidate, max-age=0"
-            )
-            response_headers["Pragma"] = "no-cache"
-            response_headers["Expires"] = "0"
-            return Response(
-                content, status=status_code, headers=response_headers
-            )
-        except Exception as exc:
-            import traceback
-
-            logger = logging.getLogger(__name__)
-            error_msg = (
-                f"Error proxying {request.method} {subpath} to server: {exc}"
-            )
-            logger.error(error_msg, exc_info=True)
-            print(f"ERROR in proxy: {error_msg}", file=sys.stderr)
-            print(traceback.format_exc(), file=sys.stderr)
-            return jsonify({
-                "error": "Proxy error",
-                "error_message": str(exc),
-                "path": subpath,
-            }), 502
 
     # Close resources when the process exits (avoid closing per-request)
     atexit.register(context.close)

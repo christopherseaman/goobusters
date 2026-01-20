@@ -16,6 +16,21 @@
     <!-- Multiplayer warning banner -->
     <div id="multiplayerWarning" class="multiplayer-warning hidden"></div>
 
+    <!-- Server connection warning banner (non-blocking, shown after initial connection) -->
+    <div id="serverConnectionWarning" class="server-connection-warning hidden">
+        ⚠ Lost connection to server. Edits are saved locally. <button id="reconnectServerBtn" class="reconnect-btn">Reconnect</button>
+    </div>
+
+    <!-- Server connection blocking screen (shown before first successful connection) -->
+    <div id="serverConnectionScreen" class="server-connection-screen hidden">
+        <div class="server-connection-content">
+            <div id="serverConnectionSpinner" class="server-connection-spinner">⏳</div>
+            <h2>Connecting to Server...</h2>
+            <p id="serverConnectionMessage">Establishing connection to tracking server...</p>
+            <p class="server-connection-details" id="serverConnectionDetails"></p>
+        </div>
+    </div>
+
     <!-- Full-screen canvas for video -->
     <canvas id="canvas"></canvas>
     <!-- Overlay canvas for mask (stacked on top) -->
@@ -267,6 +282,8 @@
             studyUid: '{{ selected_video.study_uid }}',
             seriesUid: '{{ selected_video.series_uid }}'
         };
+        const SERVER_URL = '{{ server_url }}';
+        const CLIENT_URL = 'http://localhost:8080';
     </script>
     <script src="/static/js/viewer.js"></script>
 </body>

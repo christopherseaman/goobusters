@@ -26,7 +26,7 @@ if _project_root not in sys.path:
 if _lib_server not in sys.path:
     sys.path.insert(0, _lib_server)
 
-from flask import Flask
+from flask import Flask, Response, request
 from lib.config import ServerConfig, load_config
 from lib.mask_archive import mask_series_dir
 from server.api.routes import create_api_blueprint
@@ -197,6 +197,31 @@ def create_app(
 
     app = Flask(__name__)
     app.config["SERVER_CONTEXT"] = context
+
+    # Enable CORS for cross-origin requests from client frontend (localhost:8080)
+    # This allows the frontend to call server APIs directly
+    @app.after_request
+    def after_request(response):
+        origin = request.headers.get("Origin")
+        # Allow requests from localhost:8080 (client frontend)
+        if origin and ("localhost:8080" in origin or "127.0.0.1:8080" in origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+    @app.before_request
+    def handle_preflight():
+        if request.method == "OPTIONS":
+            response = Response()
+            origin = request.headers.get("Origin")
+            if origin and ("localhost:8080" in origin or "127.0.0.1:8080" in origin):
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor"
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+            return response
 
     api_bp = create_api_blueprint(context.series_manager, config)
     app.register_blueprint(api_bp)

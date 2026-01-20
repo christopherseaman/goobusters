@@ -62,8 +62,36 @@ class AnnotationViewer {
         this.userEmail = null; // User name for identification (from localStorage or prompt)
 
         this.toolsVisible = true;
+        
+        // Server URL for direct API calls (injected from template)
+        this.serverUrl = typeof SERVER_URL !== 'undefined' ? SERVER_URL : 'http://localhost:5000';
+        this.clientUrl = typeof CLIENT_URL !== 'undefined' ? CLIENT_URL : 'http://localhost:8080';
+        
+        // Connection state tracking
+        this.hasConnectedToServer = false; // Track if we've ever successfully connected
+        this.serverConnectionRetryCount = 0;
+        this.serverConnectionRetryTimeout = null;
+        this.serverConnectionWarningVisible = false;
 
         this.init();
+    }
+    
+    /**
+     * Get full URL for server API endpoint (direct call, no proxy).
+     */
+    serverUrlFor(path) {
+        // Remove leading slash if present (we'll add it)
+        const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+        return `${this.serverUrl}/${cleanPath}`;
+    }
+    
+    /**
+     * Get full URL for client backend endpoint (frames, settings, etc.).
+     */
+    clientUrlFor(path) {
+        // Remove leading slash if present (we'll add it)
+        const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+        return `${this.clientUrl}/${cleanPath}`;
     }
 
     hasUnsavedChangesForCurrentVideo() {
@@ -117,24 +145,126 @@ class AnnotationViewer {
         // Ensure user name is set (prompt if missing)
         await this.ensureUserEmail();
         
-        // Load initial video from server's "next" selection
-        try {
-            await this.loadNextSeries();
-        } catch (error) {
-            console.error('Failed to load initial series from server:', error);
-            // Fallback to INITIAL_VIDEO if defined (legacy support)
-            if (typeof INITIAL_VIDEO !== 'undefined' && INITIAL_VIDEO && INITIAL_VIDEO.studyUid) {
-                console.warn('Falling back to INITIAL_VIDEO from template');
-                await this.loadVideo(INITIAL_VIDEO.method, INITIAL_VIDEO.studyUid, INITIAL_VIDEO.seriesUid);
-            } else {
-                alert('Failed to load series. Please check connection to tracking server.');
-            }
-        }
+        // Try to connect to server with exponential backoff
+        await this.connectToServerWithRetry();
         
         // Populate dropdown from tracking server (authoritative source)
         await this.populateVideoSelectFromServer();
         
         this.checkDatasetSyncStatus().catch(() => {});
+    }
+    
+    /**
+     * Connect to server with exponential backoff retry.
+     * Shows blocking screen until first successful connection.
+     */
+    async connectToServerWithRetry(forceImmediate = false) {
+        // If forcing immediate (from manual button), clear any pending timeout
+        if (forceImmediate && this.serverConnectionRetryTimeout) {
+            clearTimeout(this.serverConnectionRetryTimeout);
+            this.serverConnectionRetryTimeout = null;
+        }
+        
+        this.showServerConnectionScreen('Connecting to server...', '');
+        
+        const maxRetries = 10;
+        let retryDelay = 1000; // Start with 1 second
+        
+        const attemptConnection = async () => {
+            try {
+                // Try to load next series (this will fail if server unavailable)
+                await this.loadNextSeries();
+                // Success! Hide blocking screen and mark as connected
+                this.hasConnectedToServer = true;
+                this.serverConnectionRetryCount = 0;
+                this.hideServerConnectionScreen();
+                return true;
+            } catch (error) {
+                console.error(`Server connection attempt ${this.serverConnectionRetryCount + 1} failed:`, error);
+                this.serverConnectionRetryCount++;
+                
+                if (this.serverConnectionRetryCount >= maxRetries) {
+                    // Max retries reached - show message (hourglass is always clickable)
+                    this.showServerConnectionScreen(
+                        'Unable to connect to server after multiple attempts.',
+                        `Server: ${this.serverUrl}\nTap the hourglass to try again.`
+                    );
+                    return false;
+                }
+                
+                // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s
+                retryDelay = Math.min(1000 * Math.pow(2, this.serverConnectionRetryCount - 1), 512000);
+                this.showServerConnectionScreen(
+                    `Retrying connection... (attempt ${this.serverConnectionRetryCount + 1}/${maxRetries})`,
+                    `Retrying in ${Math.round(retryDelay / 1000)}s...\nTap the hourglass to retry now.`
+                );
+                
+                // Schedule next retry
+                this.serverConnectionRetryTimeout = setTimeout(() => {
+                    attemptConnection();
+                }, retryDelay);
+                
+                return false;
+            }
+        };
+        
+        return await attemptConnection();
+    }
+    
+    /**
+     * Show blocking server connection screen.
+     */
+    showServerConnectionScreen(message, details = '', showManualButton = false) {
+        const screen = document.getElementById('serverConnectionScreen');
+        const messageEl = document.getElementById('serverConnectionMessage');
+        const detailsEl = document.getElementById('serverConnectionDetails');
+        
+        if (screen) {
+            screen.classList.remove('hidden');
+            if (messageEl) messageEl.textContent = message;
+            if (detailsEl) {
+                detailsEl.textContent = details;
+                detailsEl.style.display = details ? 'block' : 'none';
+            }
+        }
+    }
+    
+    /**
+     * Hide blocking server connection screen.
+     */
+    hideServerConnectionScreen() {
+        const screen = document.getElementById('serverConnectionScreen');
+        if (screen) {
+            screen.classList.add('hidden');
+        }
+        if (this.serverConnectionRetryTimeout) {
+            clearTimeout(this.serverConnectionRetryTimeout);
+            this.serverConnectionRetryTimeout = null;
+        }
+    }
+    
+    /**
+     * Show non-blocking server connection warning (after initial connection).
+     */
+    showServerConnectionWarning() {
+        if (this.hasConnectedToServer && !this.serverConnectionWarningVisible) {
+            const warning = document.getElementById('serverConnectionWarning');
+            if (warning) {
+                warning.classList.remove('hidden');
+                this.serverConnectionWarningVisible = true;
+            }
+        }
+    }
+    
+    /**
+     * Hide server connection warning.
+     */
+    hideServerConnectionWarning() {
+        const warning = document.getElementById('serverConnectionWarning');
+        if (warning) {
+            warning.classList.add('hidden');
+            this.serverConnectionWarningVisible = false;
+        }
     }
     
     async checkAndSyncDatasetIfNeeded() {
@@ -589,18 +719,72 @@ class AnnotationViewer {
         if (videoSelect) {
             videoSelect.addEventListener('change', async (e) => {
                 const [method, studyUid, seriesUid] = e.target.value.split('|');
-                // Mark activity immediately when selecting from dropdown
-                const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
-                // Update warnings from activity response
-                if (activityResponse && activityResponse.ok) {
-                    const activityData = await activityResponse.json().catch(() => null);
-                    if (activityData) {
-                        await this.updateMultiplayerWarning(activityData);
+                try {
+                    // Mark activity immediately when selecting from dropdown
+                    const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
+                    // Update warnings from activity response
+                    if (activityResponse && activityResponse.ok) {
+                        const activityData = await activityResponse.json().catch(() => null);
+                        if (activityData) {
+                            await this.updateMultiplayerWarning(activityData);
+                        }
+                    }
+                    await this.loadVideo(method, studyUid, seriesUid);
+                    // Success - hide connection warning if shown
+                    this.hideServerConnectionWarning();
+                } catch (error) {
+                    console.error('Failed to load series:', error);
+                    // Show appropriate error based on connection state
+                    if (this.hasConnectedToServer) {
+                        // Connection lost after initial sync - show warning but don't block
+                        this.showServerConnectionWarning();
+                    } else {
+                        // Never connected - show blocking screen
+                        this.showServerConnectionScreen(
+                            'Failed to load series. Server unavailable.',
+                            `Error: ${error.message}`,
+                            true
+                        );
                     }
                 }
-                await this.loadVideo(method, studyUid, seriesUid);
             });
         }
+        
+        // Hourglass spinner is clickable - forces immediate connection attempt
+        const serverConnectionSpinner = document.getElementById('serverConnectionSpinner');
+        if (serverConnectionSpinner) {
+            serverConnectionSpinner.addEventListener('click', async () => {
+                // Force immediate attempt (don't reset retry count, just force retry)
+                await this.connectToServerWithRetry(true);
+            });
+        }
+        
+        // Reconnect button (non-blocking warning)
+        const reconnectBtn = document.getElementById('reconnectServerBtn');
+        if (reconnectBtn) {
+            reconnectBtn.addEventListener('click', async () => {
+                try {
+                    // Try to reconnect by checking server status
+                    const response = await fetch(this.serverUrlFor('api/status'));
+                    if (response.ok) {
+                        // Server is back - hide warning and check version sync
+                        this.hideServerConnectionWarning();
+                        await this.checkDatasetSyncStatus();
+                        // Try to reload current series to refresh status
+                        if (this.currentVideo) {
+                            await this.loadVideoData(true); // Skip modified frames
+                            await this.refreshCompletionStatus();
+                        }
+                    } else {
+                        throw new Error('Server not responding');
+                    }
+                } catch (error) {
+                    console.error('Reconnection failed:', error);
+                    // Keep warning visible
+                }
+            });
+        }
+        
 
         document.getElementById('markComplete').addEventListener('click', () => this.showCompleteModal());
 
@@ -754,8 +938,24 @@ class AnnotationViewer {
             throw new Error('No current video set');
         }
         const { method, studyUid, seriesUid } = this.currentVideo;
-        // Client backend proxies to server (no local caching)
+        // Call client backend which proxies to server (server is source of truth)
         const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
+        
+        if (!response.ok) {
+            // Handle server unavailability
+            if (response.status === 503 || response.status === 0) {
+                if (this.hasConnectedToServer) {
+                    // Connection lost after initial sync - show warning but don't throw
+                    this.showServerConnectionWarning();
+                    throw new Error('Server unavailable - connection lost');
+                } else {
+                    // Never connected - this will be handled by retry logic
+                    throw new Error('Server unavailable');
+                }
+            }
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error_message || errorData.error || `HTTP ${response.status}`);
+        }
         const data = await response.json();
         this.totalFrames = data.total_frames;
         
@@ -1557,7 +1757,7 @@ class AnnotationViewer {
             // Show blocking loading overlay
             this.showRetrackLoading('Saving and retracking...');
 
-            const allResponse = await fetch(`/proxy/api/masks/${studyUid}/${seriesUid}`, {
+            const allResponse = await fetch(this.serverUrlFor(`api/masks/${studyUid}/${seriesUid}`), {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/x-tar',
@@ -1630,7 +1830,7 @@ class AnnotationViewer {
         
         const poll = async () => {
             attempts++;
-            const response = await fetch(`/proxy/api/retrack/status/${studyUid}/${seriesUid}`);
+            const response = await fetch(this.serverUrlFor(`api/retrack/status/${studyUid}/${seriesUid}`));
             const status = await response.json();
             
             if (status.status === 'completed') {
@@ -1710,7 +1910,7 @@ class AnnotationViewer {
         const { studyUid, seriesUid } = this.currentVideo;
         try {
             const userEmail = this.getUserEmail();
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/complete`, {
+            const resp = await fetch(this.serverUrlFor(`api/series/${studyUid}/${seriesUid}/complete`), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1750,7 +1950,7 @@ class AnnotationViewer {
         
         const { studyUid, seriesUid } = this.currentVideo;
         try {
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/reopen`, {
+            const resp = await fetch(this.serverUrlFor(`api/series/${studyUid}/${seriesUid}/reopen`), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1823,8 +2023,8 @@ class AnnotationViewer {
         
         try {
             // Fetch from tracking server (authoritative source)
-            console.log('[Dropdown] Fetching /proxy/api/series...');
-            const resp = await fetch('/proxy/api/series');
+            console.log('[Dropdown] Fetching series from server...');
+                const resp = await fetch(this.serverUrlFor('api/series'));
             console.log('[Dropdown] Response status:', resp.status);
             if (!resp.ok) {
                 console.warn('Failed to fetch series list from server:', resp.status);
@@ -1921,7 +2121,7 @@ class AnnotationViewer {
         
         try {
             // Fetch fresh status from server
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}`);
+            const resp = await fetch(this.serverUrlFor(`api/series/${studyUid}/${seriesUid}`));
             if (resp.ok) {
                 const data = await resp.json();
                 const serverStatus = data.status || 'pending';
@@ -1948,7 +2148,7 @@ class AnnotationViewer {
         
         try {
             // Fetch all series with statuses and activity from server
-            const resp = await fetch('/proxy/api/series');
+                const resp = await fetch(this.serverUrlFor('api/series'));
             if (!resp.ok) {
                 console.warn('Failed to fetch series list:', resp.status);
                 return;
@@ -2056,7 +2256,7 @@ class AnnotationViewer {
         this.showRetrackLoading('Resetting retrack data...');
 
         try {
-            const resp = await fetch(`/proxy/api/reset-retrack/${studyUid}/${seriesUid}`, {
+            const resp = await fetch(this.serverUrlFor(`api/reset-retrack/${studyUid}/${seriesUid}`), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -2118,7 +2318,7 @@ class AnnotationViewer {
         this.showRetrackLoading('Resetting retrack data for all series...');
 
         try {
-            const resp = await fetch(`/proxy/api/reset-retrack-all`, {
+            const resp = await fetch(this.serverUrlFor('api/reset-retrack-all'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -2276,13 +2476,17 @@ class AnnotationViewer {
      */
     async loadNextSeries() {
         try {
-            const response = await fetch('/proxy/api/series/next', {
+            const response = await fetch(this.serverUrlFor('api/series/next'), {
                 headers: {
                     'X-User-Email': this.getUserEmail() || ''
                 }
             });
             
             if (!response.ok) {
+                if (response.status === 0 || response.status >= 500) {
+                    // Network error or server error - connection issue
+                    throw new Error('Server unavailable');
+                }
                 const errorText = await response.text().catch(() => response.statusText);
                 throw new Error(`Failed to fetch next series: ${response.status} ${errorText}`);
             }
@@ -2316,17 +2520,6 @@ class AnnotationViewer {
                 if (activityData) {
                     await this.updateMultiplayerWarning(activityData);
                 }
-            }
-            
-            // Check if series exists locally before trying to load
-            // The client needs to have synced its dataset to include this series
-            const checkResponse = await fetch(`/api/video/${method}/${data.study_uid}/${data.series_uid}`);
-            if (!checkResponse.ok) {
-                if (checkResponse.status === 404) {
-                    alert(`Series ${data.study_uid}/${data.series_uid} not found locally. Please sync your dataset first.`);
-                    return;
-                }
-                throw new Error(`Failed to verify series locally: ${checkResponse.statusText}`);
             }
             
             // Load the series from server
@@ -2401,7 +2594,7 @@ class AnnotationViewer {
         
         try {
             const response = await fetch(
-                `/proxy/api/series/${studyUid}/${seriesUid}/activity`,
+                this.serverUrlFor(`api/series/${studyUid}/${seriesUid}/activity`),
                 {
                     method: 'POST',
                     headers: {
@@ -2410,15 +2603,23 @@ class AnnotationViewer {
                 }
             );
             
-            if (!response.ok) {
-                console.warn(`Activity mark failed: ${response.status} ${response.statusText}`);
-                return null;
-            } else {
-                console.debug('Activity marked successfully');
-                return response; // Return response so caller can get updated data
+            if (!response.ok && response.status !== 0) {
+                // Non-network error - log but don't show warning (might be 404, etc.)
+                console.warn('Failed to mark activity:', response.status);
+            } else if (response.status === 0) {
+                // Network error - show warning if we've connected before
+                if (this.hasConnectedToServer) {
+                    this.showServerConnectionWarning();
+                }
             }
+            
+            return response; // Return response so caller can get updated data
         } catch (error) {
             console.warn('Activity mark error:', error);
+            // Show warning if we've connected before
+            if (this.hasConnectedToServer) {
+                this.showServerConnectionWarning();
+            }
             return null;
         }
     }
@@ -2454,7 +2655,7 @@ class AnnotationViewer {
         
         try {
             const response = await fetch(
-                `/proxy/api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`
+                this.serverUrlFor(`api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`)
             );
             if (response.ok) {
                 const data = await response.json();
@@ -2585,7 +2786,8 @@ class AnnotationViewer {
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
             // Client backend proxies to server (no local caching)
-            const url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
+            // Call client backend for frame archive URLs (frames are PHI, served locally)
+            const url = `/api/frames/${method}/${studyUid}/${seriesUid}`;
             const response = await fetch(url);
             
             if (!response.ok) {

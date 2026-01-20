@@ -31,6 +31,7 @@
 - [ ] App build: should not include prepopulated data or preset mdai token
 - [ ] Enable cloudflare tunnel access to server when CF-Access-Client-Id and CF-Access-Client-Secret set
 - [ ] Test that cloudflare tunnel hasn't broken the front-end
+- [ ] Implement Cloudflare tunnel token access for remote connectivity without VPN (alternative to VPN requirement)
 
 ### UI/UX Improvements
 
