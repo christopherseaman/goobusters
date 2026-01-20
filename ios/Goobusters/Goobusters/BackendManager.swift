@@ -9,7 +9,7 @@ class BackendManager: ObservableObject {
 
     private var pythonRunner: PythonBackendRunner?
     private let port = 8080
-    private let entryScript = "python-app/lib/client/start.py"
+    private let entryScript = "python-app/start_server.py"
 
     func start() {
         guard let resourcePath = Bundle.main.resourcePath else {

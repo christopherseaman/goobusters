@@ -27,7 +27,8 @@ final class PythonBackendRunner {
     }
 
     func start(entryScriptRelativePath: String) async throws {
-        guard runner?.isRunning() == false else { return }
+        // If runner exists and is running, skip
+        if runner?.isRunning() == true { return }
 
         let entryFullPath = (resourcePath as NSString).appendingPathComponent(entryScriptRelativePath)
         guard FileManager.default.fileExists(atPath: entryFullPath) else {

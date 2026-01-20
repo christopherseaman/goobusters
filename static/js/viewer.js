@@ -1508,6 +1508,53 @@ class AnnotationViewer {
     }
 
     /**
+     * Populate video select dropdown from local series endpoint.
+     * This is needed for iOS client which doesn't use server-side Jinja2 templates.
+     */
+    async populateVideoSelectFromLocal() {
+        const videoSelect = document.getElementById('videoSelect');
+        if (!videoSelect) {
+            return;
+        }
+        
+        try {
+            // Try local endpoint first (iOS client)
+            let resp = await fetch('/api/local/series');
+            if (!resp.ok) {
+                // Fall back to server endpoint if local fails
+                resp = await fetch('/proxy/api/series');
+                if (!resp.ok) {
+                    console.warn('Failed to fetch series list:', resp.status);
+                    return;
+                }
+            }
+            
+            const allSeries = await resp.json();
+            
+            // Clear existing options
+            videoSelect.innerHTML = '';
+            
+            // Sort by exam_number
+            const sortedSeries = [...allSeries].sort((a, b) => {
+                const aNum = a.exam_number || 0;
+                const bNum = b.exam_number || 0;
+                return aNum - bNum;
+            });
+            
+            // Populate dropdown
+            for (const series of sortedSeries) {
+                const option = document.createElement('option');
+                const method = series.method || 'dis';
+                option.value = `${method}|${series.study_uid}|${series.series_uid}`;
+                option.text = `◻️ Exam ${series.exam_number || '-'}`;
+                videoSelect.appendChild(option);
+            }
+        } catch (e) {
+            console.warn('Failed to populate video select dropdown:', e);
+        }
+    }
+
+    /**
      * Update video select dropdown to show current series as selected.
      */
     updateVideoSelect() {
@@ -1567,11 +1614,16 @@ class AnnotationViewer {
         }
         
         try {
-            // Fetch all series with statuses and activity from server
-            const resp = await fetch('/proxy/api/series');
+            // Try local endpoint first (iOS client), fall back to server endpoint
+            let resp = await fetch('/api/local/series');
+            let isLocal = true;
+            if (!resp.ok) {
+                resp = await fetch('/proxy/api/series');
+                isLocal = false;
             if (!resp.ok) {
                 console.warn('Failed to fetch series list:', resp.status);
                 return;
+                }
             }
             
             const allSeries = await resp.json();

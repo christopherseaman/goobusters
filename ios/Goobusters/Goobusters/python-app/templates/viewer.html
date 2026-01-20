@@ -141,14 +141,20 @@
             <button class="modal-close" id="closeSettings">✕</button>
             <h2>Settings</h2>
             <div class="info-section settings-form">
-                <label for="settingsEmail">User Email (for activity/save headers)</label>
-                <input type="email" id="settingsEmail" placeholder="you@ucsf.edu">
+                <label for="settingsEmail">User Name (for activity/save headers)</label>
+                <input type="text" id="settingsEmail" placeholder="Your Name">
                 <label for="settingsToken">MD.ai API Token</label>
                 <input type="password" id="settingsToken" placeholder="Set or update token">
                 <p class="muted">Leave token blank to keep the current token. Token is stored for this session only.</p>
                 <div class="token-status" id="tokenStatus">Token: unknown</div>
                 <div class="settings-actions">
                     <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
+                </div>
+                <div style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #ddd;">
+                    <h3 style="margin-top: 0;">Dataset Sync</h3>
+                    <p class="muted" style="margin-bottom: 1rem;">Download the latest dataset from MD.ai. This may take a few minutes.</p>
+                    <button class="control-btn" id="syncDatasetBtn" title="Sync Dataset from MD.ai">🔄</button>
+                    <div id="syncStatus" style="margin-top: 0.5rem; font-size: 0.9em; color: #666;"></div>
                 </div>
             </div>
         </div>
@@ -245,6 +251,41 @@
             <div class="button-row">
                 <button class="modal-btn warning" id="confirmResetRetrackAll">🔄 Reset All</button>
                 <button class="modal-btn" id="cancelResetRetrackAll">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocking setup modal (shown when token not configured) -->
+    <div class="modal active" id="setupModal" style="z-index: 10001; display: none; pointer-events: auto;">
+        <div class="modal-content" style="max-width: 500px;">
+            <h2>⚠️ Setup Required</h2>
+            <div class="info-section">
+                <p style="margin-bottom: 1.5rem;">To view and annotate videos, you need to configure your MD.ai credentials.</p>
+                
+                <div style="text-align: left; margin: 1.5rem 0; line-height: 1.6;">
+                    <div style="margin: 1rem 0;">
+                        <span style="display: inline-block; width: 2rem; height: 2rem; background: #4CAF50; color: #000; border-radius: 50%; text-align: center; line-height: 2rem; font-weight: bold; margin-right: 0.5rem;">1</span>
+                        <strong>Get your MD.ai API token</strong><br>
+                        Visit <a href="https://public.md.ai/annotator/project" target="_blank" style="color: #4CAF50;">public.md.ai</a> and copy your API token from Settings
+                    </div>
+                    
+                    <div style="margin: 1rem 0;">
+                        <span style="display: inline-block; width: 2rem; height: 2rem; background: #4CAF50; color: #000; border-radius: 50%; text-align: center; line-height: 2rem; font-weight: bold; margin-right: 0.5rem;">2</span>
+                        <strong>Enter credentials below</strong><br>
+                        Enter your name and MD.ai token, then click Save
+                    </div>
+                </div>
+                
+                <div class="settings-form" style="margin-top: 2rem;">
+                    <label for="setupEmail">User Name (for activity/save headers)</label>
+                    <input type="text" id="setupEmail" placeholder="Your Name">
+                    <label for="setupToken">MD.ai API Token <span style="color: #f44336;">*</span></label>
+                    <input type="password" id="setupToken" placeholder="Enter your MD.ai API token" required>
+                    <div class="token-status" id="setupTokenStatus" style="margin-top: 0.5rem;">Token: not set</div>
+                    <div class="settings-actions" style="margin-top: 1rem;">
+                        <button class="control-btn" id="saveSetup" title="Save Settings">💾</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

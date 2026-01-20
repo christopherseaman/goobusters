@@ -42,11 +42,15 @@ static int BackendPythonRunnerRequestStop(void *arg) {
 }
 
 - (BOOL)startWithEntryScript:(NSString *)entryScript error:(NSError **)error {
+    NSLog(@"[BackendPythonRunner] startWithEntryScript called with: %@", entryScript);
+    
     if (_isRunning) {
+        NSLog(@"[BackendPythonRunner] Already running, returning YES");
         return YES;
     }
 
     if (entryScript.length == 0) {
+        NSLog(@"[BackendPythonRunner] ERROR: Entry script path is empty");
         if (error) {
             *error = [self errorWithMessage:@"Entry script path is empty"];
         }
@@ -58,16 +62,21 @@ static int BackendPythonRunnerRequestStop(void *arg) {
     NSString *scriptPath = [entryScript copy];
 
     dispatch_async(_pythonQueue, ^{
+        NSLog(@"[BackendPythonRunner] Python queue: Starting initialization");
         NSError *localError = nil;
         if (![self configureInterpreterWithEntryScript:scriptPath error:&localError]) {
+            NSLog(@"[BackendPythonRunner] Python queue: Configuration FAILED: %@", localError);
             startupError = localError;
             dispatch_semaphore_signal(semaphore);
             return;
         }
 
+        NSLog(@"[BackendPythonRunner] Python queue: Configuration succeeded, signaling semaphore");
         self->_isRunning = YES;
         dispatch_semaphore_signal(semaphore);
+        NSLog(@"[BackendPythonRunner] Python queue: Running entry script");
         [self runEntryScriptAtPath:scriptPath];
+        NSLog(@"[BackendPythonRunner] Python queue: Entry script returned (Python finished)");
         self->_isRunning = NO;
     });
 
@@ -176,6 +185,7 @@ static int BackendPythonRunnerRequestStop(void *arg) {
 }
 
 - (void)runEntryScriptAtPath:(NSString *)entryScript {
+    NSLog(@"[BackendPythonRunner] runEntryScriptAtPath: %@", entryScript);
     const char *scriptPath = [entryScript fileSystemRepresentation];
     FILE *file = fopen(scriptPath, "r");
     if (!file) {
@@ -184,13 +194,13 @@ static int BackendPythonRunnerRequestStop(void *arg) {
         return;
     }
 
-    PyRun_SimpleFileExFlags(file, scriptPath, 0, NULL);
+    NSLog(@"[BackendPythonRunner] Calling PyRun_SimpleFileExFlags...");
+    int result = PyRun_SimpleFileExFlags(file, scriptPath, 0, NULL);
+    NSLog(@"[BackendPythonRunner] PyRun_SimpleFileExFlags returned: %d (0=success, -1=exception)", result);
     fclose(file);
 
     int finalizeStatus = Py_FinalizeEx();
-    if (finalizeStatus != 0) {
-        NSLog(@"[BackendPythonRunner] Py_FinalizeEx exited with status %d", finalizeStatus);
-    }
+    NSLog(@"[BackendPythonRunner] Py_FinalizeEx returned: %d", finalizeStatus);
 }
 
 - (void)updateWorkingDirectory {

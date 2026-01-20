@@ -66,6 +66,9 @@ def _resolve_env(
     2. `dot.env`
     3. `dot.env.{role}` (if present)
     4. Real environment (for overrides when running in production)
+    
+    Note: os.environ is loaded last, so values set there (e.g., by ios_config.py)
+    will override any values from dot.env files.
     """
     env: dict[str, str] = {}
 
@@ -89,8 +92,8 @@ def _resolve_env(
             k: v for k, v in dotenv_values(role_file).items() if v is not None
         })
 
-    # Finally, overlay os.environ without importing os at module level to keep
-    # import time fast for tools that only need metadata.
+    # Finally, overlay os.environ (highest priority - overrides all file values)
+    # This ensures ios_config.py values (set via direct assignment) always win
     import os
 
     env.update({k: v for k, v in os.environ.items() if v is not None})
@@ -104,7 +107,18 @@ def load_config(
     Build the typed configuration for the requested role.
     """
 
-    base_path = Path(".").resolve()
+    # For iOS, base_path should be the python-app directory (where dot.env.defaults lives)
+    # Structure: python-app/lib/config.py -> python-app/dot.env.defaults (go up 2 levels)
+    import os
+    _config_file = Path(__file__)
+    # Try python-app directory (2 levels up from lib/config.py)
+    _python_app_dir = _config_file.parent.parent
+    if (_python_app_dir / "dot.env.defaults").exists():
+        base_path = _python_app_dir
+    else:
+        # Fallback: try current directory
+        base_path = Path(".").resolve()
+    
     raw = _resolve_env(base_path, role)
 
     required = [

@@ -122,18 +122,18 @@ html, body {
 
 .control-badge {
     position: fixed;
-    top: 12px;
+    top: 60px; /* Moved down to avoid warning banners */
     right: 12px;
-    padding: 6px 10px;
+    padding: 9px 15px; /* Increased 50% (6->9, 10->15) */
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.85);
     border: 2px solid rgba(255, 255, 255, 0.2);
     color: #fff;
     font-weight: 700;
-    font-size: 14px;
+    font-size: 21px; /* Increased 50% (14->21) */
     letter-spacing: 0.5px;
-    min-width: 64px;
-    z-index: 99;
+    min-width: 96px; /* Increased 50% (64->96) */
+    z-index: 121; /* Above warning banners (120) */
     text-align: center;
 }
 

@@ -59,7 +59,7 @@ class AnnotationViewer {
         this.masksArchive = {}; // Masks from tar archive (webp images)
         this.currentVersionId = null; // Track version ID from server for optimistic locking
         this.activityPingInterval = null; // Interval ID for activity pings (30s)
-        this.userEmail = null; // User email for identification (from localStorage or prompt)
+        this.userEmail = null; // User name for identification (from localStorage or prompt)
 
         this.toolsVisible = true;
 
@@ -94,8 +94,18 @@ class AnnotationViewer {
 
     async init() {
         this.setupEventListeners();
-        await this.loadSettings();
-        // Ensure user email is set (prompt if missing)
+        const settings = await this.loadSettings();
+        
+        // Check if token is configured - show blocking setup modal if not
+        if (!settings || !settings.mdai_token_present) {
+            this.showSetupModal();
+            return; // Don't proceed until token is set
+        }
+        
+        // Check if token is set but dataset is not ready - show blocking sync modal
+        await this.checkAndSyncDatasetIfNeeded();
+        
+        // Ensure user name is set (prompt if missing)
         await this.ensureUserEmail();
         
         // Load initial video from server's "next" selection
@@ -108,10 +118,241 @@ class AnnotationViewer {
                 console.warn('Falling back to INITIAL_VIDEO from template');
                 await this.loadVideo(INITIAL_VIDEO.method, INITIAL_VIDEO.studyUid, INITIAL_VIDEO.seriesUid);
             } else {
-                alert('Failed to load series. Please check server connection.');
+                alert('Failed to load series. Please check connection to tracking server.');
             }
         }
         this.checkDatasetSyncStatus().catch(() => {});
+    }
+    
+    async checkAndSyncDatasetIfNeeded() {
+        // Check if dataset is ready
+        const seriesResp = await fetch('/api/local/series').catch(() => null);
+        if (seriesResp && seriesResp.ok) {
+            const series = await seriesResp.json().catch(() => []);
+            if (series && series.length > 0) {
+                return; // Dataset is ready, no sync needed
+            }
+        }
+        
+        // Token is set but dataset is not ready - show blocking sync modal
+        console.log('[Init] Token set but dataset not ready - showing sync modal');
+        await this.showSyncModal();
+    }
+    
+    async showSyncModal() {
+        // Create blocking modal for sync
+        const modal = document.createElement('div');
+        modal.id = 'syncModal';
+        modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 10000; display: flex; align-items: center; justify-content: center;';
+        modal.innerHTML = `
+            <div style="background: white; padding: 30px; border-radius: 12px; text-align: center; max-width: 400px;">
+                <h2 style="margin-top: 0;">🔄 Syncing Dataset</h2>
+                <p>Downloading data from MD.ai...</p>
+                <div id="syncProgress" style="margin: 20px 0; color: #666;">Starting sync...</div>
+                <div style="width: 100%; height: 4px; background: #eee; border-radius: 2px; overflow: hidden;">
+                    <div id="syncProgressBar" style="width: 0%; height: 100%; background: #4CAF50; transition: width 0.3s;"></div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Start sync (blocking)
+        await this.performBlockingSync(modal);
+    }
+    
+    async performBlockingSync(modal) {
+        const progressDiv = document.getElementById('syncProgress');
+        const progressBar = document.getElementById('syncProgressBar');
+        
+        try {
+            progressDiv.textContent = 'Syncing dataset from MD.ai...';
+            progressBar.style.width = '30%';
+            
+            const syncResp = await fetch('/api/dataset/sync', {
+                method: 'POST',
+            });
+            
+            if (!syncResp.ok) {
+                const errorData = await syncResp.json().catch(() => ({}));
+                throw new Error(errorData.error || 'Sync failed');
+            }
+            
+            progressBar.style.width = '100%';
+            progressDiv.textContent = 'Sync complete!';
+            
+            const data = await syncResp.json();
+            setTimeout(() => {
+                modal.remove();
+                // Reload page to show synced data
+                window.location.reload();
+            }, 1000);
+        } catch (error) {
+            progressDiv.textContent = `❌ Error: ${error.message}`;
+            progressDiv.style.color = '#f44336';
+            progressBar.style.background = '#f44336';
+            // Keep modal visible so user can see the error
+        }
+    }
+    
+    showSetupModal() {
+        const setupModal = document.getElementById('setupModal');
+        if (!setupModal) return;
+        
+        setupModal.style.display = 'flex';
+        
+        // Pre-fill name if available
+        const setupEmail = document.getElementById('setupEmail');
+        if (setupEmail) {
+            setupEmail.value = this.getUserEmail();
+        }
+        
+        // Set up save button handler
+        const saveSetupBtn = document.getElementById('saveSetup');
+        if (saveSetupBtn) {
+            saveSetupBtn.onclick = () => {
+                console.log('[Setup] Save button clicked');
+                this.saveSetupAndContinue();
+            };
+        } else {
+            console.error('[Setup] Save button not found!');
+        }
+        
+        // Update token status
+        this.updateSetupTokenStatus();
+    }
+    
+    hideSetupModal() {
+        const setupModal = document.getElementById('setupModal');
+        if (setupModal) {
+            setupModal.style.display = 'none';
+        }
+    }
+    
+    async updateSetupTokenStatus() {
+        try {
+            const resp = await fetch('/api/settings');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const tokenStatus = document.getElementById('setupTokenStatus');
+            if (tokenStatus) {
+                tokenStatus.textContent = data.mdai_token_present ? 'Token: set ✓' : 'Token: not set';
+                tokenStatus.style.color = data.mdai_token_present ? '#4CAF50' : '#f44336';
+            }
+        } catch (err) {
+            console.warn('Failed to update setup token status', err);
+        }
+    }
+    
+    async saveSetupAndContinue() {
+        console.log('[Setup] saveSetupAndContinue called');
+        const emailInput = document.getElementById('setupEmail');
+        const tokenInput = document.getElementById('setupToken');
+        
+        const user_email = emailInput ? emailInput.value.trim() : '';
+        const token_value = tokenInput ? tokenInput.value.trim() : '';
+        
+        console.log('[Setup] Token length:', token_value.length);
+        
+        if (!token_value) {
+            alert('MD.ai API token is required. Please enter your token.');
+            return;
+        }
+        
+        const payload = { user_email };
+        if (token_value) {
+            payload.mdai_token = token_value;
+        }
+        
+        console.log('[Setup] Sending POST /api/settings with token');
+        try {
+            const resp = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            
+            console.log('[Setup] Response status:', resp.status);
+            
+            if (!resp.ok) {
+                const errorData = await resp.json().catch(() => ({}));
+                alert(`Failed to save settings: ${errorData.error || resp.statusText}`);
+                return;
+            }
+            
+            const data = await resp.json();
+            if (data.user_email) {
+                this.userEmail = data.user_email;
+                localStorage.setItem('userEmail', data.user_email);
+            }
+            
+            // Verify token is now set
+            console.log('[Setup] Token present:', data.mdai_token_present);
+            if (data.mdai_token_present) {
+                console.log('[Setup] Token valid, hiding modal and starting sync');
+                this.hideSetupModal();
+                // Continue with initialization
+                await this.ensureUserEmail();
+                
+                // Trigger dataset sync now that token is set
+                try {
+                    console.log('[Setup] Token set, syncing dataset from MD.ai...');
+                    // Show loading indicator
+                    const loadingMsg = document.createElement('div');
+                    loadingMsg.id = 'syncLoadingMsg';
+                    loadingMsg.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.9); color: white; padding: 20px; border-radius: 8px; z-index: 10002; text-align: center;';
+                    loadingMsg.innerHTML = '🔄 Syncing dataset from MD.ai...<br><small>This may take a moment</small>';
+                    document.body.appendChild(loadingMsg);
+                    
+                    const syncResp = await fetch('/api/dataset/sync', {
+                        method: 'POST',
+                    });
+                    
+                    // Remove loading indicator
+                    const msg = document.getElementById('syncLoadingMsg');
+                    if (msg) msg.remove();
+                    
+                    if (!syncResp.ok) {
+                        const errorData = await syncResp.json().catch(() => ({}));
+                        const errorMsg = errorData.error || syncResp.statusText || 'Unknown error';
+                        console.error('Dataset sync failed:', errorMsg);
+                        alert(`Dataset sync failed: ${errorMsg}\n\nYou can try syncing manually from Settings.`);
+                    } else {
+                        const syncData = await syncResp.json();
+                        console.log('Dataset sync completed:', syncData);
+                        // Show success briefly
+                        const successMsg = document.createElement('div');
+                        successMsg.style.cssText = 'position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(76,175,80,0.9); color: white; padding: 20px; border-radius: 8px; z-index: 10002; text-align: center;';
+                        successMsg.innerHTML = `✅ Dataset synced!<br><small>Found ${syncData.series_count || 0} series</small>`;
+                        document.body.appendChild(successMsg);
+                        setTimeout(() => successMsg.remove(), 3000);
+                    }
+                } catch (syncError) {
+                    const msg = document.getElementById('syncLoadingMsg');
+                    if (msg) msg.remove();
+                    console.error('Failed to sync dataset:', syncError);
+                    alert(`Failed to sync dataset: ${syncError.message}\n\nYou can try syncing manually from Settings.`);
+                }
+                
+                // Load initial video from server's "next" selection
+                try {
+                    await this.loadNextSeries();
+                } catch (error) {
+                    console.error('Failed to load initial series from tracking server:', error);
+                    if (typeof INITIAL_VIDEO !== 'undefined' && INITIAL_VIDEO && INITIAL_VIDEO.studyUid) {
+                        console.warn('Falling back to INITIAL_VIDEO from template');
+                        await this.loadVideo(INITIAL_VIDEO.method, INITIAL_VIDEO.studyUid, INITIAL_VIDEO.seriesUid);
+                    } else {
+                        alert('Failed to load series. Please check server connection.');
+                    }
+                }
+                this.checkDatasetSyncStatus().catch(() => {});
+            } else {
+                alert('Token was not saved. Please try again.');
+                this.updateSetupTokenStatus();
+            }
+        } catch (err) {
+            alert(`Failed to save settings: ${err.message}`);
+        }
     }
     
     async ensureUserEmail() {
@@ -119,9 +360,9 @@ class AnnotationViewer {
         let userEmail = this.getUserEmail();
         
         if (!userEmail) {
-            // Prompt user for email
+            // Prompt user for name
             userEmail = prompt(
-                'Please enter your email address for identification:\n\n' +
+                'Please enter your name for identification:\n\n' +
                 'This is used to track which series you\'ve worked on and coordinate with other users.',
                 ''
             );
@@ -129,7 +370,7 @@ class AnnotationViewer {
             if (!userEmail || !userEmail.trim()) {
                 // User cancelled or entered empty - use a default
                 userEmail = `user_${Date.now()}@local`;
-                console.warn('No email provided, using temporary identifier:', userEmail);
+                console.warn('No name provided, using temporary identifier:', userEmail);
             } else {
                 userEmail = userEmail.trim();
             }
@@ -177,8 +418,53 @@ class AnnotationViewer {
             if (tokenStatus) {
                 tokenStatus.textContent = data.mdai_token_present ? 'Token: set' : 'Token: not set';
             }
+            return data;
         } catch (err) {
             console.warn('Failed to load settings', err);
+            return null;
+        }
+    }
+
+    async syncDataset() {
+        const syncBtn = document.getElementById('syncDatasetBtn');
+        const syncStatus = document.getElementById('syncStatus');
+        
+        if (!syncBtn || !syncStatus) return;
+        
+        // Disable button and show status
+        syncBtn.disabled = true;
+        const originalText = syncBtn.textContent;
+        syncStatus.textContent = 'Downloading dataset from MD.ai...';
+        syncStatus.style.color = '#666';
+        
+        try {
+            const resp = await fetch('/api/dataset/sync', {
+                method: 'POST',
+            });
+            
+            if (!resp.ok) {
+                const errorData = await resp.json().catch(() => ({}));
+                const errorMsg = errorData.error || resp.statusText || 'Unknown error';
+                syncStatus.textContent = `❌ Error: ${errorMsg}`;
+                syncStatus.style.color = '#f44336';
+                throw new Error(errorMsg);
+            }
+            
+            const data = await resp.json();
+            syncStatus.textContent = `✅ Synced! Found ${data.series_count || 0} series`;
+            syncStatus.style.color = '#4CAF50';
+            
+            // Reload page to show new series
+            setTimeout(() => {
+                window.location.reload();
+            }, 1500);
+        } catch (error) {
+            console.error('Dataset sync failed:', error);
+            syncStatus.textContent = `❌ Failed: ${error.message}`;
+            syncStatus.style.color = '#f44336';
+        } finally {
+            syncBtn.disabled = false;
+            syncBtn.textContent = originalText;
         }
     }
 
@@ -242,6 +528,8 @@ class AnnotationViewer {
         document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
         const saveSettingsBtn = document.getElementById('saveSettings');
         if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', () => this.saveSettings());
+        const syncDatasetBtn = document.getElementById('syncDatasetBtn');
+        if (syncDatasetBtn) syncDatasetBtn.addEventListener('click', () => this.syncDataset());
 
         // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {

@@ -262,7 +262,9 @@ def create_app(
                     headers={"Content-Type": "application/json"},
                 )
         except Exception as exc:
-            return jsonify({"error": f"Failed to fetch from server: {exc}"}), 500
+            return jsonify({
+                "error": f"Failed to fetch from server: {exc}"
+            }), 500
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
     def api_frames(method: str, study_uid: str, series_uid: str):

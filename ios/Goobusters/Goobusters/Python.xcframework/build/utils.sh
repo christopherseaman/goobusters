@@ -173,7 +173,16 @@ install_python() {
     process_dylibs $PYTHON_XCFRAMEWORK_PATH python/lib/$PYTHON_VER/lib-dynload
 
     for package_path in $@; do
-        echo "Installing $package_path extension modules ..."
-        process_dylibs $PYTHON_XCFRAMEWORK_PATH $package_path
+        PACKAGE_INSTALL_PATH=$package_path
+        if [[ "$PACKAGE_INSTALL_PATH" == Goobusters/* ]]; then
+            PACKAGE_INSTALL_PATH=${PACKAGE_INSTALL_PATH#Goobusters/}
+        fi
+        if [ -d "$PROJECT_DIR/$package_path" ]; then
+            echo "Copying $package_path into app bundle at $PACKAGE_INSTALL_PATH..."
+            mkdir -p "$CODESIGNING_FOLDER_PATH/$PACKAGE_INSTALL_PATH"
+            rsync -au --delete "$PROJECT_DIR/$package_path/" "$CODESIGNING_FOLDER_PATH/$PACKAGE_INSTALL_PATH/"
+        fi
+        echo "Installing $PACKAGE_INSTALL_PATH extension modules ..."
+        process_dylibs $PYTHON_XCFRAMEWORK_PATH $PACKAGE_INSTALL_PATH
     done
 }

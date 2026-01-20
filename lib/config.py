@@ -108,7 +108,6 @@ def load_config(
     raw = _resolve_env(base_path, role)
 
     required = [
-        "MDAI_TOKEN",
         "DATA_DIR",
         "DOMAIN",
         "PROJECT_ID",
@@ -120,8 +119,12 @@ def load_config(
     if missing:
         raise ConfigError(f"Missing required config keys: {', '.join(missing)}")
 
+    # MDAI_TOKEN is optional - can be set later via /api/settings
+    # Allow "not_configured_yet" placeholder for iOS app
+    mdai_token = raw.get("MDAI_TOKEN", "not_configured_yet")
+
     shared_kwargs = dict(
-        mdai_token=raw["MDAI_TOKEN"],
+        mdai_token=mdai_token,
         data_dir=Path(raw["DATA_DIR"]).expanduser().resolve(),
         domain=raw["DOMAIN"],
         project_id=raw["PROJECT_ID"],
