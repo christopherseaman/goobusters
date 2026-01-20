@@ -209,6 +209,9 @@ def create_app(
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor"
             response.headers["Access-Control-Allow-Credentials"] = "true"
+            logger.debug(f"CORS headers added for origin: {origin}")
+        else:
+            logger.debug(f"No CORS headers - origin: {origin}")
         return response
 
     @app.before_request
@@ -229,6 +232,12 @@ def create_app(
     @app.route("/healthz")
     def healthcheck():
         return {"ok": True}
+    
+    @app.route("/api/version")
+    @app.route("/version")
+    def version():
+        """Return server version."""
+        return {"version": "1.0.0"}
 
     # Start retrack worker in background thread
     if not skip_startup:

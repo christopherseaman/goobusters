@@ -187,7 +187,7 @@ class AnnotationViewer {
                     // Max retries reached - show message (hourglass is always clickable)
                     this.showServerConnectionScreen(
                         'Unable to connect to server after multiple attempts.',
-                        `Server: ${this.serverUrl}\nTap the hourglass to try again.`
+                        `Server: ${this.serverUrl}`
                     );
                     return false;
                 }
@@ -196,7 +196,7 @@ class AnnotationViewer {
                 retryDelay = Math.min(1000 * Math.pow(2, this.serverConnectionRetryCount - 1), 512000);
                 this.showServerConnectionScreen(
                     `Retrying connection... (attempt ${this.serverConnectionRetryCount + 1}/${maxRetries})`,
-                    `Retrying in ${Math.round(retryDelay / 1000)}s...\nTap the hourglass to retry now.`
+                    `Retrying in ${Math.round(retryDelay / 1000)}s...`
                 );
                 
                 // Schedule next retry
