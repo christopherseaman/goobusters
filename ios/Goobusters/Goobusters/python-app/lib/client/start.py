@@ -577,15 +577,16 @@ def create_app(
 
             # Get minimal info without full scan
             images_dir = context._ensure_images_dir()
-            annotations_df = context._ensure_annotations()
+            annotations_list = context._ensure_annotations()
             studies_lookup = context._studies_lookup or {}
 
-            # Find this specific series in annotations
-            series_annotations = annotations_df[
-                (annotations_df["StudyInstanceUID"] == study_uid)
-                & (annotations_df["SeriesInstanceUID"] == series_uid)
+            # Find this specific series in annotations (pandas-free: filter list of dicts)
+            series_annotations = [
+                annot for annot in annotations_list
+                if annot.get("StudyInstanceUID") == study_uid
+                and annot.get("SeriesInstanceUID") == series_uid
             ]
-            if series_annotations.empty:
+            if not series_annotations:
                 return None
 
             study_info = studies_lookup.get(study_uid, {})
