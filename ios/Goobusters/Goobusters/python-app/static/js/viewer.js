@@ -103,8 +103,17 @@ class AnnotationViewer {
         }
         
         // Check if token is set but dataset is not ready - show blocking sync modal
-        await this.checkAndSyncDatasetIfNeeded();
+        // Returns true if sync was needed (and will handle initialization after sync)
+        const syncNeeded = await this.checkAndSyncDatasetIfNeeded();
+        if (syncNeeded) {
+            return; // Sync modal will call continueInitAfterSync() when done
+        }
         
+        // Dataset is ready - continue initialization
+        await this.continueInitAfterSync();
+    }
+    
+    async continueInitAfterSync() {
         // Ensure user name is set (prompt if missing)
         await this.ensureUserEmail();
         
@@ -121,6 +130,10 @@ class AnnotationViewer {
                 alert('Failed to load series. Please check connection to tracking server.');
             }
         }
+        
+        // Populate dropdown from tracking server (authoritative source)
+        await this.populateVideoSelectFromServer();
+        
         this.checkDatasetSyncStatus().catch(() => {});
     }
     
@@ -130,13 +143,14 @@ class AnnotationViewer {
         if (seriesResp && seriesResp.ok) {
             const series = await seriesResp.json().catch(() => []);
             if (series && series.length > 0) {
-                return; // Dataset is ready, no sync needed
+                return false; // Dataset is ready, no sync needed
             }
         }
         
         // Token is set but dataset is not ready - show blocking sync modal
         console.log('[Init] Token set but dataset not ready - showing sync modal');
         await this.showSyncModal();
+        return true; // Sync was needed, initialization continues after sync
     }
     
     async showSyncModal() {
@@ -181,10 +195,10 @@ class AnnotationViewer {
             progressDiv.textContent = 'Sync complete!';
             
             const data = await syncResp.json();
-            setTimeout(() => {
+            setTimeout(async () => {
                 modal.remove();
-                // Reload page to show synced data
-                window.location.reload();
+                // Continue initialization after sync
+                await this.continueInitAfterSync();
             }, 1000);
         } catch (error) {
             progressDiv.textContent = `❌ Error: ${error.message}`;
@@ -1792,6 +1806,84 @@ class AnnotationViewer {
             } else {
                 examBadge.textContent = examText.replace('#✓ ', '#');
             }
+        }
+    }
+
+    /**
+     * Populate video select dropdown from tracking server.
+     * This fetches the authoritative series list from the server.
+     */
+    async populateVideoSelectFromServer() {
+        const videoSelect = document.getElementById('videoSelect');
+        console.log('[Dropdown] populateVideoSelectFromServer called, videoSelect:', videoSelect);
+        if (!videoSelect) {
+            console.warn('[Dropdown] videoSelect element not found!');
+            return;
+        }
+        
+        try {
+            // Fetch from tracking server (authoritative source)
+            console.log('[Dropdown] Fetching /proxy/api/series...');
+            const resp = await fetch('/proxy/api/series');
+            console.log('[Dropdown] Response status:', resp.status);
+            if (!resp.ok) {
+                console.warn('Failed to fetch series list from server:', resp.status);
+                return;
+            }
+            
+            const allSeries = await resp.json();
+            console.log('[Dropdown] Got', allSeries.length, 'series from server');
+            
+            // Clear existing options (from Jinja template)
+            videoSelect.innerHTML = '';
+            
+            // Sort by exam_number
+            const sortedSeries = [...allSeries].sort((a, b) => {
+                const aNum = a.exam_number || 0;
+                const bNum = b.exam_number || 0;
+                return aNum - bNum;
+            });
+            
+            // Populate dropdown with status indicators
+            const currentUserEmail = this.getUserEmail();
+            const now = new Date();
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            for (const series of sortedSeries) {
+                const option = document.createElement('option');
+                const method = series.method || 'dis';
+                option.value = `${method}|${series.study_uid}|${series.series_uid}`;
+                
+                // Determine indicator based on status and activity
+                let indicator = '◻️'; // Default: pending
+                const status = series.status || 'pending';
+                const activity = series.activity || {};
+                
+                if (status === 'complete') {
+                    indicator = '✅';
+                } else {
+                    // Activity is a map of {user_email: timestamp}
+                    const activityUsers = Object.keys(activity);
+                    for (const user of activityUsers) {
+                        const lastActive = new Date(activity[user]);
+                        if (lastActive > twentyFourHoursAgo) {
+                            if (user === currentUserEmail) {
+                                indicator = '🔵'; // Current user recently active
+                            } else {
+                                indicator = '🟡'; // Another user recently active
+                            }
+                            break; // Found recent activity, stop checking
+                        }
+                    }
+                }
+                
+                option.text = `${indicator} Exam ${series.exam_number || '-'}`;
+                videoSelect.appendChild(option);
+            }
+            
+            console.log(`[Dropdown] Populated ${sortedSeries.length} series from server`);
+        } catch (e) {
+            console.warn('Failed to populate video select from server:', e);
         }
     }
 
