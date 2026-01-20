@@ -46,11 +46,20 @@
 
 ### Architecture
 
-- [ ] Simplify client backend architecture - frontend should talk directly to server for everything except MD.ai images/videos
-    - Client backend should only: serve static files, serve MD.ai videos/images from local cache, dataset sync, user settings
-    - Remove proxy layer (`/proxy/<path>`) - frontend can use `SERVER_URL` from config to talk directly to server
-    - Server already has series list from MD.ai annotations, so `/api/videos`, `/api/video`, `/api/frames` can be server-only
-    - This eliminates caching issues and simplifies the architecture
+- [ ] **Simplify client backend architecture** - Eliminate proxy layer; frontend talks directly to server for all non-PHI operations
+    - See detailed implementation plan: `SIMPLIFY_CLIENT_BACKEND.md`
+    - **Client backend retains only PHI-related operations:**
+        - MD.ai dataset sync (download videos/annotations)
+        - Frame extraction (MP4 → WebP)
+        - Local frame serving to frontend
+        - Static file serving (HTML/CSS/JS)
+        - User settings
+    - **Remove all proxy routes:**
+        - `/proxy/<path>` - frontend uses `SERVER_URL` config to call server directly
+        - `/api/masks/*` - frontend calls server directly
+        - `/api/series/*` - frontend calls server directly
+        - `/api/video/*` (metadata) - server has this from annotations
+    - **Benefits:** Simpler architecture, eliminates caching issues, clearer PHI boundary, easier debugging
 
 ### Data & Annotation Handling
 
