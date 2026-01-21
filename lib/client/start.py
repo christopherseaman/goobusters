@@ -28,7 +28,6 @@ import logging
 import os
 import signal
 
-import httpx
 from flask import Flask, Response, jsonify, request, render_template
 
 from lib.mask_archive import build_mask_archive, iso_now
@@ -44,20 +43,10 @@ class ClientContext:
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
         self.dataset = MDaiDatasetManager(config)
-        # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
-        # Disable all caching - clients should never cache anything
-        # httpx doesn't cache by default, but explicitly disable connection pooling
-        self.http_client = httpx.Client(
-            timeout=60,
-            follow_redirects=True,
-            limits=httpx.Limits(
-                max_keepalive_connections=0, max_connections=100
-            ),  # No connection reuse
-        )
         self.user_email_override: Optional[str] = None
 
     def close(self) -> None:
-        self.http_client.close()
+        pass
 
     def current_user_email(self) -> str:
         return (
@@ -234,8 +223,7 @@ def create_app(
     @app.get("/api/video/<method>/<study_uid>/<series_uid>")
     def api_video(method: str, study_uid: str, series_uid: str):
         """
-        Proxy video metadata from server. Server is source of truth.
-        No fallbacks - if server unavailable, return error so frontend can show blocking screen.
+        Verify series exists locally. Frontend calls server directly for video metadata.
         """
         # Verify series exists locally (for dataset sync check)
         info = _find_series_info(study_uid, series_uid)
@@ -247,22 +235,12 @@ def create_app(
         except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
 
-        # Proxy entire response from server (server is source of truth)
-        # No fallbacks - frontend handles server unavailability with blocking screen
-        try:
-            server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
-            resp = context.http_client.get(server_url, timeout=10)
-            return Response(
-                resp.content,
-                status=resp.status_code,
-                headers={"Content-Type": "application/json"},
-            )
-        except Exception as exc:
-            return jsonify({
-                "error": "Server unavailable",
-                "error_message": f"Failed to connect to server: {exc}",
-                "server_url": config.server_url,
-            }), 503
+        # Return server URL for frontend to call directly
+        server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
+        return jsonify({
+            "server_url": server_url,
+            "local": True
+        })
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
     def api_frames(method: str, study_uid: str, series_uid: str):
@@ -286,19 +264,66 @@ def create_app(
             "masks_archive_url": masks_archive_url,
         })
 
+    @app.get("/api/status")
+    def api_status():
+        """
+        Check if dataset is ready.
+        Used by setup screen to determine flow.
+        """
+        has_data = context.dataset.dataset_ready()
+        series_count = 0
+        if has_data:
+            try:
+                series_count = len(context.dataset.list_local_series())
+            except DatasetNotReady:
+                has_data = False
+        
+        return jsonify({
+            "has_data": has_data,
+            "series_count": series_count,
+            "server_url": config.server_url,
+        })
+
+    @app.get("/api/debug/paths")
+    def debug_paths():
+        """Debug endpoint to check file paths."""
+        import glob as glob_mod
+        video_cache = str(context.dataset.video_cache_path)
+        project_id = config.project_id
+        dataset_id = config.dataset_id
+        
+        ann_pattern = f"{video_cache}/mdai_*_project_{project_id}_annotations_dataset_{dataset_id}_*.json"
+        img_pattern = f"{video_cache}/mdai_*_project_{project_id}_images_dataset_{dataset_id}_*"
+        
+        ann_matches = glob_mod.glob(ann_pattern)
+        img_matches = [d for d in glob_mod.glob(img_pattern) if Path(d).is_dir()]
+        
+        return jsonify({
+            "video_cache": video_cache,
+            "project_id": project_id,
+            "dataset_id": dataset_id,
+            "ann_pattern": ann_pattern,
+            "ann_matches": ann_matches,
+            "img_pattern": img_pattern,
+            "img_matches": img_matches,
+        })
+
     @app.post("/api/dataset/sync")
     def sync_dataset():
         """
         Download/refresh the MD.ai dataset. Frames are produced by the server
         tracking pipeline; the client no longer extracts or caches frames.
         """
-        images_dir = context.dataset.sync_dataset()
-        series = context.dataset.list_local_series()
-        return jsonify({
-            "images_dir": str(images_dir),
-            "series_count": len(series),
-            "frames_extracted_for": [],  # no local extraction
-        })
+        try:
+            images_dir = context.dataset.sync_dataset()
+            series = context.dataset.list_local_series()
+            return jsonify({
+                "images_dir": str(images_dir),
+                "series_count": len(series),
+                "frames_extracted_for": [],  # no local extraction
+            })
+        except DatasetNotReady as e:
+            return jsonify({"error": str(e)}), 503
 
     @app.get("/api/local/series")
     def local_series():
@@ -329,16 +354,16 @@ def create_app(
         Uses the MD.ai annotations export mtime on each side as a simple version
         key. Intended only for warning UI; no automatic negotiation yet.
         """
-        from track import find_annotations_file
+        from client.mdai_client import find_annotations_file
 
         client_version = None
         server_version = None
 
-        # Client annotations version
+        # Client annotations version - look in video_cache where sync downloads
         try:
             client_annotations = Path(
                 find_annotations_file(
-                    str(config.data_dir),
+                    str(context.dataset.video_cache_path),
                     config.project_id,
                     config.dataset_id,
                 )
@@ -352,31 +377,23 @@ def create_app(
         except FileNotFoundError:
             client_version = None
 
-        # Server annotations version via API
+        # Get server annotations version
+        server_version = None
         try:
-            resp = context.http_client.get(
-                f"{config.server_url.rstrip('/')}/api/dataset/version",
-                timeout=10,
+            import requests
+            server_resp = requests.get(
+                f"{config.server_url}/api/dataset/version",
+                timeout=5
             )
-            if resp.status_code == 200:
-                server_version = resp.json()
-            else:
-                server_version = {"error": f"HTTP {resp.status_code}"}
-        except Exception as exc:  # pragma: no cover - network failures
-            server_version = {"error": str(exc)}
+            if server_resp.ok:
+                server_version = server_resp.json()
+        except Exception:
+            pass  # Server unreachable, can't compare
 
+        # Compare by file size (mtime differs across machines)
         in_sync = False
-        if (
-            client_version
-            and isinstance(server_version, dict)
-            and "annotations_size" in server_version
-        ):
-            # Compare file size instead of mtime - mtime differs across machines
-            # even when files are identical. Size is a better indicator of sync.
-            in_sync = (
-                client_version["annotations_size"]
-                == server_version["annotations_size"]
-            )
+        if client_version and server_version and "annotations_size" in server_version:
+            in_sync = client_version["annotations_size"] == server_version["annotations_size"]
 
         return jsonify({
             "client": client_version,
@@ -513,39 +530,14 @@ def create_app(
             # Build .tar archive (no gzip) using shared helper
             archive_bytes = build_mask_archive(mask_dir, metadata)
 
-        # POST archive to central server /api/masks/{study}/{series}
-        server_url = config.server_url.rstrip("/")
-        url = f"{server_url}/api/masks/{study_uid}/{series_uid}"
-
-        headers = {
-            "Content-Type": "application/x-tar",
-            "X-Previous-Version-ID": previous_version_id or "",
-        }
-        # Identification for last editor - prefer X-User-Email from request (frontend)
-        # Server accepts either X-Editor or X-User-Email
-        user_email = request.headers.get("X-User-Email")
-        if user_email:
-            headers["X-User-Email"] = user_email
-        else:
-            current_email = _current_user_email()
-            if current_email:
-                headers["X-User-Email"] = current_email
-
-        try:
-            resp = context.http_client.post(
-                url,
-                content=archive_bytes,
-                headers=headers,
-                timeout=60,
-            )
-        except Exception as exc:
-            return jsonify({"error": f"Error contacting server: {exc}"}), 502
-
-        # Pass through server response JSON and status
-        content_type = resp.headers.get("content-type", "")
-        if "application/json" in content_type:
-            return jsonify(resp.json()), resp.status_code
-        return Response(resp.content, status=resp.status_code)
+        # Return archive bytes - frontend will POST to server directly
+        return Response(
+            archive_bytes,
+            mimetype="application/x-tar",
+            headers={
+                "Content-Disposition": f"attachment; filename=masks_{study_uid}_{series_uid}.tar"
+            }
+        )
 
     @app.post("/api/retrack/<study_uid>/<series_uid>")
     def retrack_series(study_uid: str, series_uid: str):

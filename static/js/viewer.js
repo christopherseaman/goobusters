@@ -86,6 +86,25 @@ class AnnotationViewer {
     }
     
     /**
+     * Fetch from server API endpoint with Cloudflare headers if configured.
+     */
+    async fetchToServer(path, options = {}) {
+        const headers = { ...(options.headers || {}) };
+        
+        // Add Cloudflare headers if configured
+        if (typeof CF_ACCESS_CLIENT_ID !== 'undefined' && CF_ACCESS_CLIENT_ID) {
+            const [name, value] = CF_ACCESS_CLIENT_ID.split(': ');
+            if (name && value) headers[name.trim()] = value.trim();
+        }
+        if (typeof CF_ACCESS_CLIENT_SECRET !== 'undefined' && CF_ACCESS_CLIENT_SECRET) {
+            const [name, value] = CF_ACCESS_CLIENT_SECRET.split(': ');
+            if (name && value) headers[name.trim()] = value.trim();
+        }
+        
+        return fetch(this.serverUrlFor(path), { ...options, headers });
+    }
+    
+    /**
      * Get full URL for client backend endpoint (frames, settings, etc.).
      */
     clientUrlFor(path) {
@@ -464,7 +483,7 @@ class AnnotationViewer {
             reconnectBtn.addEventListener('click', async () => {
                 try {
                     // Try to reconnect by checking server status
-                    const response = await fetch(this.serverUrlFor('api/status'));
+                    const response = await this.fetchToServer('api/status');
                     if (response.ok) {
                         // Server is back - hide warning and check version sync
                         this.hideServerConnectionWarning();
@@ -636,8 +655,17 @@ class AnnotationViewer {
             throw new Error('No current video set');
         }
         const { method, studyUid, seriesUid } = this.currentVideo;
-        // Call client backend which proxies to server (server is source of truth)
-        const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
+        // Verify series exists locally first
+        const verifyResponse = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
+        if (!verifyResponse.ok) {
+            if (verifyResponse.status === 404) {
+                throw new Error(`Series ${studyUid}/${seriesUid} not found locally. Please sync your dataset.`);
+            }
+            throw new Error(`Failed to verify series: ${verifyResponse.statusText}`);
+        }
+        
+        // Call server directly for video metadata
+        const response = await this.fetchToServer(`api/video/${method}/${studyUid}/${seriesUid}`);
         
         if (!response.ok) {
             // Handle server unavailability
@@ -1456,7 +1484,7 @@ class AnnotationViewer {
             // Show blocking loading overlay
             this.showRetrackLoading('Saving and retracking...');
 
-            const allResponse = await fetch(this.serverUrlFor(`api/masks/${studyUid}/${seriesUid}`), {
+            const allResponse = await this.fetchToServer(`api/masks/${studyUid}/${seriesUid}`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/x-tar',
@@ -1529,7 +1557,7 @@ class AnnotationViewer {
         
         const poll = async () => {
             attempts++;
-            const response = await fetch(this.serverUrlFor(`api/retrack/status/${studyUid}/${seriesUid}`));
+            const response = await this.fetchToServer(`api/retrack/status/${studyUid}/${seriesUid}`);
             const status = await response.json();
             
             if (status.status === 'completed') {
@@ -1609,7 +1637,7 @@ class AnnotationViewer {
         const { studyUid, seriesUid } = this.currentVideo;
         try {
             const userEmail = this.getUserEmail();
-            const resp = await fetch(this.serverUrlFor(`api/series/${studyUid}/${seriesUid}/complete`), {
+            const resp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}/complete`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1649,7 +1677,7 @@ class AnnotationViewer {
         
         const { studyUid, seriesUid } = this.currentVideo;
         try {
-            const resp = await fetch(this.serverUrlFor(`api/series/${studyUid}/${seriesUid}/reopen`), {
+            const resp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}/reopen`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1723,7 +1751,7 @@ class AnnotationViewer {
             let resp = await fetch('/api/local/series');
             if (!resp.ok) {
                 // Fall back to server endpoint if local fails
-                resp = await fetch(this.serverUrlFor('api/series'));
+                resp = await this.fetchToServer('api/series');
                 if (!resp.ok) {
                     console.warn('Failed to fetch series list:', resp.status);
                     return;
@@ -1789,7 +1817,7 @@ class AnnotationViewer {
         
         try {
             // Fetch fresh status from server
-            const resp = await fetch(this.serverUrlFor(`api/series/${studyUid}/${seriesUid}`));
+            const resp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}`);
             if (resp.ok) {
                 const data = await resp.json();
                 const serverStatus = data.status || 'pending';
@@ -1819,7 +1847,7 @@ class AnnotationViewer {
             let resp = await fetch('/api/local/series');
             let isLocal = true;
             if (!resp.ok) {
-                resp = await fetch(this.serverUrlFor('api/series'));
+                resp = await this.fetchToServer('api/series');
                 isLocal = false;
             if (!resp.ok) {
                 console.warn('Failed to fetch series list:', resp.status);
@@ -1929,7 +1957,7 @@ class AnnotationViewer {
         this.showRetrackLoading('Resetting retrack data...');
 
         try {
-            const resp = await fetch(this.serverUrlFor(`api/reset-retrack/${studyUid}/${seriesUid}`), {
+            const resp = await this.fetchToServer(`api/reset-retrack/${studyUid}/${seriesUid}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1991,7 +2019,7 @@ class AnnotationViewer {
         this.showRetrackLoading('Resetting retrack data for all series...');
 
         try {
-            const resp = await fetch(this.serverUrlFor('api/reset-retrack-all'), {
+            const resp = await this.fetchToServer('api/reset-retrack-all', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -2149,7 +2177,7 @@ class AnnotationViewer {
      */
     async loadNextSeries() {
         try {
-            const response = await fetch(this.serverUrlFor('api/series/next'), {
+            const response = await this.fetchToServer('api/series/next', {
                 headers: {
                     'X-User-Email': this.getUserEmail() || ''
                 }
@@ -2193,18 +2221,6 @@ class AnnotationViewer {
                 if (activityData) {
                     await this.updateMultiplayerWarning(activityData);
                 }
-            }
-            
-            // Check if series exists locally before trying to load
-            // The client needs to have synced its dataset to include this series
-            // Note: We verify locally via /api/local/series or by checking frame availability
-            // Server metadata is fetched directly from server
-            if (!checkResponse.ok) {
-                if (checkResponse.status === 404) {
-                    alert(`Series ${data.study_uid}/${data.series_uid} not found locally. Please sync your dataset first.`);
-                    return;
-                }
-                throw new Error(`Failed to verify series locally: ${checkResponse.statusText}`);
             }
             
             // Load the series from server
@@ -2278,8 +2294,8 @@ class AnnotationViewer {
         }
         
         try {
-            const response = await fetch(
-                this.serverUrlFor(`api/series/${studyUid}/${seriesUid}/activity`),
+            const response = await this.fetchToServer(
+                `api/series/${studyUid}/${seriesUid}/activity`,
                 {
                     method: 'POST',
                     headers: {
@@ -2341,8 +2357,8 @@ class AnnotationViewer {
         }
         
         try {
-            const response = await fetch(
-                this.serverUrlFor(`api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`)
+            const response = await this.fetchToServer(
+                `api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`
             );
             if (response.ok) {
                 const data = await response.json();
@@ -2700,6 +2716,7 @@ class AnnotationViewer {
 AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
     try {
         const resp = await fetch('/api/dataset/version_status').catch(() => null);
+        // Note: Client route returns only client version, frontend calls server directly for server version
         if (!resp || !resp.ok) {
             // Silently fail - dataset sync status is not critical
             return;
