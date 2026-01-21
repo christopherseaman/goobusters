@@ -13,6 +13,7 @@ struct GoobustersView: View {
             Group {
                 if backendManager.isReady {
                     WebView(url: backendManager.serverURL)
+                        .id(backendManager.serverURL.absoluteString) // Force recreation when URL changes
                 } else if let error = backendManager.errorMessage {
                     VStack(spacing: 16) {
                         Image(systemName: "exclamationmark.triangle")
@@ -58,11 +59,17 @@ struct WebView: UIViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        // Load URL immediately when WebView is created
+        let request = URLRequest(url: url)
+        webView.load(request)
         return webView
     }
     
     func updateUIView(_ webView: WKWebView, context: Context) {
-        if webView.url != url {
+        // Always reload if URL is different or if webView has no URL yet
+        let currentURL = webView.url?.absoluteString ?? ""
+        let targetURL = url.absoluteString
+        if currentURL != targetURL {
             let request = URLRequest(url: url)
             webView.load(request)
         }
@@ -75,6 +82,10 @@ struct WebView: UIViewRepresentable {
     class Coordinator: NSObject, WKNavigationDelegate {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             print("WebView navigation error: \(error.localizedDescription)")
+        }
+        
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            print("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
         }
     }
 }
