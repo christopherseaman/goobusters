@@ -6,7 +6,8 @@ tracked_*/
 optical_flow/
 output/
 __pycache__/
-__init__.py
+# Don't ignore vendor __init__.py files (required for Python packages)
+# __init__.py
 
 output_*.zip
 annotations.duckdb
