@@ -67,26 +67,24 @@ fi
 
 if [ "$ARCHIVE_BUILD" = true ]; then
     # Archive build for TestFlight
+    # Archive settings are configured in the Xcode scheme (Release config, reveal in Organizer)
+    # Xcode automatically uses ~/Library/Developer/Xcode/Archives/YYYY-MM-DD/ by default
     echo ""
     echo "=== Bundling Python Code ==="
     bash ios/scripts/bundle_python.sh
     
     echo ""
     echo "=== Creating Archive ==="
-    ARCHIVE_DATE=$(date +%Y-%m-%d)
-    ARCHIVE_PATH="$HOME/Library/Developer/Xcode/Archives/$ARCHIVE_DATE/Goobusters.xcarchive"
-    mkdir -p "$(dirname "$ARCHIVE_PATH")"
+    echo "Using Xcode scheme settings (Release configuration)"
     
     xcodebuild -project "$PROJECT" \
         -scheme "$SCHEME" \
-        -configuration Release \
         -sdk iphoneos \
-        -archivePath "$ARCHIVE_PATH" \
         archive 2>&1 | tail -10
     
     if [ $? -eq 0 ]; then
         echo ""
-        echo "✓ Archive created: $ARCHIVE_PATH"
+        echo "✓ Archive created in default Xcode location"
         echo ""
         echo "To upload to TestFlight:"
         echo "1. Open Xcode → Window → Organizer"
