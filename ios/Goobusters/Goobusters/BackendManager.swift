@@ -18,14 +18,14 @@ class BackendManager: ObservableObject {
             return
         }
 
-        statusMessage = "Initializing Python..."
+        statusMessage = "Connecting..."
 
         pythonRunner = PythonBackendRunner(resourcePath: resourcePath)
 
         Task {
             do {
                 try await pythonRunner?.start(entryScriptRelativePath: entryScript)
-                statusMessage = "Starting Flask server..."
+                statusMessage = "Connecting..."
 
                 // Poll for server readiness
                 await waitForServer()
@@ -40,12 +40,11 @@ class BackendManager: ObservableObject {
         let maxAttempts = 30
         let url = URL(string: "http://127.0.0.1:\(port)/healthz")!
 
-        for attempt in 1...maxAttempts {
+        for _ in 1...maxAttempts {
             do {
                 let (_, response) = try await URLSession.shared.data(from: url)
                 if let httpResponse = response as? HTTPURLResponse,
                    httpResponse.statusCode == 200 {
-                    statusMessage = "Backend ready"
                     isReady = true
                     return
                 }
@@ -54,11 +53,11 @@ class BackendManager: ObservableObject {
             }
 
             try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-            statusMessage = "Waiting for server... (\(attempt)/\(maxAttempts))"
+            // Keep showing "Connecting..." - no counting
         }
 
-        errorMessage = "Server failed to start after \(maxAttempts) attempts"
-        statusMessage = "Error: Server timeout"
+        errorMessage = "Backend Error"
+        statusMessage = "Backend Error"
     }
 
     func stop() {

@@ -6,7 +6,7 @@ struct GoobustersView: View {
     
     var body: some View {
         ZStack {
-            // Black background for top/bottom bars
+            // Black background - always show to prevent white flash
             Color.black
                 .ignoresSafeArea()
             
@@ -14,11 +14,11 @@ struct GoobustersView: View {
                 if backendManager.isReady {
                     WebView(url: backendManager.serverURL)
                         .id(backendManager.serverURL.absoluteString) // Force recreation when URL changes
+                        .background(Color.black) // Ensure black background
                 } else if let error = backendManager.errorMessage {
                     VStack(spacing: 16) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundColor(.red)
+                        Text("🔌")
+                            .font(.system(size: 60))
                         Text("Backend Error")
                             .font(.headline)
                             .foregroundColor(.white)
@@ -30,16 +30,17 @@ struct GoobustersView: View {
                     }
                 } else {
                     VStack(spacing: 16) {
-                        ProgressView()
-                            .tint(.white)
+                        Text("🔌")
+                            .font(.system(size: 60))
                         Text(backendManager.statusMessage)
-                            .font(.caption)
+                            .font(.headline)
                             .foregroundColor(.white)
                     }
                 }
             }
         }
         .preferredColorScheme(.dark)
+        .background(Color.black) // Ensure black background
         .onAppear {
             backendManager.start()
         }
@@ -59,6 +60,10 @@ struct WebView: UIViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        // Set black background to prevent white flash
+        webView.backgroundColor = .black
+        webView.isOpaque = false
+        webView.scrollView.backgroundColor = .black
         // Load URL immediately when WebView is created
         let request = URLRequest(url: url)
         webView.load(request)

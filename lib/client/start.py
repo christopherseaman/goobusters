@@ -54,9 +54,15 @@ class ClientContext:
         ).strip()
 
 
-def create_app(
-    config: Optional[ClientConfig] = None, skip_startup: bool = False
-) -> Flask:
+def create_app(config: Optional[ClientConfig] = None) -> Flask:
+    """
+    Create the Flask client application.
+    
+    The frontend handles sync and credential checking:
+    - Frontend checks credentials after connecting to backend
+    - If credentials present -> frontend triggers sync via /api/dataset/sync
+    - If credentials missing or sync fails -> frontend shows blocking config modal
+    """
     config = config or load_config("client")
     context = ClientContext(config)
 
@@ -67,14 +73,9 @@ def create_app(
     )
     app.config["CLIENT_CONTEXT"] = context
 
-    # Initialize client: sync dataset (frames served from server outputs)
-    # This must complete before serving the viewer
-    if not skip_startup:
-        logger = logging.getLogger(__name__)
-        logger.info("Initializing client: syncing dataset...")
-        images_dir = context.dataset.sync_dataset()
-        logger.info(f"Dataset synced. Images directory: {images_dir}")
-        logger.info("Client initialization complete.")
+    # Initialize client: don't sync on startup - frontend will handle it
+    logger = logging.getLogger(__name__)
+    logger.info("Flask app created. Frontend will handle sync if credentials are present.")
 
     def _current_user_email() -> str:
         return context.current_user_email()
@@ -82,8 +83,7 @@ def create_app(
     def _build_videos() -> list[dict]:
         """
         Build the list of locally available series for the viewer.
-        No caching - always fetch fresh from server API.
-        Fetches completion status from server for each series.
+        Fetches status and activity from server for each series.
         """
         try:
             series = context.dataset.list_local_series()
@@ -95,24 +95,50 @@ def create_app(
             {"labelId": config.empty_id, "labelName": "Empty"},
         ]
 
-        # Build base video list
-        videos = [
-            {
+        # Fetch server series data for status/activity (activity only lives on server)
+        # This is non-blocking - if it fails, we continue without activity data
+        server_series_map = {}
+        try:
+            import requests
+            server_url = f"{config.server_url}/api/series"
+            resp = requests.get(server_url, timeout=5)
+            if resp.ok:
+                server_data = resp.json()
+                activity_count = 0
+                for item in server_data:
+                    key = f"{item['study_uid']}|{item['series_uid']}"
+                    activity = item.get("activity", {})
+                    if activity:
+                        activity_count += 1
+                    server_series_map[key] = {
+                        "status": item.get("status", "pending"),
+                        "activity": activity,
+                    }
+                logger.debug(f"Fetched {len(server_series_map)} series from server, {activity_count} with activity")
+            else:
+                logger.warning(f"Server returned {resp.status_code} when fetching activity data")
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout connecting to {config.server_url} for activity data")
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"Connection error to {config.server_url}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch activity data: {type(e).__name__}: {e}")
+
+        # Build video list with server data merged
+        videos = []
+        for info in series:
+            key = f"{info.study_uid}|{info.series_uid}"
+            server_data = server_series_map.get(key, {})
+            videos.append({
                 "method": config.flow_method,
                 "study_uid": info.study_uid,
                 "series_uid": info.series_uid,
                 "exam_number": info.exam_number,
                 "series_number": info.series_number,
                 "labels": labels,
-                "status": "pending",  # Default, will be updated from server
-                "activity": {},  # Default, will be updated from server (never cached locally)
-            }
-            for info in series
-        ]
-
-        # Don't fetch status from server during page load - it blocks if server isn't ready
-        # Frontend JavaScript will fetch status asynchronously after page loads
-        # This prevents the page from hanging if server isn't available
+                "status": server_data.get("status", "pending"),
+                "activity": server_data.get("activity", {}),
+            })
 
         # Sort by exam_number
         videos.sort(key=lambda v: v["exam_number"] or 0)
@@ -181,8 +207,12 @@ def create_app(
     # --------------------------------------------------------------------- Routes
     @app.route("/healthz")
     def healthcheck():
+        """
+        Health check endpoint. Returns client_ready=True if Flask server is running.
+        Data sync status is checked separately via /api/status.
+        """
         return jsonify({
-            "client_ready": context.dataset.dataset_ready(),
+            "client_ready": True,  # Server is running and ready to accept requests
             "server_url": config.server_url,
             "video_cache": str(config.video_cache_path),
             "frames_cache": str(config.frames_path),
@@ -191,20 +221,21 @@ def create_app(
     @app.route("/")
     def viewer_home():
         """
-        Serve the main viewer UI using the legacy app.py frontend.
+        Serve the main viewer UI. Frontend handles credential checking and sync.
+        Always serve viewer.html - frontend will check credentials and sync if needed.
         """
-        videos = _build_videos()
-        if not videos:
-            return render_template("no_videos.html"), 503
-
-        # Don't fetch "next series" from server during page load - it blocks if server isn't ready
-        # Frontend JavaScript will fetch and load the next series asynchronously after page loads
-        # Default to first video - frontend will update to server-selected series after load
-        selected_video = videos[0]
+        # Try to build videos list, but don't fail if no data exists yet
+        # Frontend will handle credential check and sync
+        try:
+            videos = _build_videos()
+            selected_video = videos[0] if videos else None
+        except DatasetNotReady:
+            videos = []
+            selected_video = None
 
         return render_template(
             "viewer.html", 
-            videos=videos, 
+            videos=videos or [], 
             selected_video=selected_video,
             server_url=config.server_url
         )
@@ -323,7 +354,11 @@ def create_app(
                 "frames_extracted_for": [],  # no local extraction
             })
         except DatasetNotReady as e:
-            return jsonify({"error": str(e)}), 503
+            return jsonify({"error": str(e), "error_message": str(e)}), 503
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Dataset sync failed: {e}", exc_info=True)
+            return jsonify({"error": str(e), "error_message": str(e)}), 500
 
     @app.get("/api/local/series")
     def local_series():
@@ -407,11 +442,11 @@ def create_app(
         Return current user identity and whether an MD.ai token is set.
         Token contents are never returned.
         """
+        token = context.dataset._token_override or context.config.mdai_token
+        has_token = bool(token and token != "not_configured_yet")
         return jsonify({
             "user_email": _current_user_email(),
-            "mdai_token_present": bool(
-                context.dataset._token_override or context.config.mdai_token
-            ),
+            "mdai_token_present": has_token,
         })
 
     @app.post("/api/settings")

@@ -3,11 +3,16 @@
 #
 # Prerequisites:
 #   - Xcode installed
-#   - dot.env configured with secrets (MDAI_TOKEN, etc.)
+#   - dot.env configured (MDAI_TOKEN, SERVER_URL, etc.)
 #
 # Usage:
-#   ./build_ios.sh              # Build and run on default simulator
+#   ./build_ios.sh              # Build and run (prompts for credentials on first run)
 #   ./build_ios.sh --skip-build # Just install and run (if already built)
+#   ./build_ios.sh --debug      # Build with MDAI_TOKEN + USER_EMAIL pre-bundled
+#
+# Startup behavior (handled by client):
+#   - If credentials present -> syncs automatically on startup
+#   - If credentials missing -> shows setup page to enter token/name
 
 set -e
 
@@ -22,8 +27,18 @@ SCHEME="Goobusters"
 
 # Parse arguments
 SKIP_BUILD=false
-if [ "$1" = "--skip-build" ]; then
-    SKIP_BUILD=true
+DEBUG_BUILD=false
+for arg in "$@"; do
+    case $arg in
+        --skip-build) SKIP_BUILD=true ;;
+        --debug) DEBUG_BUILD=true ;;
+    esac
+done
+
+if [ "$DEBUG_BUILD" = true ]; then
+    echo "=== DEBUG BUILD MODE ==="
+    echo "  - MDAI_TOKEN will be bundled from dot.env"
+    echo "  - USER_EMAIL: debugger-$(hostname -s)"
 fi
 
 # Find or boot simulator
@@ -51,7 +66,11 @@ if [ "$SKIP_BUILD" = false ]; then
     # Generate python-app bundle
     echo ""
     echo "=== Bundling Python Code ==="
-    bash ios/scripts/bundle_python.sh
+    if [ "$DEBUG_BUILD" = true ]; then
+        bash ios/scripts/bundle_python.sh --debug
+    else
+        bash ios/scripts/bundle_python.sh
+    fi
 
     # Build with Xcode
     echo ""
@@ -76,7 +95,8 @@ echo "=== Installing App ==="
 # Kill any running instance
 pkill -9 -f Goobusters 2>/dev/null || true
 
-# Uninstall previous version
+# Uninstall previous version (clean install)
+echo "Uninstalling previous version..."
 xcrun simctl uninstall "$SIMULATOR_ID" "$BUNDLE_ID" 2>/dev/null || true
 
 # Install new version

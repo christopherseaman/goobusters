@@ -1,12 +1,27 @@
 #!/bin/bash
 # Bundle Goobusters Python code for iOS app
 # This script packages the Python backend code that will be embedded in the iOS app
+#
+# Usage:
+#   ./bundle_python.sh           # Normal build (no credentials bundled)
+#   ./bundle_python.sh --debug   # Debug build with MDAI_TOKEN + USER_EMAIL bundled
+#
+# Note: The client handles sync automatically based on credentials.
+# - If credentials present -> syncs on startup
+# - If credentials missing -> shows setup page
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR/../Goobusters/Goobusters/python-app"
+
+# Parse arguments
+DEBUG_BUILD=false
+if [ "$1" = "--debug" ]; then
+    DEBUG_BUILD=true
+    echo "=== DEBUG BUILD MODE ==="
+fi
 
 echo "=== Bundling Goobusters Python Code ==="
 echo "Source: $REPO_ROOT"
@@ -80,11 +95,18 @@ fi
 echo "Copying default config..."
 cp "$REPO_ROOT/dot.env.defaults" "$OUTPUT_DIR/"
 
-# Merge non-secret config values from dot.env if it exists
+# Merge config values from dot.env if it exists
 if [ -f "$REPO_ROOT/dot.env" ]; then
-    echo "Merging non-secret config from dot.env..."
-    # List of non-secret keys to copy (NOT MDAI_TOKEN!)
+    echo "Merging config from dot.env..."
+    # List of non-secret keys to copy
     NON_SECRET_KEYS="DOMAIN PROJECT_ID DATASET_ID LABEL_ID EMPTY_ID FLOW_METHOD SERVER_URL"
+    
+    # In debug mode, also include MDAI_TOKEN
+    if [ "$DEBUG_BUILD" = true ]; then
+        NON_SECRET_KEYS="$NON_SECRET_KEYS MDAI_TOKEN"
+        echo "  [DEBUG] Including MDAI_TOKEN"
+    fi
+    
     for key in $NON_SECRET_KEYS; do
         # Get value from dot.env (remove quotes)
         value=$(grep "^$key=" "$REPO_ROOT/dot.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
@@ -98,6 +120,17 @@ if [ -f "$REPO_ROOT/dot.env" ]; then
             fi
         fi
     done
+    
+    # In debug mode, set default username to debugger-$hostname
+    if [ "$DEBUG_BUILD" = true ]; then
+        DEBUG_USER="debugger-$(hostname -s)"
+        echo "  Setting USER_EMAIL=$DEBUG_USER"
+        if grep -q "^USER_EMAIL=" "$OUTPUT_DIR/dot.env.defaults"; then
+            sed -i '' "s|^USER_EMAIL=.*|USER_EMAIL=$DEBUG_USER|" "$OUTPUT_DIR/dot.env.defaults"
+        else
+            echo "USER_EMAIL=$DEBUG_USER" >> "$OUTPUT_DIR/dot.env.defaults"
+        fi
+    fi
 fi
 
 # Create iOS-specific config overrides
@@ -169,11 +202,16 @@ EOF
 
 # Create a simple startup script
 cat > "$OUTPUT_DIR/start_server.py" << 'EOF'
-"""iOS app entry point - starts the Flask server"""
+"""iOS app entry point - starts the Flask server
+
+Startup flow (handled by create_app):
+1. If token + name present -> always sync
+2. If credentials missing -> skip sync, show setup page
+3. If sync fails -> log error, show setup page for retry
+"""
 import os
 import sys
 import traceback
-import io
 
 # Add bundle path to Python path
 bundle_path = os.path.dirname(os.path.abspath(__file__))
@@ -191,9 +229,10 @@ log_file = os.path.join(log_dir, "goobusters_startup.log")
 
 def log(msg):
     """Write to both stderr and log file"""
-    print(msg, file=sys.stderr)
+    print(msg, file=sys.stderr, flush=True)
     with open(log_file, "a") as f:
         f.write(msg + "\n")
+        f.flush()
 
 # Clear log file
 with open(log_file, "w") as f:
@@ -223,9 +262,23 @@ def main(port=8080):
         # Import and create the Flask app
         log("[iOS] Importing lib.client.start...")
         from lib.client.start import create_app
-        log("[iOS] Creating Flask app (skip_startup=True for iOS)...")
-        # Skip startup sync on iOS - dataset may not exist yet
-        app = create_app(skip_startup=True)
+        from lib.config import load_config
+        
+        log("[iOS] Loading config...")
+        # Change to bundle directory so load_config finds dot.env.defaults
+        original_cwd = os.getcwd()
+        os.chdir(bundle_path)
+        try:
+            config = load_config("client")
+        finally:
+            os.chdir(original_cwd)
+        log(f"[iOS] Config: server_url={config.server_url}, user={config.user_email}")
+        log(f"[iOS] Token present: {bool(config.mdai_token and config.mdai_token != 'not_configured_yet')}")
+        
+        log("[iOS] Creating Flask app...")
+        # Frontend will handle sync after connecting to backend
+        app = create_app(config=config)
+        
         log("[iOS] Starting Flask server...")
 
         # Run Flask (this blocks)
