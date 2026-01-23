@@ -106,18 +106,14 @@ class AnnotationViewer {
     
     /**
      * Fetch from server API endpoint with Cloudflare headers if configured.
+     * Accepts either a path (e.g., "api/status") or a full URL (e.g., "https://goo.badmath.org/api/status").
      */
-    async fetchToServer(path, options = {}) {
+    async fetchToServer(pathOrUrl, options = {}) {
         const headers = this._addCloudflareHeaders(options.headers);
-        return fetch(this.serverUrlFor(path), { ...options, headers });
-    }
-    
-    /**
-     * Fetch a URL with Cloudflare headers if configured.
-     * Headers are only added if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are set.
-     */
-    async fetchWithCloudflare(url, options = {}) {
-        const headers = this._addCloudflareHeaders(options.headers);
+        // If it's already a full URL, use it as-is; otherwise build from serverUrl
+        const url = pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')
+            ? pathOrUrl
+            : this.serverUrlFor(pathOrUrl);
         return fetch(url, { ...options, headers });
     }
     
@@ -2699,8 +2695,8 @@ class AnnotationViewer {
             }
 
             // Load frames archive (.tar format, no gzip)
-            // Use fetchWithCloudflare to add headers if this is a server URL
-            const framesArchiveResponse = await this.fetchWithCloudflare(framesUrl);
+            // Use fetchToServer to add headers (handles both paths and full URLs)
+            const framesArchiveResponse = await this.fetchToServer(framesUrl);
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesTarData = new Uint8Array(framesArrayBuffer);
 
@@ -2729,8 +2725,8 @@ class AnnotationViewer {
             // Load masks archive (.tar format, no gzip) - get version ID from headers
             this.masksArchive = {};
             if (masksUrl) {
-                // Use fetchWithCloudflare to add headers if this is a server URL
-                const masksArchiveResponse = await this.fetchWithCloudflare(masksUrl);
+                // Use fetchToServer to add headers (handles both paths and full URLs)
+                const masksArchiveResponse = await this.fetchToServer(masksUrl);
                 
                 if (!masksArchiveResponse.ok) {
                     console.warn(`Failed to load masks archive: ${masksArchiveResponse.status} ${masksArchiveResponse.statusText}`);
