@@ -140,15 +140,121 @@ class AnnotationViewer {
     }
 
     async init() {
+        this.showServerConnectionScreen('Connecting...');
+        
         this.setupEventListeners();
         await this.loadSettings();
-        // Ensure user email is set (prompt if missing)
-        await this.ensureUserEmail();
-        
-        // Try to connect to server with exponential backoff
         await this.connectToServerWithRetry();
+        await this.checkCredentialsAndSync();
         
         this.checkDatasetSyncStatus().catch(() => {});
+    }
+    
+    /**
+     * Check if credentials are set, and if so, trigger sync.
+     * Show blocking config modal if credentials missing or sync fails.
+     */
+    async checkCredentialsAndSync() {
+        try {
+            // Check if credentials are set
+            const settingsResp = await fetch('/api/settings');
+            if (!settingsResp.ok) {
+                this.showConfigModal();
+                return;
+            }
+            
+            const settings = await settingsResp.json();
+            const hasToken = settings.mdai_token_present === true;
+            const email = settings.user_email ? settings.user_email.trim() : '';
+            const hasName = email.length > 0;
+            
+            if (!hasToken || !hasName) {
+                // Missing credentials - show blocking config modal
+                this.showConfigModal();
+                return;
+            }
+            
+            this.showServerConnectionScreen('Syncing dataset...');
+            const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
+            
+            if (!syncResp.ok) {
+                // Sync failed - show blocking config modal
+                const errorData = await syncResp.json().catch(() => ({}));
+                console.error('Sync failed:', errorData);
+                this.showConfigModal();
+                return;
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            await this.populateVideoSelectFromLocal();
+            await this.refreshAllSeriesStatuses();
+            await this.loadNextSeries();
+            this.hideServerConnectionScreen();
+        } catch (error) {
+            console.error('Error checking credentials/sync:', error);
+            this.showConfigModal();
+        }
+    }
+    
+    /**
+     * Show blocking config modal (no_videos.html setup page).
+     */
+    showConfigModal() {
+        // Redirect to setup page
+        window.location.href = '/no_videos';
+    }
+    
+    /**
+     * Resync dataset from settings modal.
+     */
+    async resyncDataset() {
+        const btn = document.getElementById('resyncDataset');
+        if (!btn) return;
+        
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '🔄 Syncing...';
+        
+        try {
+            this.showServerConnectionScreen('Syncing dataset...');
+            const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
+            
+            if (!syncResp.ok) {
+                const errorData = await syncResp.json().catch(() => ({}));
+                throw new Error(errorData.error || 'Sync failed');
+            }
+            
+            const syncData = await syncResp.json();
+            
+            // Wait a moment for dataset to be indexed
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Refresh UI
+            await this.populateVideoSelectFromLocal();
+            await this.refreshAllSeriesStatuses();
+            
+            // Hide connection screen and close settings modal
+            this.hideServerConnectionScreen();
+            this.hideModal('settingsModal');
+            
+            // Reload current series if available, otherwise load next
+            if (this.currentVideo) {
+                await this.loadVideo(
+                    this.currentVideo.method,
+                    this.currentVideo.study_uid,
+                    this.currentVideo.series_uid
+                );
+            } else {
+                await this.loadNextSeries();
+            }
+        } catch (error) {
+            console.error('Resync failed:', error);
+            alert(`Resync failed: ${error.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
     }
     
     /**
@@ -160,41 +266,43 @@ class AnnotationViewer {
         if (forceImmediate && this.serverConnectionRetryTimeout) {
             clearTimeout(this.serverConnectionRetryTimeout);
             this.serverConnectionRetryTimeout = null;
+            this.serverConnectionRetryCount = 0;
         }
         
-        this.showServerConnectionScreen('Connecting to server...', '');
+        this.showServerConnectionScreen('Connecting...');
         
-        const maxRetries = 10;
+        const maxRetries = 30;
         let retryDelay = 1000; // Start with 1 second
         
         const attemptConnection = async () => {
             try {
-                // Try to load next series (this will fail if server unavailable)
-                await this.loadNextSeries();
-                // Success! Hide blocking screen and mark as connected
+                // Check if backend is responding (don't try to load data - that requires sync)
+                const healthResp = await fetch('/healthz', { 
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                
+                if (!healthResp.ok) {
+                    throw new Error(`Backend returned ${healthResp.status}`);
+                }
+                
+                const healthData = await healthResp.json();
+                // Health check just verifies server is running - don't check client_ready
+                // (data sync status is checked separately)
+                
                 this.hasConnectedToServer = true;
                 this.serverConnectionRetryCount = 0;
-                this.hideServerConnectionScreen();
                 return true;
             } catch (error) {
-                console.error(`Server connection attempt ${this.serverConnectionRetryCount + 1} failed:`, error);
                 this.serverConnectionRetryCount++;
                 
                 if (this.serverConnectionRetryCount >= maxRetries) {
-                    // Max retries reached - show message (hourglass is always clickable)
-                    this.showServerConnectionScreen(
-                        'Unable to connect to server after multiple attempts.',
-                        `Server: ${this.serverUrl}`
-                    );
+                    this.showServerConnectionScreen('Backend Error');
                     return false;
                 }
                 
-                // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s
                 retryDelay = Math.min(1000 * Math.pow(2, this.serverConnectionRetryCount - 1), 512000);
-                this.showServerConnectionScreen(
-                    `Retrying connection... (attempt ${this.serverConnectionRetryCount + 1}/${maxRetries})`,
-                    `Retrying in ${Math.round(retryDelay / 1000)}s...`
-                );
+                this.showServerConnectionScreen('Connecting...');
                 
                 // Schedule next retry
                 this.serverConnectionRetryTimeout = setTimeout(() => {
@@ -211,17 +319,45 @@ class AnnotationViewer {
     /**
      * Show blocking server connection screen.
      */
-    showServerConnectionScreen(message, details = '', showManualButton = false) {
+    showServerConnectionScreen(message) {
         const screen = document.getElementById('serverConnectionScreen');
+        const headingEl = document.getElementById('serverConnectionHeading');
         const messageEl = document.getElementById('serverConnectionMessage');
         const detailsEl = document.getElementById('serverConnectionDetails');
+        const spinnerEl = document.getElementById('serverConnectionSpinner');
         
         if (screen) {
+            // Ensure screen is visible before updating content to prevent black flash
             screen.classList.remove('hidden');
-            if (messageEl) messageEl.textContent = message;
+            screen.style.display = 'flex';
+            screen.style.opacity = '1';
+            screen.style.pointerEvents = 'auto';
+            screen.style.zIndex = '99999';
+            
+            // Update heading
+            if (headingEl) {
+                headingEl.textContent = message || 'Syncing dataset...';
+            }
+            
+            // Set emoji based on message
+            if (spinnerEl) {
+                if (message === 'Connecting...' || message.startsWith('Connecting')) {
+                    spinnerEl.textContent = '🔌';
+                } else if (message === 'Syncing dataset...' || message.startsWith('Syncing')) {
+                    spinnerEl.textContent = '📥';
+                } else {
+                    spinnerEl.textContent = '🔌';
+                }
+            }
+            
+            // Hide unused message and details elements
+            if (messageEl) {
+                messageEl.textContent = '';
+                messageEl.style.display = 'none';
+            }
             if (detailsEl) {
-                detailsEl.textContent = details;
-                detailsEl.style.display = details ? 'block' : 'none';
+                detailsEl.textContent = '';
+                detailsEl.style.display = 'none';
             }
         }
     }
@@ -232,7 +368,11 @@ class AnnotationViewer {
     hideServerConnectionScreen() {
         const screen = document.getElementById('serverConnectionScreen');
         if (screen) {
-            screen.classList.add('hidden');
+            screen.style.opacity = '0';
+            screen.style.pointerEvents = 'none';
+            setTimeout(() => {
+                screen.classList.add('hidden');
+            }, 200);
         }
         if (this.serverConnectionRetryTimeout) {
             clearTimeout(this.serverConnectionRetryTimeout);
@@ -392,6 +532,8 @@ class AnnotationViewer {
         document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
         const saveSettingsBtn = document.getElementById('saveSettings');
         if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', () => this.saveSettings());
+        const resyncBtn = document.getElementById('resyncDataset');
+        if (resyncBtn) resyncBtn.addEventListener('click', () => this.resyncDataset());
 
         // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {
@@ -450,6 +592,8 @@ class AnnotationViewer {
                     await this.loadVideo(method, studyUid, seriesUid);
                     // Success - hide connection warning if shown
                     this.hideServerConnectionWarning();
+                    // Close modal after selection
+                    this.hideModal('seriesSelectModal');
                 } catch (error) {
                     console.error('Failed to load series:', error);
                     // Show appropriate error based on connection state
@@ -457,12 +601,7 @@ class AnnotationViewer {
                         // Connection lost after initial sync - show warning but don't block
                         this.showServerConnectionWarning();
                     } else {
-                        // Never connected - show blocking screen
-                        this.showServerConnectionScreen(
-                            'Failed to load series. Server unavailable.',
-                            `Error: ${error.message}`,
-                            true
-                        );
+                        this.showServerConnectionScreen('Failed to load series. Server unavailable.');
                     }
                 }
             });
@@ -1747,15 +1886,11 @@ class AnnotationViewer {
         }
         
         try {
-            // Try local endpoint first (iOS client)
-            let resp = await fetch('/api/local/series');
+            // Use /api/videos which includes activity data merged from server
+            const resp = await fetch('/api/videos');
             if (!resp.ok) {
-                // Fall back to server endpoint if local fails
-                resp = await this.fetchToServer('api/series');
-                if (!resp.ok) {
-                    console.warn('Failed to fetch series list:', resp.status);
-                    return;
-                }
+                console.warn('Failed to fetch series list:', resp.status);
+                return;
             }
             
             const allSeries = await resp.json();
@@ -1770,12 +1905,45 @@ class AnnotationViewer {
                 return aNum - bNum;
             });
             
-            // Populate dropdown
+            // Helper to determine indicator emoji (same logic as refreshAllSeriesStatuses)
+            const currentUserEmail = this.getUserEmail();
+            const now = new Date();
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            const getIndicator = (status, activity) => {
+                if (status === 'completed') {
+                    return '✅';
+                }
+                if (activity && Object.keys(activity).length > 0) {
+                    let hasOtherUserActivity = false;
+                    let hasCurrentUserActivity = false;
+                    for (const [userEmail, timestamp] of Object.entries(activity)) {
+                        const activityTime = new Date(timestamp);
+                        if (activityTime >= twentyFourHoursAgo) {
+                            if (userEmail === currentUserEmail) {
+                                hasCurrentUserActivity = true;
+                            } else {
+                                hasOtherUserActivity = true;
+                            }
+                        }
+                    }
+                    if (hasOtherUserActivity) {
+                        return '⚠️';
+                    }
+                    if (hasCurrentUserActivity) {
+                        return '🖌️';
+                    }
+                }
+                return '◻️';
+            };
+            
+            // Populate dropdown with correct indicators
             for (const series of sortedSeries) {
                 const option = document.createElement('option');
                 const method = series.method || 'dis';
                 option.value = `${method}|${series.study_uid}|${series.series_uid}`;
-                option.text = `◻️ Exam ${series.exam_number || '-'}`;
+                const indicator = getIndicator(series.status || 'pending', series.activity || {});
+                option.text = `${indicator} Exam ${series.exam_number || '-'}`;
                 videoSelect.appendChild(option);
             }
         } catch (e) {
@@ -1843,16 +2011,12 @@ class AnnotationViewer {
         }
         
         try {
-            // Try local endpoint first (iOS client), fall back to server endpoint
-            let resp = await fetch('/api/local/series');
-            let isLocal = true;
-            if (!resp.ok) {
-                resp = await this.fetchToServer('api/series');
-                isLocal = false;
+            // Use /api/videos which includes activity data merged from server
+            // This works for both iOS client (merges server activity) and web client
+            const resp = await fetch('/api/videos');
             if (!resp.ok) {
                 console.warn('Failed to fetch series list:', resp.status);
                 return;
-                }
             }
             
             const allSeries = await resp.json();
@@ -2225,7 +2389,9 @@ class AnnotationViewer {
             
             // Load the series from server
             // Note: loadVideo() will also mark activity (redundant but safe)
+            // Connection screen stays visible during loadVideo - it will be hidden after video is loaded
             await this.loadVideo(method, data.study_uid, data.series_uid);
+            // Video is now loaded and rendered - connection screen will be hidden by caller
         } catch (error) {
             console.error('Error loading next series:', error);
             // Re-throw so caller can handle fallback (e.g., to INITIAL_VIDEO)
@@ -2454,7 +2620,7 @@ class AnnotationViewer {
         await this.loadVideoData(skipModifiedFrames);
         await this.loadFramesArchive();
         this.currentFrame = -1;
-        await this.goToFrame(0);
+        await this.goToFrame(0); // This loads and renders the first frame
         this.updateSaveButtonState();
         this.updateVideoInfo();
         this.updateCompletionIndicator(); // Update completion status indicator
@@ -2466,6 +2632,9 @@ class AnnotationViewer {
         
         // Start activity pings for this video (every 30s)
         this.startActivityPings();
+        
+        // Video is fully loaded and rendered - connection screen can now be hidden
+        // This will be called by checkCredentialsAndSync after loadNextSeries completes
     }
     
     /**
@@ -2739,9 +2908,15 @@ AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
 // Initialize viewer when DOM is ready
 let viewer;
 document.addEventListener('DOMContentLoaded', () => {
+    const screen = document.getElementById('serverConnectionScreen');
+    if (screen) {
+        screen.classList.remove('hidden');
+        screen.style.display = 'flex';
+        screen.style.opacity = '1';
+    }
+    
     viewer = new AnnotationViewer();
     
-    // Cleanup on page unload
     window.addEventListener('beforeunload', () => {
         if (viewer) {
             viewer.cleanup();

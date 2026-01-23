@@ -22,11 +22,11 @@
     </div>
 
     <!-- Server connection blocking screen (shown before first successful connection) -->
-    <div id="serverConnectionScreen" class="server-connection-screen hidden">
+    <div id="serverConnectionScreen" class="server-connection-screen">
         <div class="server-connection-content">
-            <div id="serverConnectionSpinner" class="server-connection-spinner">⏳</div>
-            <h2>Connecting to Server...</h2>
-            <p id="serverConnectionMessage">Establishing connection to tracking server...</p>
+            <div id="serverConnectionSpinner" class="server-connection-spinner">🔌</div>
+            <h2 id="serverConnectionHeading">Connecting...</h2>
+            <p id="serverConnectionMessage"></p>
             <p class="server-connection-details" id="serverConnectionDetails"></p>
         </div>
     </div>
@@ -164,6 +164,7 @@
                 <div class="token-status" id="tokenStatus">Token: unknown</div>
                 <div class="settings-actions">
                     <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
+                    <button class="control-btn" id="resyncDataset" title="Resync Dataset">🔄</button>
                 </div>
             </div>
         </div>
