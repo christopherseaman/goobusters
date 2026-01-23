@@ -62,8 +62,55 @@ class AnnotationViewer {
         this.userEmail = null; // User email for identification (from localStorage or prompt)
 
         this.toolsVisible = true;
+        
+        // Server URL for direct API calls (injected from template)
+        this.serverUrl = typeof SERVER_URL !== 'undefined' ? SERVER_URL : 'http://localhost:5000';
+        this.clientUrl = typeof CLIENT_URL !== 'undefined' ? CLIENT_URL : 'http://localhost:8080';
+        
+        // Connection state tracking
+        this.hasConnectedToServer = false; // Track if we've ever successfully connected
+        this.serverConnectionRetryCount = 0;
+        this.serverConnectionRetryTimeout = null;
+        this.serverConnectionWarningVisible = false;
 
         this.init();
+    }
+    
+    /**
+     * Get full URL for server API endpoint (direct call, no proxy).
+     */
+    serverUrlFor(path) {
+        // Remove leading slash if present (we'll add it)
+        const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+        return `${this.serverUrl}/${cleanPath}`;
+    }
+    
+    /**
+     * Fetch from server API endpoint with Cloudflare headers if configured.
+     */
+    async fetchToServer(path, options = {}) {
+        const headers = { ...(options.headers || {}) };
+        
+        // Add Cloudflare headers if configured
+        if (typeof CF_ACCESS_CLIENT_ID !== 'undefined' && CF_ACCESS_CLIENT_ID) {
+            const [name, value] = CF_ACCESS_CLIENT_ID.split(': ');
+            if (name && value) headers[name.trim()] = value.trim();
+        }
+        if (typeof CF_ACCESS_CLIENT_SECRET !== 'undefined' && CF_ACCESS_CLIENT_SECRET) {
+            const [name, value] = CF_ACCESS_CLIENT_SECRET.split(': ');
+            if (name && value) headers[name.trim()] = value.trim();
+        }
+        
+        return fetch(this.serverUrlFor(path), { ...options, headers });
+    }
+    
+    /**
+     * Get full URL for client backend endpoint (frames, settings, etc.).
+     */
+    clientUrlFor(path) {
+        // Remove leading slash if present (we'll add it)
+        const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+        return `${this.clientUrl}/${cleanPath}`;
     }
 
     hasUnsavedChangesForCurrentVideo() {
@@ -93,25 +140,268 @@ class AnnotationViewer {
     }
 
     async init() {
+        this.showServerConnectionScreen('Connecting...');
+        
         this.setupEventListeners();
         await this.loadSettings();
-        // Ensure user email is set (prompt if missing)
-        await this.ensureUserEmail();
+        await this.connectToServerWithRetry();
+        await this.checkCredentialsAndSync();
         
-        // Load initial video from server's "next" selection
+        this.checkDatasetSyncStatus().catch(() => {});
+    }
+    
+    /**
+     * Check if credentials are set, and if so, trigger sync.
+     * Show blocking config modal if credentials missing or sync fails.
+     */
+    async checkCredentialsAndSync() {
         try {
+            // Check if credentials are set
+            const settingsResp = await fetch('/api/settings');
+            if (!settingsResp.ok) {
+                this.showConfigModal();
+                return;
+            }
+            
+            const settings = await settingsResp.json();
+            const hasToken = settings.mdai_token_present === true;
+            const email = settings.user_email ? settings.user_email.trim() : '';
+            const hasName = email.length > 0;
+            
+            if (!hasToken || !hasName) {
+                // Missing credentials - show blocking config modal
+                this.showConfigModal();
+                return;
+            }
+            
+            this.showServerConnectionScreen('Syncing dataset...');
+            const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
+            
+            if (!syncResp.ok) {
+                // Sync failed - show blocking config modal
+                const errorData = await syncResp.json().catch(() => ({}));
+                console.error('Sync failed:', errorData);
+                this.showConfigModal();
+                return;
+            }
+            
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            await this.populateVideoSelectFromLocal();
+            await this.refreshAllSeriesStatuses();
             await this.loadNextSeries();
+            this.hideServerConnectionScreen();
         } catch (error) {
-            console.error('Failed to load initial series from server:', error);
-            // Fallback to INITIAL_VIDEO if defined (legacy support)
-            if (typeof INITIAL_VIDEO !== 'undefined' && INITIAL_VIDEO && INITIAL_VIDEO.studyUid) {
-                console.warn('Falling back to INITIAL_VIDEO from template');
-                await this.loadVideo(INITIAL_VIDEO.method, INITIAL_VIDEO.studyUid, INITIAL_VIDEO.seriesUid);
+            console.error('Error checking credentials/sync:', error);
+            this.showConfigModal();
+        }
+    }
+    
+    /**
+     * Show blocking config modal (no_videos.html setup page).
+     */
+    showConfigModal() {
+        // Redirect to setup page
+        window.location.href = '/no_videos';
+    }
+    
+    /**
+     * Resync dataset from settings modal.
+     */
+    async resyncDataset() {
+        const btn = document.getElementById('resyncDataset');
+        if (!btn) return;
+        
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '🔄 Syncing...';
+        
+        try {
+            this.showServerConnectionScreen('Syncing dataset...');
+            const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
+            
+            if (!syncResp.ok) {
+                const errorData = await syncResp.json().catch(() => ({}));
+                throw new Error(errorData.error || 'Sync failed');
+            }
+            
+            const syncData = await syncResp.json();
+            
+            // Wait a moment for dataset to be indexed
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Refresh UI
+            await this.populateVideoSelectFromLocal();
+            await this.refreshAllSeriesStatuses();
+            
+            // Hide connection screen and close settings modal
+            this.hideServerConnectionScreen();
+            this.hideModal('settingsModal');
+            
+            // Reload current series if available, otherwise load next
+            if (this.currentVideo) {
+                await this.loadVideo(
+                    this.currentVideo.method,
+                    this.currentVideo.study_uid,
+                    this.currentVideo.series_uid
+                );
             } else {
-                alert('Failed to load series. Please check server connection.');
+                await this.loadNextSeries();
+            }
+        } catch (error) {
+            console.error('Resync failed:', error);
+            alert(`Resync failed: ${error.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    }
+    
+    /**
+     * Connect to server with exponential backoff retry.
+     * Shows blocking screen until first successful connection.
+     */
+    async connectToServerWithRetry(forceImmediate = false) {
+        // If forcing immediate (from manual button), clear any pending timeout
+        if (forceImmediate && this.serverConnectionRetryTimeout) {
+            clearTimeout(this.serverConnectionRetryTimeout);
+            this.serverConnectionRetryTimeout = null;
+            this.serverConnectionRetryCount = 0;
+        }
+        
+        this.showServerConnectionScreen('Connecting...');
+        
+        const maxRetries = 30;
+        let retryDelay = 1000; // Start with 1 second
+        
+        const attemptConnection = async () => {
+            try {
+                // Check if backend is responding (don't try to load data - that requires sync)
+                const healthResp = await fetch('/healthz', { 
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                
+                if (!healthResp.ok) {
+                    throw new Error(`Backend returned ${healthResp.status}`);
+                }
+                
+                const healthData = await healthResp.json();
+                // Health check just verifies server is running - don't check client_ready
+                // (data sync status is checked separately)
+                
+                this.hasConnectedToServer = true;
+                this.serverConnectionRetryCount = 0;
+                return true;
+            } catch (error) {
+                this.serverConnectionRetryCount++;
+                
+                if (this.serverConnectionRetryCount >= maxRetries) {
+                    this.showServerConnectionScreen('Backend Error');
+                    return false;
+                }
+                
+                retryDelay = Math.min(1000 * Math.pow(2, this.serverConnectionRetryCount - 1), 512000);
+                this.showServerConnectionScreen('Connecting...');
+                
+                // Schedule next retry
+                this.serverConnectionRetryTimeout = setTimeout(() => {
+                    attemptConnection();
+                }, retryDelay);
+                
+                return false;
+            }
+        };
+        
+        return await attemptConnection();
+    }
+    
+    /**
+     * Show blocking server connection screen.
+     */
+    showServerConnectionScreen(message) {
+        const screen = document.getElementById('serverConnectionScreen');
+        const headingEl = document.getElementById('serverConnectionHeading');
+        const messageEl = document.getElementById('serverConnectionMessage');
+        const detailsEl = document.getElementById('serverConnectionDetails');
+        const spinnerEl = document.getElementById('serverConnectionSpinner');
+        
+        if (screen) {
+            // Ensure screen is visible before updating content to prevent black flash
+            screen.classList.remove('hidden');
+            screen.style.display = 'flex';
+            screen.style.opacity = '1';
+            screen.style.pointerEvents = 'auto';
+            screen.style.zIndex = '99999';
+            
+            // Update heading
+            if (headingEl) {
+                headingEl.textContent = message || 'Syncing dataset...';
+            }
+            
+            // Set emoji based on message
+            if (spinnerEl) {
+                if (message === 'Connecting...' || message.startsWith('Connecting')) {
+                    spinnerEl.textContent = '🔌';
+                } else if (message === 'Syncing dataset...' || message.startsWith('Syncing')) {
+                    spinnerEl.textContent = '📥';
+                } else {
+                    spinnerEl.textContent = '🔌';
+                }
+            }
+            
+            // Hide unused message and details elements
+            if (messageEl) {
+                messageEl.textContent = '';
+                messageEl.style.display = 'none';
+            }
+            if (detailsEl) {
+                detailsEl.textContent = '';
+                detailsEl.style.display = 'none';
             }
         }
-        this.checkDatasetSyncStatus().catch(() => {});
+    }
+    
+    /**
+     * Hide blocking server connection screen.
+     */
+    hideServerConnectionScreen() {
+        const screen = document.getElementById('serverConnectionScreen');
+        if (screen) {
+            screen.style.opacity = '0';
+            screen.style.pointerEvents = 'none';
+            setTimeout(() => {
+                screen.classList.add('hidden');
+            }, 200);
+        }
+        if (this.serverConnectionRetryTimeout) {
+            clearTimeout(this.serverConnectionRetryTimeout);
+            this.serverConnectionRetryTimeout = null;
+        }
+    }
+    
+    /**
+     * Show non-blocking server connection warning (after initial connection).
+     */
+    showServerConnectionWarning() {
+        if (this.hasConnectedToServer && !this.serverConnectionWarningVisible) {
+            const warning = document.getElementById('serverConnectionWarning');
+            if (warning) {
+                warning.classList.remove('hidden');
+                this.serverConnectionWarningVisible = true;
+            }
+        }
+    }
+    
+    /**
+     * Hide server connection warning.
+     */
+    hideServerConnectionWarning() {
+        const warning = document.getElementById('serverConnectionWarning');
+        if (warning) {
+            warning.classList.add('hidden');
+            this.serverConnectionWarningVisible = false;
+        }
     }
     
     async ensureUserEmail() {
@@ -242,6 +532,8 @@ class AnnotationViewer {
         document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
         const saveSettingsBtn = document.getElementById('saveSettings');
         if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', () => this.saveSettings());
+        const resyncBtn = document.getElementById('resyncDataset');
+        if (resyncBtn) resyncBtn.addEventListener('click', () => this.resyncDataset());
 
         // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {
@@ -287,16 +579,66 @@ class AnnotationViewer {
         if (videoSelect) {
             videoSelect.addEventListener('change', async (e) => {
                 const [method, studyUid, seriesUid] = e.target.value.split('|');
-                // Mark activity immediately when selecting from dropdown
-                const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
-                // Update warnings from activity response
-                if (activityResponse && activityResponse.ok) {
-                    const activityData = await activityResponse.json().catch(() => null);
-                    if (activityData) {
-                        await this.updateMultiplayerWarning(activityData);
+                try {
+                    // Mark activity immediately when selecting from dropdown
+                    const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
+                    // Update warnings from activity response
+                    if (activityResponse && activityResponse.ok) {
+                        const activityData = await activityResponse.json().catch(() => null);
+                        if (activityData) {
+                            await this.updateMultiplayerWarning(activityData);
+                        }
+                    }
+                    await this.loadVideo(method, studyUid, seriesUid);
+                    // Success - hide connection warning if shown
+                    this.hideServerConnectionWarning();
+                    // Close modal after selection
+                    this.hideModal('seriesSelectModal');
+                } catch (error) {
+                    console.error('Failed to load series:', error);
+                    // Show appropriate error based on connection state
+                    if (this.hasConnectedToServer) {
+                        // Connection lost after initial sync - show warning but don't block
+                        this.showServerConnectionWarning();
+                    } else {
+                        this.showServerConnectionScreen('Failed to load series. Server unavailable.');
                     }
                 }
-                await this.loadVideo(method, studyUid, seriesUid);
+            });
+        }
+        
+        // Hourglass spinner is clickable - forces immediate connection attempt
+        const serverConnectionSpinner = document.getElementById('serverConnectionSpinner');
+        if (serverConnectionSpinner) {
+            serverConnectionSpinner.addEventListener('click', async () => {
+                // Force immediate attempt (don't reset retry count, just force retry)
+                await this.connectToServerWithRetry(true);
+            });
+        }
+        
+        // Reconnect button (non-blocking warning)
+        const reconnectBtn = document.getElementById('reconnectServerBtn');
+        if (reconnectBtn) {
+            reconnectBtn.addEventListener('click', async () => {
+                try {
+                    // Try to reconnect by checking server status
+                    const response = await this.fetchToServer('api/status');
+                    if (response.ok) {
+                        // Server is back - hide warning and check version sync
+                        this.hideServerConnectionWarning();
+                        await this.checkDatasetSyncStatus();
+                        // Try to reload current series to refresh status
+                        if (this.currentVideo) {
+                            await this.loadVideoData(true); // Skip modified frames
+                            await this.refreshCompletionStatus();
+                        }
+                    } else {
+                        throw new Error('Server not responding');
+                    }
+                } catch (error) {
+                    console.error('Reconnection failed:', error);
+                    // Keep warning visible
+                }
             });
         }
 
@@ -452,8 +794,34 @@ class AnnotationViewer {
             throw new Error('No current video set');
         }
         const { method, studyUid, seriesUid } = this.currentVideo;
-        // Client backend proxies to server (no local caching)
-        const response = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
+        // Verify series exists locally first
+        const verifyResponse = await fetch(`/api/video/${method}/${studyUid}/${seriesUid}`);
+        if (!verifyResponse.ok) {
+            if (verifyResponse.status === 404) {
+                throw new Error(`Series ${studyUid}/${seriesUid} not found locally. Please sync your dataset.`);
+            }
+            throw new Error(`Failed to verify series: ${verifyResponse.statusText}`);
+        }
+        
+        // Call server directly for video metadata
+        const response = await this.fetchToServer(`api/video/${method}/${studyUid}/${seriesUid}`);
+        
+        if (!response.ok) {
+            // Handle server unavailability
+            if (response.status === 503 || response.status === 0) {
+                if (this.hasConnectedToServer) {
+                    // Connection lost after initial sync - show warning but don't throw
+                    this.showServerConnectionWarning();
+                    throw new Error('Server unavailable - connection lost');
+                } else {
+                    // Never connected - this will be handled by retry logic
+                    throw new Error('Server unavailable');
+                }
+            }
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error_message || errorData.error || `HTTP ${response.status}`);
+        }
+        
         const data = await response.json();
         this.totalFrames = data.total_frames;
         
@@ -1255,7 +1623,7 @@ class AnnotationViewer {
             // Show blocking loading overlay
             this.showRetrackLoading('Saving and retracking...');
 
-            const allResponse = await fetch(`/proxy/api/masks/${studyUid}/${seriesUid}`, {
+            const allResponse = await this.fetchToServer(`api/masks/${studyUid}/${seriesUid}`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/x-tar',
@@ -1328,7 +1696,7 @@ class AnnotationViewer {
         
         const poll = async () => {
             attempts++;
-            const response = await fetch(`/proxy/api/retrack/status/${studyUid}/${seriesUid}`);
+            const response = await this.fetchToServer(`api/retrack/status/${studyUid}/${seriesUid}`);
             const status = await response.json();
             
             if (status.status === 'completed') {
@@ -1408,7 +1776,7 @@ class AnnotationViewer {
         const { studyUid, seriesUid } = this.currentVideo;
         try {
             const userEmail = this.getUserEmail();
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/complete`, {
+            const resp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}/complete`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1448,7 +1816,7 @@ class AnnotationViewer {
         
         const { studyUid, seriesUid } = this.currentVideo;
         try {
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}/reopen`, {
+            const resp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}/reopen`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1518,15 +1886,11 @@ class AnnotationViewer {
         }
         
         try {
-            // Try local endpoint first (iOS client)
-            let resp = await fetch('/api/local/series');
+            // Use /api/videos which includes activity data merged from server
+            const resp = await fetch('/api/videos');
             if (!resp.ok) {
-                // Fall back to server endpoint if local fails
-                resp = await fetch('/proxy/api/series');
-                if (!resp.ok) {
-                    console.warn('Failed to fetch series list:', resp.status);
-                    return;
-                }
+                console.warn('Failed to fetch series list:', resp.status);
+                return;
             }
             
             const allSeries = await resp.json();
@@ -1541,12 +1905,45 @@ class AnnotationViewer {
                 return aNum - bNum;
             });
             
-            // Populate dropdown
+            // Helper to determine indicator emoji (same logic as refreshAllSeriesStatuses)
+            const currentUserEmail = this.getUserEmail();
+            const now = new Date();
+            const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            const getIndicator = (status, activity) => {
+                if (status === 'completed') {
+                    return '✅';
+                }
+                if (activity && Object.keys(activity).length > 0) {
+                    let hasOtherUserActivity = false;
+                    let hasCurrentUserActivity = false;
+                    for (const [userEmail, timestamp] of Object.entries(activity)) {
+                        const activityTime = new Date(timestamp);
+                        if (activityTime >= twentyFourHoursAgo) {
+                            if (userEmail === currentUserEmail) {
+                                hasCurrentUserActivity = true;
+                            } else {
+                                hasOtherUserActivity = true;
+                            }
+                        }
+                    }
+                    if (hasOtherUserActivity) {
+                        return '⚠️';
+                    }
+                    if (hasCurrentUserActivity) {
+                        return '🖌️';
+                    }
+                }
+                return '◻️';
+            };
+            
+            // Populate dropdown with correct indicators
             for (const series of sortedSeries) {
                 const option = document.createElement('option');
                 const method = series.method || 'dis';
                 option.value = `${method}|${series.study_uid}|${series.series_uid}`;
-                option.text = `◻️ Exam ${series.exam_number || '-'}`;
+                const indicator = getIndicator(series.status || 'pending', series.activity || {});
+                option.text = `${indicator} Exam ${series.exam_number || '-'}`;
                 videoSelect.appendChild(option);
             }
         } catch (e) {
@@ -1588,7 +1985,7 @@ class AnnotationViewer {
         
         try {
             // Fetch fresh status from server
-            const resp = await fetch(`/proxy/api/series/${studyUid}/${seriesUid}`);
+            const resp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}`);
             if (resp.ok) {
                 const data = await resp.json();
                 const serverStatus = data.status || 'pending';
@@ -1614,16 +2011,12 @@ class AnnotationViewer {
         }
         
         try {
-            // Try local endpoint first (iOS client), fall back to server endpoint
-            let resp = await fetch('/api/local/series');
-            let isLocal = true;
-            if (!resp.ok) {
-                resp = await fetch('/proxy/api/series');
-                isLocal = false;
+            // Use /api/videos which includes activity data merged from server
+            // This works for both iOS client (merges server activity) and web client
+            const resp = await fetch('/api/videos');
             if (!resp.ok) {
                 console.warn('Failed to fetch series list:', resp.status);
                 return;
-                }
             }
             
             const allSeries = await resp.json();
@@ -1728,7 +2121,7 @@ class AnnotationViewer {
         this.showRetrackLoading('Resetting retrack data...');
 
         try {
-            const resp = await fetch(`/proxy/api/reset-retrack/${studyUid}/${seriesUid}`, {
+            const resp = await this.fetchToServer(`api/reset-retrack/${studyUid}/${seriesUid}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1790,7 +2183,7 @@ class AnnotationViewer {
         this.showRetrackLoading('Resetting retrack data for all series...');
 
         try {
-            const resp = await fetch(`/proxy/api/reset-retrack-all`, {
+            const resp = await this.fetchToServer('api/reset-retrack-all', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1948,13 +2341,17 @@ class AnnotationViewer {
      */
     async loadNextSeries() {
         try {
-            const response = await fetch('/proxy/api/series/next', {
+            const response = await this.fetchToServer('api/series/next', {
                 headers: {
                     'X-User-Email': this.getUserEmail() || ''
                 }
             });
             
             if (!response.ok) {
+                if (response.status === 0 || response.status >= 500) {
+                    // Network error or server error - connection issue
+                    throw new Error('Server unavailable');
+                }
                 const errorText = await response.text().catch(() => response.statusText);
                 throw new Error(`Failed to fetch next series: ${response.status} ${errorText}`);
             }
@@ -1990,20 +2387,11 @@ class AnnotationViewer {
                 }
             }
             
-            // Check if series exists locally before trying to load
-            // The client needs to have synced its dataset to include this series
-            const checkResponse = await fetch(`/api/video/${method}/${data.study_uid}/${data.series_uid}`);
-            if (!checkResponse.ok) {
-                if (checkResponse.status === 404) {
-                    alert(`Series ${data.study_uid}/${data.series_uid} not found locally. Please sync your dataset first.`);
-                    return;
-                }
-                throw new Error(`Failed to verify series locally: ${checkResponse.statusText}`);
-            }
-            
             // Load the series from server
             // Note: loadVideo() will also mark activity (redundant but safe)
+            // Connection screen stays visible during loadVideo - it will be hidden after video is loaded
             await this.loadVideo(method, data.study_uid, data.series_uid);
+            // Video is now loaded and rendered - connection screen will be hidden by caller
         } catch (error) {
             console.error('Error loading next series:', error);
             // Re-throw so caller can handle fallback (e.g., to INITIAL_VIDEO)
@@ -2072,8 +2460,8 @@ class AnnotationViewer {
         }
         
         try {
-            const response = await fetch(
-                `/proxy/api/series/${studyUid}/${seriesUid}/activity`,
+            const response = await this.fetchToServer(
+                `api/series/${studyUid}/${seriesUid}/activity`,
                 {
                     method: 'POST',
                     headers: {
@@ -2081,6 +2469,16 @@ class AnnotationViewer {
                     }
                 }
             );
+            
+            if (!response.ok && response.status !== 0) {
+                // Non-network error - log but don't show warning (might be 404, etc.)
+                console.warn('Failed to mark activity:', response.status);
+            } else if (response.status === 0) {
+                // Network error - show warning if we've connected before
+                if (this.hasConnectedToServer) {
+                    this.showServerConnectionWarning();
+                }
+            }
             
             if (!response.ok) {
                 console.warn(`Activity mark failed: ${response.status} ${response.statusText}`);
@@ -2125,8 +2523,8 @@ class AnnotationViewer {
         }
         
         try {
-            const response = await fetch(
-                `/proxy/api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`
+            const response = await this.fetchToServer(
+                `api/series/${this.currentVideo.studyUid}/${this.currentVideo.seriesUid}`
             );
             if (response.ok) {
                 const data = await response.json();
@@ -2222,7 +2620,7 @@ class AnnotationViewer {
         await this.loadVideoData(skipModifiedFrames);
         await this.loadFramesArchive();
         this.currentFrame = -1;
-        await this.goToFrame(0);
+        await this.goToFrame(0); // This loads and renders the first frame
         this.updateSaveButtonState();
         this.updateVideoInfo();
         this.updateCompletionIndicator(); // Update completion status indicator
@@ -2234,6 +2632,9 @@ class AnnotationViewer {
         
         // Start activity pings for this video (every 30s)
         this.startActivityPings();
+        
+        // Video is fully loaded and rendered - connection screen can now be hidden
+        // This will be called by checkCredentialsAndSync after loadNextSeries completes
     }
     
     /**
@@ -2256,8 +2657,8 @@ class AnnotationViewer {
 
         try {
             const { method, studyUid, seriesUid } = this.currentVideo;
-            // Client backend proxies to server (no local caching)
-            const url = `/proxy/api/frames/${method}/${studyUid}/${seriesUid}`;
+            // Call client backend for frame archive URLs (frames are PHI, served locally)
+            const url = `/api/frames/${method}/${studyUid}/${seriesUid}`;
             const response = await fetch(url);
             
             if (!response.ok) {
@@ -2484,6 +2885,7 @@ class AnnotationViewer {
 AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
     try {
         const resp = await fetch('/api/dataset/version_status').catch(() => null);
+        // Note: Client route returns only client version, frontend calls server directly for server version
         if (!resp || !resp.ok) {
             // Silently fail - dataset sync status is not critical
             return;
@@ -2506,9 +2908,15 @@ AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
 // Initialize viewer when DOM is ready
 let viewer;
 document.addEventListener('DOMContentLoaded', () => {
+    const screen = document.getElementById('serverConnectionScreen');
+    if (screen) {
+        screen.classList.remove('hidden');
+        screen.style.display = 'flex';
+        screen.style.opacity = '1';
+    }
+    
     viewer = new AnnotationViewer();
     
-    // Cleanup on page unload
     window.addEventListener('beforeunload', () => {
         if (viewer) {
             viewer.cleanup();

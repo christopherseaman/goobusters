@@ -16,6 +16,21 @@
     <!-- Multiplayer warning banner -->
     <div id="multiplayerWarning" class="multiplayer-warning hidden"></div>
 
+    <!-- Server connection warning banner (non-blocking, shown after initial connection) -->
+    <div id="serverConnectionWarning" class="server-connection-warning hidden">
+        ⚠ Lost connection to server. Edits are saved locally. <button id="reconnectServerBtn" class="reconnect-btn">Reconnect</button>
+    </div>
+
+    <!-- Server connection blocking screen (shown before first successful connection) -->
+    <div id="serverConnectionScreen" class="server-connection-screen">
+        <div class="server-connection-content">
+            <div id="serverConnectionSpinner" class="server-connection-spinner">🔌</div>
+            <h2 id="serverConnectionHeading">Connecting...</h2>
+            <p id="serverConnectionMessage"></p>
+            <p class="server-connection-details" id="serverConnectionDetails"></p>
+        </div>
+    </div>
+
     <!-- Full-screen canvas for video -->
     <canvas id="canvas"></canvas>
     <!-- Overlay canvas for mask (stacked on top) -->
@@ -149,6 +164,7 @@
                 <div class="token-status" id="tokenStatus">Token: unknown</div>
                 <div class="settings-actions">
                     <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
+                    <button class="control-btn" id="resyncDataset" title="Resync Dataset">🔄</button>
                 </div>
             </div>
         </div>
@@ -267,6 +283,11 @@
             studyUid: '{{ selected_video.study_uid }}',
             seriesUid: '{{ selected_video.series_uid }}'
         };
+        const SERVER_URL = '{{ server_url }}';
+        const CLIENT_URL = 'http://localhost:8080';
+        // Cloudflare headers (injected by bundle script if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are set in dot.env)
+        const CF_ACCESS_CLIENT_ID = "";
+        const CF_ACCESS_CLIENT_SECRET = "";
     </script>
     <script src="/static/js/viewer.js"></script>
 </body>

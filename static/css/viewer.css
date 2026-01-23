@@ -887,6 +887,131 @@ kbd {
 }
 
 /* Dataset version mismatch banner */
+/* Server connection blocking screen */
+.server-connection-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.98);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    transition: opacity 0.2s ease;
+    opacity: 1;
+}
+
+.server-connection-screen.hidden {
+    display: flex !important;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.server-connection-content {
+    text-align: center;
+    padding: 2rem;
+    max-width: 500px;
+}
+
+.server-connection-spinner {
+    font-size: 4rem;
+    margin-bottom: 1rem;
+    animation: inboxWiggle 1.5s ease-in-out infinite;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.2s;
+    display: inline-block;
+}
+
+@keyframes inboxWiggle {
+    0%, 100% {
+        transform: translateY(0) rotate(0deg);
+    }
+    10%, 30%, 50%, 70%, 90% {
+        transform: translateY(-8px) rotate(-5deg);
+    }
+    20%, 40%, 60%, 80% {
+        transform: translateY(-8px) rotate(5deg);
+    }
+}
+
+.server-connection-spinner:hover {
+    transform: scale(1.1);
+}
+
+.server-connection-spinner:active {
+    transform: scale(0.95);
+}
+
+.server-connection-content h2 {
+    margin-bottom: 1rem;
+    font-size: 1.5rem;
+}
+
+.server-connection-content p {
+    margin: 0.5rem 0;
+    color: #ccc;
+}
+
+.server-connection-details {
+    font-size: 0.9rem;
+    color: #999;
+    margin-top: 1rem;
+}
+
+.manual-connect-btn,
+.reconnect-btn {
+    margin-top: 1.5rem;
+    padding: 0.75rem 1.5rem;
+    background: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.manual-connect-btn:hover,
+.reconnect-btn:hover {
+    background: #45a049;
+}
+
+/* Server connection warning banner (non-blocking) */
+.server-connection-warning {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: #ff9800;
+    color: #000;
+    padding: 0.75rem 1rem;
+    text-align: center;
+    z-index: 9999;
+    font-weight: 500;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.server-connection-warning.hidden {
+    display: none;
+}
+
+.reconnect-btn {
+    margin-left: 1rem;
+    padding: 0.4rem 0.8rem;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    font-size: 0.9rem;
+}
+
+.reconnect-btn:hover {
+    background: rgba(0, 0, 0, 0.3);
+}
+
 .dataset-warning {
     position: fixed;
     top: 0;

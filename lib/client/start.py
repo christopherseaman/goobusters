@@ -28,7 +28,6 @@ import logging
 import os
 import signal
 
-import httpx
 from flask import Flask, Response, jsonify, request, render_template
 
 from lib.mask_archive import build_mask_archive, iso_now
@@ -44,20 +43,10 @@ class ClientContext:
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
         self.dataset = MDaiDatasetManager(config)
-        # Frames are produced by the server tracking pipeline; no local extraction/cache needed.
-        # Disable all caching - clients should never cache anything
-        # httpx doesn't cache by default, but explicitly disable connection pooling
-        self.http_client = httpx.Client(
-            timeout=60,
-            follow_redirects=True,
-            limits=httpx.Limits(
-                max_keepalive_connections=0, max_connections=100
-            ),  # No connection reuse
-        )
         self.user_email_override: Optional[str] = None
 
     def close(self) -> None:
-        self.http_client.close()
+        pass
 
     def current_user_email(self) -> str:
         return (
@@ -65,9 +54,15 @@ class ClientContext:
         ).strip()
 
 
-def create_app(
-    config: Optional[ClientConfig] = None, skip_startup: bool = False
-) -> Flask:
+def create_app(config: Optional[ClientConfig] = None) -> Flask:
+    """
+    Create the Flask client application.
+    
+    The frontend handles sync and credential checking:
+    - Frontend checks credentials after connecting to backend
+    - If credentials present -> frontend triggers sync via /api/dataset/sync
+    - If credentials missing or sync fails -> frontend shows blocking config modal
+    """
     config = config or load_config("client")
     context = ClientContext(config)
 
@@ -78,14 +73,9 @@ def create_app(
     )
     app.config["CLIENT_CONTEXT"] = context
 
-    # Initialize client: sync dataset (frames served from server outputs)
-    # This must complete before serving the viewer
-    if not skip_startup:
-        logger = logging.getLogger(__name__)
-        logger.info("Initializing client: syncing dataset...")
-        images_dir = context.dataset.sync_dataset()
-        logger.info(f"Dataset synced. Images directory: {images_dir}")
-        logger.info("Client initialization complete.")
+    # Initialize client: don't sync on startup - frontend will handle it
+    logger = logging.getLogger(__name__)
+    logger.info("Flask app created. Frontend will handle sync if credentials are present.")
 
     def _current_user_email() -> str:
         return context.current_user_email()
@@ -93,8 +83,7 @@ def create_app(
     def _build_videos() -> list[dict]:
         """
         Build the list of locally available series for the viewer.
-        No caching - always fetch fresh from server API.
-        Fetches completion status from server for each series.
+        Fetches status and activity from server for each series.
         """
         try:
             series = context.dataset.list_local_series()
@@ -106,24 +95,50 @@ def create_app(
             {"labelId": config.empty_id, "labelName": "Empty"},
         ]
 
-        # Build base video list
-        videos = [
-            {
+        # Fetch server series data for status/activity (activity only lives on server)
+        # This is non-blocking - if it fails, we continue without activity data
+        server_series_map = {}
+        try:
+            import requests
+            server_url = f"{config.server_url}/api/series"
+            resp = requests.get(server_url, timeout=5)
+            if resp.ok:
+                server_data = resp.json()
+                activity_count = 0
+                for item in server_data:
+                    key = f"{item['study_uid']}|{item['series_uid']}"
+                    activity = item.get("activity", {})
+                    if activity:
+                        activity_count += 1
+                    server_series_map[key] = {
+                        "status": item.get("status", "pending"),
+                        "activity": activity,
+                    }
+                logger.debug(f"Fetched {len(server_series_map)} series from server, {activity_count} with activity")
+            else:
+                logger.warning(f"Server returned {resp.status_code} when fetching activity data")
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout connecting to {config.server_url} for activity data")
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"Connection error to {config.server_url}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch activity data: {type(e).__name__}: {e}")
+
+        # Build video list with server data merged
+        videos = []
+        for info in series:
+            key = f"{info.study_uid}|{info.series_uid}"
+            server_data = server_series_map.get(key, {})
+            videos.append({
                 "method": config.flow_method,
                 "study_uid": info.study_uid,
                 "series_uid": info.series_uid,
                 "exam_number": info.exam_number,
                 "series_number": info.series_number,
                 "labels": labels,
-                "status": "pending",  # Default, will be updated from server
-                "activity": {},  # Default, will be updated from server (never cached locally)
-            }
-            for info in series
-        ]
-
-        # Don't fetch status from server during page load - it blocks if server isn't ready
-        # Frontend JavaScript will fetch status asynchronously after page loads
-        # This prevents the page from hanging if server isn't available
+                "status": server_data.get("status", "pending"),
+                "activity": server_data.get("activity", {}),
+            })
 
         # Sort by exam_number
         videos.sort(key=lambda v: v["exam_number"] or 0)
@@ -192,8 +207,12 @@ def create_app(
     # --------------------------------------------------------------------- Routes
     @app.route("/healthz")
     def healthcheck():
+        """
+        Health check endpoint. Returns client_ready=True if Flask server is running.
+        Data sync status is checked separately via /api/status.
+        """
         return jsonify({
-            "client_ready": context.dataset.dataset_ready(),
+            "client_ready": True,  # Server is running and ready to accept requests
             "server_url": config.server_url,
             "video_cache": str(config.video_cache_path),
             "frames_cache": str(config.frames_path),
@@ -202,20 +221,32 @@ def create_app(
     @app.route("/")
     def viewer_home():
         """
-        Serve the main viewer UI using the legacy app.py frontend.
+        Serve the main viewer UI. Frontend handles credential checking and sync.
+        Always serve viewer.html - frontend will check credentials and sync if needed.
         """
-        videos = _build_videos()
-        if not videos:
-            return render_template("no_videos.html"), 503
-
-        # Don't fetch "next series" from server during page load - it blocks if server isn't ready
-        # Frontend JavaScript will fetch and load the next series asynchronously after page loads
-        # Default to first video - frontend will update to server-selected series after load
-        selected_video = videos[0]
+        # Try to build videos list, but don't fail if no data exists yet
+        # Frontend will handle credential check and sync
+        try:
+            videos = _build_videos()
+            selected_video = videos[0] if videos else None
+        except DatasetNotReady:
+            videos = []
+            selected_video = None
 
         return render_template(
-            "viewer.html", videos=videos, selected_video=selected_video
+            "viewer.html", 
+            videos=videos or [], 
+            selected_video=selected_video,
+            server_url=config.server_url
         )
+
+    @app.route("/no_videos")
+    def no_videos():
+        """
+        Serve the setup page when credentials are missing.
+        This is called by JavaScript when showConfigModal() is invoked.
+        """
+        return render_template("no_videos.html")
 
     @app.get("/api/videos")
     def api_videos():
@@ -227,11 +258,11 @@ def create_app(
             return jsonify({"error": "Dataset not ready"}), 503
         return jsonify(videos)
 
+
     @app.get("/api/video/<method>/<study_uid>/<series_uid>")
     def api_video(method: str, study_uid: str, series_uid: str):
         """
-        Proxy video metadata from server (no local caching).
-        Server is source of truth for masks_annotations and modified_frames.
+        Verify series exists locally. Frontend calls server directly for video metadata.
         """
         # Verify series exists locally (for dataset sync check)
         info = _find_series_info(study_uid, series_uid)
@@ -243,28 +274,12 @@ def create_app(
         except (DatasetNotReady, FileNotFoundError) as exc:
             return jsonify({"error": str(exc)}), 404
 
-        # Proxy entire response from server (server is source of truth)
-        try:
-            server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
-            resp = context.http_client.get(server_url, timeout=10)
-            if resp.status_code == 200:
-                # Return server response directly (no local modification)
-                return Response(
-                    resp.content,
-                    status=resp.status_code,
-                    headers={"Content-Type": "application/json"},
-                )
-            else:
-                # Server error - return error response
-                return Response(
-                    resp.content,
-                    status=resp.status_code,
-                    headers={"Content-Type": "application/json"},
-                )
-        except Exception as exc:
-            return jsonify({
-                "error": f"Failed to fetch from server: {exc}"
-            }), 500
+        # Return server URL for frontend to call directly
+        server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
+        return jsonify({
+            "server_url": server_url,
+            "local": True
+        })
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
     def api_frames(method: str, study_uid: str, series_uid: str):
@@ -278,13 +293,58 @@ def create_app(
         if not info:
             return jsonify({"error": "Series not found locally"}), 404
 
+        # Return direct server URLs (no proxy)
         frames_archive_url = (
-            f"/proxy/api/frames_archive/{study_uid}/{series_uid}.tar"
+            f"{config.server_url.rstrip('/')}/api/frames_archive/{study_uid}/{series_uid}.tar"
         )
-        masks_archive_url = f"/proxy/api/masks/{study_uid}/{series_uid}"
+        masks_archive_url = f"{config.server_url.rstrip('/')}/api/masks/{study_uid}/{series_uid}"
         return jsonify({
             "frames_archive_url": frames_archive_url,
             "masks_archive_url": masks_archive_url,
+        })
+
+    @app.get("/api/status")
+    def api_status():
+        """
+        Check if dataset is ready.
+        Used by setup screen to determine flow.
+        """
+        has_data = context.dataset.dataset_ready()
+        series_count = 0
+        if has_data:
+            try:
+                series_count = len(context.dataset.list_local_series())
+            except DatasetNotReady:
+                has_data = False
+        
+        return jsonify({
+            "has_data": has_data,
+            "series_count": series_count,
+            "server_url": config.server_url,
+        })
+
+    @app.get("/api/debug/paths")
+    def debug_paths():
+        """Debug endpoint to check file paths."""
+        import glob as glob_mod
+        video_cache = str(context.dataset.video_cache_path)
+        project_id = config.project_id
+        dataset_id = config.dataset_id
+        
+        ann_pattern = f"{video_cache}/mdai_*_project_{project_id}_annotations_dataset_{dataset_id}_*.json"
+        img_pattern = f"{video_cache}/mdai_*_project_{project_id}_images_dataset_{dataset_id}_*"
+        
+        ann_matches = glob_mod.glob(ann_pattern)
+        img_matches = [d for d in glob_mod.glob(img_pattern) if Path(d).is_dir()]
+        
+        return jsonify({
+            "video_cache": video_cache,
+            "project_id": project_id,
+            "dataset_id": dataset_id,
+            "ann_pattern": ann_pattern,
+            "ann_matches": ann_matches,
+            "img_pattern": img_pattern,
+            "img_matches": img_matches,
         })
 
     @app.post("/api/dataset/sync")
@@ -293,13 +353,20 @@ def create_app(
         Download/refresh the MD.ai dataset. Frames are produced by the server
         tracking pipeline; the client no longer extracts or caches frames.
         """
-        images_dir = context.dataset.sync_dataset()
-        series = context.dataset.list_local_series()
-        return jsonify({
-            "images_dir": str(images_dir),
-            "series_count": len(series),
-            "frames_extracted_for": [],  # no local extraction
-        })
+        try:
+            images_dir = context.dataset.sync_dataset()
+            series = context.dataset.list_local_series()
+            return jsonify({
+                "images_dir": str(images_dir),
+                "series_count": len(series),
+                "frames_extracted_for": [],  # no local extraction
+            })
+        except DatasetNotReady as e:
+            return jsonify({"error": str(e), "error_message": str(e)}), 503
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Dataset sync failed: {e}", exc_info=True)
+            return jsonify({"error": str(e), "error_message": str(e)}), 500
 
     @app.get("/api/local/series")
     def local_series():
@@ -330,16 +397,16 @@ def create_app(
         Uses the MD.ai annotations export mtime on each side as a simple version
         key. Intended only for warning UI; no automatic negotiation yet.
         """
-        from track import find_annotations_file
+        from client.mdai_client import find_annotations_file
 
         client_version = None
         server_version = None
 
-        # Client annotations version
+        # Client annotations version - look in video_cache where sync downloads
         try:
             client_annotations = Path(
                 find_annotations_file(
-                    str(config.data_dir),
+                    str(context.dataset.video_cache_path),
                     config.project_id,
                     config.dataset_id,
                 )
@@ -353,31 +420,23 @@ def create_app(
         except FileNotFoundError:
             client_version = None
 
-        # Server annotations version via API
+        # Get server annotations version
+        server_version = None
         try:
-            resp = context.http_client.get(
-                f"{config.server_url.rstrip('/')}/api/dataset/version",
-                timeout=10,
+            import requests
+            server_resp = requests.get(
+                f"{config.server_url}/api/dataset/version",
+                timeout=5
             )
-            if resp.status_code == 200:
-                server_version = resp.json()
-            else:
-                server_version = {"error": f"HTTP {resp.status_code}"}
-        except Exception as exc:  # pragma: no cover - network failures
-            server_version = {"error": str(exc)}
+            if server_resp.ok:
+                server_version = server_resp.json()
+        except Exception:
+            pass  # Server unreachable, can't compare
 
+        # Compare by file size (mtime differs across machines)
         in_sync = False
-        if (
-            client_version
-            and isinstance(server_version, dict)
-            and "annotations_size" in server_version
-        ):
-            # Compare file size instead of mtime - mtime differs across machines
-            # even when files are identical. Size is a better indicator of sync.
-            in_sync = (
-                client_version["annotations_size"]
-                == server_version["annotations_size"]
-            )
+        if client_version and server_version and "annotations_size" in server_version:
+            in_sync = client_version["annotations_size"] == server_version["annotations_size"]
 
         return jsonify({
             "client": client_version,
@@ -391,11 +450,11 @@ def create_app(
         Return current user identity and whether an MD.ai token is set.
         Token contents are never returned.
         """
+        token = context.dataset._token_override or context.config.mdai_token
+        has_token = bool(token and token != "not_configured_yet")
         return jsonify({
             "user_email": _current_user_email(),
-            "mdai_token_present": bool(
-                context.dataset._token_override or context.config.mdai_token
-            ),
+            "mdai_token_present": has_token,
         })
 
     @app.post("/api/settings")
@@ -514,39 +573,14 @@ def create_app(
             # Build .tar archive (no gzip) using shared helper
             archive_bytes = build_mask_archive(mask_dir, metadata)
 
-        # POST archive to central server /api/masks/{study}/{series}
-        server_url = config.server_url.rstrip("/")
-        url = f"{server_url}/api/masks/{study_uid}/{series_uid}"
-
-        headers = {
-            "Content-Type": "application/x-tar",
-            "X-Previous-Version-ID": previous_version_id or "",
-        }
-        # Identification for last editor - prefer X-User-Email from request (frontend)
-        # Server accepts either X-Editor or X-User-Email
-        user_email = request.headers.get("X-User-Email")
-        if user_email:
-            headers["X-User-Email"] = user_email
-        else:
-            current_email = _current_user_email()
-            if current_email:
-                headers["X-User-Email"] = current_email
-
-        try:
-            resp = context.http_client.post(
-                url,
-                content=archive_bytes,
-                headers=headers,
-                timeout=60,
-            )
-        except Exception as exc:
-            return jsonify({"error": f"Error contacting server: {exc}"}), 502
-
-        # Pass through server response JSON and status
-        content_type = resp.headers.get("content-type", "")
-        if "application/json" in content_type:
-            return jsonify(resp.json()), resp.status_code
-        return Response(resp.content, status=resp.status_code)
+        # Return archive bytes - frontend will POST to server directly
+        return Response(
+            archive_bytes,
+            mimetype="application/x-tar",
+            headers={
+                "Content-Disposition": f"attachment; filename=masks_{study_uid}_{series_uid}.tar"
+            }
+        )
 
     @app.post("/api/retrack/<study_uid>/<series_uid>")
     def retrack_series(study_uid: str, series_uid: str):
@@ -570,123 +604,6 @@ def create_app(
             "error": "Retrack status uses study/series, not task_id. Update viewer.js."
         }), 400
 
-    @app.route(
-        "/proxy/<path:subpath>",
-        methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    )
-    def proxy_to_server(subpath: str):
-        """Forward requests to the centralized tracking server."""
-        try:
-            url = f"{config.server_url.rstrip('/')}/{subpath}"
-            headers = {
-                key: value
-                for key, value in request.headers
-                if key.lower()
-                not in {"host", "content-length", "connection", "authorization"}
-            }
-
-            if "X-User-Email" not in headers:
-                frontend_email = request.headers.get("X-User-Email")
-                if frontend_email:
-                    headers["X-User-Email"] = frontend_email
-                else:
-                    current_email = _current_user_email()
-                    if current_email:
-                        headers["X-User-Email"] = current_email
-
-            files = None
-            if request.files:
-                files = {
-                    name: (file.filename, file.stream, file.mimetype)
-                    for name, file in request.files.items()
-                }
-
-            data = None
-            json_payload = None
-            if request.is_json and not request.data:
-                json_payload = request.get_json(silent=True)
-            else:
-                data = request.get_data()
-
-            logger = logging.getLogger(__name__)
-            logger.debug(f"Proxying {request.method} {subpath} to {url}")
-
-            proxy_headers = headers.copy()
-
-            # Proxy request to server using the shared client
-            resp = context.http_client.request(
-                request.method,
-                url,
-                params=request.args,
-                data=data,
-                json=json_payload,
-                files=files,
-                headers=proxy_headers,
-                timeout=60,
-                follow_redirects=True,
-            )
-            # Ensure we read the full response content to avoid any streaming/caching issues
-            status_code = resp.status_code
-            response_headers_dict = dict(resp.headers)
-            content = resp.content
-
-            # Debug: Log response size and first 200 chars for /api/series
-            if subpath == "api/series":
-                logger.debug(
-                    f"Proxy /api/series response size: {len(content)} bytes"
-                )
-                try:
-                    import json
-
-                    data = json.loads(content.decode("utf-8"))
-                    if data and isinstance(data, list):
-                        exam_429 = [
-                            x for x in data if x.get("exam_number") == 429
-                        ]
-                        if exam_429:
-                            logger.debug(
-                                f"Exam 429 activity in proxy response: {exam_429[0].get('activity', {})}"
-                            )
-                except Exception:
-                    pass
-
-            logger.debug(f"Proxy response: {status_code} for {subpath}")
-
-            excluded_headers = {
-                "content-length",
-                "content-encoding",
-                "transfer-encoding",
-                "connection",
-            }
-            response_headers = {
-                key: value
-                for key, value in response_headers_dict.items()
-                if key.lower() not in excluded_headers
-            }
-            # Add no-cache headers to prevent browser caching of proxy responses
-            response_headers["Cache-Control"] = (
-                "no-store, no-cache, must-revalidate, max-age=0"
-            )
-            response_headers["Pragma"] = "no-cache"
-            response_headers["Expires"] = "0"
-            return Response(
-                content, status=status_code, headers=response_headers
-            )
-        except Exception as exc:
-            import traceback
-
-            logger = logging.getLogger(__name__)
-            error_msg = (
-                f"Error proxying {request.method} {subpath} to server: {exc}"
-            )
-            logger.error(error_msg, exc_info=True)
-            print(f"ERROR in proxy: {error_msg}", file=sys.stderr)
-            print(traceback.format_exc(), file=sys.stderr)
-            return jsonify({
-                "error": "Proxy error",
-                "error_message": str(exc),
-                "path": subpath,
-            }), 502
 
     # Close resources when the process exits (avoid closing per-request)
     atexit.register(context.close)
