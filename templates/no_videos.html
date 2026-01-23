@@ -132,7 +132,7 @@
                 <p class="help-text">Get your token from MD.ai Settings → API</p>
                 
                 <button type="submit" class="setup-btn" id="setupBtn">
-                    Setup & Sync Dataset
+                    Save & Continue
                 </button>
             </form>
             
@@ -181,32 +181,14 @@
                     throw new Error(err.error || 'Failed to save settings');
                 }
                 
-                // Step 2: Sync dataset
-                btn.innerHTML = 'Syncing...';
-                showStatus('<span class="spinner"></span>Downloading dataset from MD.ai... (this may take a few minutes)', 'info');
-                
-                const syncResp = await fetch('/api/dataset/sync', {
-                    method: 'POST'
-                });
-                
-                if (!syncResp.ok) {
-                    const err = await syncResp.json();
-                    throw new Error(err.error || 'Failed to sync dataset');
-                }
-                
-                const syncData = await syncResp.json();
-                showStatus(`Dataset synced: ${syncData.series_count || 0} series found`, 'success');
-                
-                // Step 3: Redirect to main viewer
-                btn.innerHTML = 'Redirecting...';
-                setTimeout(() => {
-                    window.location.href = '/';
-                }, 1500);
+                // Credentials saved - redirect immediately to main viewer
+                // The app startup sync will handle syncing (and show this modal again if sync fails)
+                window.location.href = '/';
                 
             } catch (err) {
                 showStatus('Error: ' + err.message, 'error');
                 btn.disabled = false;
-                btn.innerHTML = 'Setup & Sync Dataset';
+                btn.innerHTML = 'Save & Continue';
             }
         });
     </script>
