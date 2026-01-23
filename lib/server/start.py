@@ -207,7 +207,7 @@ def create_app(
         if origin and ("localhost:8080" in origin or "127.0.0.1:8080" in origin):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor, CF-Access-Client-Id, CF-Access-Client-Secret"
             response.headers["Access-Control-Allow-Credentials"] = "true"
             logger.debug(f"CORS headers added for origin: {origin}")
         else:
@@ -222,7 +222,7 @@ def create_app(
             if origin and ("localhost:8080" in origin or "127.0.0.1:8080" in origin):
                 response.headers["Access-Control-Allow-Origin"] = origin
                 response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
-                response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor"
+                response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor, CF-Access-Client-Id, CF-Access-Client-Secret"
                 response.headers["Access-Control-Allow-Credentials"] = "true"
             return response
 

@@ -100,8 +100,23 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         server_series_map = {}
         try:
             import requests
+            import os
             server_url = f"{config.server_url}/api/series"
-            resp = requests.get(server_url, timeout=5)
+            
+            # Add Cloudflare headers if configured
+            headers = {}
+            cf_client_id = os.environ.get("CF_ACCESS_CLIENT_ID", "")
+            cf_client_secret = os.environ.get("CF_ACCESS_CLIENT_SECRET", "")
+            if cf_client_id:
+                parts = cf_client_id.split(": ", 1)
+                if len(parts) == 2:
+                    headers[parts[0].strip()] = parts[1].strip()
+            if cf_client_secret:
+                parts = cf_client_secret.split(": ", 1)
+                if len(parts) == 2:
+                    headers[parts[0].strip()] = parts[1].strip()
+            
+            resp = requests.get(server_url, headers=headers, timeout=5)
             if resp.ok:
                 server_data = resp.json()
                 activity_count = 0
@@ -424,8 +439,23 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         server_version = None
         try:
             import requests
+            import os
+            # Add Cloudflare headers if configured
+            headers = {}
+            cf_client_id = os.environ.get("CF_ACCESS_CLIENT_ID", "")
+            cf_client_secret = os.environ.get("CF_ACCESS_CLIENT_SECRET", "")
+            if cf_client_id:
+                parts = cf_client_id.split(": ", 1)
+                if len(parts) == 2:
+                    headers[parts[0].strip()] = parts[1].strip()
+            if cf_client_secret:
+                parts = cf_client_secret.split(": ", 1)
+                if len(parts) == 2:
+                    headers[parts[0].strip()] = parts[1].strip()
+            
             server_resp = requests.get(
                 f"{config.server_url}/api/dataset/version",
+                headers=headers,
                 timeout=5
             )
             if server_resp.ok:
