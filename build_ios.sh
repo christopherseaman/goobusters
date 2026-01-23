@@ -9,7 +9,10 @@
 #   ./build_ios.sh              # Build and run (prompts for credentials on first run)
 #   ./build_ios.sh --skip-build # Just install and run (if already built)
 #   ./build_ios.sh --debug      # Build with MDAI_TOKEN + USER_EMAIL pre-bundled
-#   ./build_ios.sh --archive    # Create archive for TestFlight (device build)
+#   ./build_ios.sh --archive    # Create archive (convenience wrapper - or use Xcode Product → Archive)
+#
+# Note: TestFlight is configured in Xcode project settings and App Store Connect, not here.
+# This script only creates the archive. Upload via Xcode Organizer.
 #
 # Startup behavior (handled by client):
 #   - If credentials present -> syncs automatically on startup
