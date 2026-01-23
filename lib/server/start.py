@@ -203,8 +203,8 @@ def create_app(
     @app.after_request
     def after_request(response):
         origin = request.headers.get("Origin")
-        # Allow requests from localhost:8080 (client frontend)
-        if origin and ("localhost:8080" in origin or "127.0.0.1:8080" in origin):
+        # Allow any origin for Cloudflare Access (browser requests from iOS app)
+        if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor, CF-Access-Client-Id, CF-Access-Client-Secret"
@@ -217,13 +217,16 @@ def create_app(
     @app.before_request
     def handle_preflight():
         if request.method == "OPTIONS":
-            response = Response()
+            # Return 204 No Content for preflight requests
+            response = Response(status=204)
             origin = request.headers.get("Origin")
-            if origin and ("localhost:8080" in origin or "127.0.0.1:8080" in origin):
+            # Allow any origin for Cloudflare Access (requests come from browser, not localhost)
+            if origin:
                 response.headers["Access-Control-Allow-Origin"] = origin
                 response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
                 response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-User-Email, X-Previous-Version-ID, X-Editor, CF-Access-Client-Id, CF-Access-Client-Secret"
                 response.headers["Access-Control-Allow-Credentials"] = "true"
+                response.headers["Access-Control-Max-Age"] = "86400"
             return response
 
     api_bp = create_api_blueprint(context.series_manager, config)
