@@ -113,16 +113,11 @@ class AnnotationViewer {
     }
     
     /**
-     * Fetch a URL (full URL or relative path) with Cloudflare headers if it's a server URL.
+     * Fetch a URL with Cloudflare headers if configured.
+     * Headers are only added if CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET are set.
      */
     async fetchWithCloudflare(url, options = {}) {
-        // Check if this is a server URL (starts with serverUrl)
-        const isServerUrl = url.startsWith(this.serverUrl);
-        
-        const headers = isServerUrl 
-            ? this._addCloudflareHeaders(options.headers)
-            : (options.headers || {});
-        
+        const headers = this._addCloudflareHeaders(options.headers);
         return fetch(url, { ...options, headers });
     }
     
