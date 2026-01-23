@@ -93,12 +93,10 @@ class AnnotationViewer {
         
         // Add Cloudflare headers if configured
         if (typeof CF_ACCESS_CLIENT_ID !== 'undefined' && CF_ACCESS_CLIENT_ID) {
-            const [name, value] = CF_ACCESS_CLIENT_ID.split(': ');
-            if (name && value) result[name.trim()] = value.trim();
+            result['CF-Access-Client-Id'] = CF_ACCESS_CLIENT_ID;
         }
         if (typeof CF_ACCESS_CLIENT_SECRET !== 'undefined' && CF_ACCESS_CLIENT_SECRET) {
-            const [name, value] = CF_ACCESS_CLIENT_SECRET.split(': ');
-            if (name && value) result[name.trim()] = value.trim();
+            result['CF-Access-Client-Secret'] = CF_ACCESS_CLIENT_SECRET;
         }
         
         return result;
@@ -114,6 +112,7 @@ class AnnotationViewer {
         const url = pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')
             ? pathOrUrl
             : this.serverUrlFor(pathOrUrl);
+        
         return fetch(url, { ...options, headers });
     }
     
@@ -300,7 +299,7 @@ class AnnotationViewer {
                 }
                 
                 const healthData = await healthResp.json();
-                // Health check just verifies server is running - don't check client_ready
+                // Health check just verifies LOCAL backend is running - don't check client_ready
                 // (data sync status is checked separately)
                 
                 this.hasConnectedToServer = true;
@@ -2369,6 +2368,9 @@ class AnnotationViewer {
                 throw new Error(`Failed to fetch next series: ${response.status} ${errorText}`);
             }
             
+            // Successfully connected to remote server
+            this.hasConnectedToServer = true;
+            
             let data;
             try {
                 data = await response.json();
@@ -2906,10 +2908,17 @@ AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {
         const data = await resp.json();
         const banner = document.getElementById('datasetWarning');
         if (!banner) return;
-        if (data.in_sync) {
-            banner.classList.add('hidden');
-        } else {
+        
+        // Only show out-of-sync warning if:
+        // 1. Server is reachable (server_version is not null)
+        // 2. Versions are actually out of sync (in_sync === false)
+        // If in_sync is null, server is unreachable - that's handled by server connection warning
+        if (data.in_sync === false && data.server !== null) {
+            // Server is reachable and versions differ - show warning
             banner.classList.remove('hidden');
+        } else {
+            // Either in sync, or server unreachable (in_sync === null) - hide warning
+            banner.classList.add('hidden');
         }
     } catch (e) {
         // Silently fail - dataset sync status is not critical

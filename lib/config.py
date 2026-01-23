@@ -1,9 +1,8 @@
 """
 Centralised configuration loader shared by server and client processes.
 
-Loads the root `dot.env` alongside optional role-specific overrides
-(`dot.env.server`, `dot.env.client`). Values are coerced into strongly typed
-dataclasses so downstream code never needs to parse raw environment strings.
+Loads `dot.yaml` for configuration. Values are coerced into strongly typed
+dataclasses so downstream code never needs to parse raw config values.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
 
-from dotenv import dotenv_values
+import yaml
 
 
 class ConfigError(RuntimeError):
@@ -41,7 +40,6 @@ class ServerConfig(SharedConfig):
     mask_storage_path: Path = Path("output")
     recent_view_threshold_minutes: int = 60
     retrack_workers: int = 2
-    # flow_method is inherited from SharedConfig, don't redefine it
 
 
 @dataclass(frozen=True)
@@ -51,50 +49,33 @@ class ClientConfig(SharedConfig):
     user_email: Optional[str] = None
     video_cache_path: Path = Path("client_cache/data")
     frames_path: Path = Path("client_cache/frames")
+    cf_access_client_id: Optional[str] = None
+    cf_access_client_secret: Optional[str] = None
 
 
-def _coerce_bool(value: Optional[str]) -> bool:
+def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
     return str(value).lower() in {"1", "true", "yes", "on"}
 
 
-def _resolve_env(
-    base_path: Path, role: Literal["shared", "server", "client"]
-) -> dict[str, str]:
+def _load_yaml(base_path: Path) -> dict:
     """
-    Load environment dictionaries in priority order:
-    1. `dot.env.defaults` (non-sensitive defaults, checked in)
-    2. `dot.env`
-    3. `dot.env.{role}` (if present)
-    4. Real environment (for overrides when running in production)
+    Load configuration from dot.yaml.
+    Falls back to environment variables for overrides.
     """
-    env: dict[str, str] = {}
-
-    defaults_file = base_path / "dot.env.defaults"
-    if defaults_file.exists():
-        env.update({
-            k: v
-            for k, v in dotenv_values(defaults_file).items()
-            if v is not None
-        })
-
-    root_file = base_path / "dot.env"
-    if root_file.exists():
-        env.update({
-            k: v for k, v in dotenv_values(root_file).items() if v is not None
-        })
-
-    role_file = base_path / f"dot.env.{role}"
-    if role != "shared" and role_file.exists():
-        env.update({
-            k: v for k, v in dotenv_values(role_file).items() if v is not None
-        })
-
-    # Finally, overlay os.environ without importing os at module level to keep
-    # import time fast for tools that only need metadata.
+    config: dict = {}
+    
+    yaml_file = base_path / "dot.yaml"
+    if yaml_file.exists():
+        with open(yaml_file) as f:
+            config = yaml.safe_load(f) or {}
+    
+    # Overlay os.environ for runtime overrides
     import os
-
-    env.update({k: v for k, v in os.environ.items() if v is not None})
-    return env
+    env_overrides = {k: v for k, v in os.environ.items() if v is not None}
+    
+    return config, env_overrides
 
 
 def load_config(
@@ -105,67 +86,93 @@ def load_config(
     """
 
     base_path = Path(".").resolve()
-    raw = _resolve_env(base_path, role)
-
-    required = [
-        "DATA_DIR",
-        "DOMAIN",
-        "PROJECT_ID",
-        "DATASET_ID",
-        "LABEL_ID",
-        "EMPTY_ID",
-    ]
-    missing = [key for key in required if not raw.get(key)]
+    config, env = _load_yaml(base_path)
+    
+    # Helper to get nested yaml value or env override
+    def get(yaml_path: str, env_key: str, default=None):
+        # Check env override first
+        if env_key in env:
+            return env[env_key]
+        # Navigate yaml path (e.g., "mdai.domain" -> config["mdai"]["domain"])
+        parts = yaml_path.split(".")
+        val = config
+        for part in parts:
+            if isinstance(val, dict) and part in val:
+                val = val[part]
+            else:
+                return default
+        return val if val is not None else default
+    
+    # Required fields
+    data_dir = get("server.data_dir", "DATA_DIR", "data")
+    domain = get("mdai.domain", "DOMAIN")
+    project_id = get("mdai.project_id", "PROJECT_ID")
+    dataset_id = get("mdai.dataset", "DATASET_ID")
+    label_id = get("mdai.label_id", "LABEL_ID")
+    empty_id = get("mdai.empty_id", "EMPTY_ID")
+    
+    required = {
+        "domain": domain,
+        "project_id": project_id,
+        "dataset_id": dataset_id,
+        "label_id": label_id,
+        "empty_id": empty_id,
+    }
+    missing = [k for k, v in required.items() if not v]
     if missing:
         raise ConfigError(f"Missing required config keys: {', '.join(missing)}")
 
     # MDAI_TOKEN is optional - can be set later via /api/settings
-    # Allow "not_configured_yet" placeholder for iOS app
-    mdai_token = raw.get("MDAI_TOKEN", "not_configured_yet")
+    mdai_token = get("mdai.token", "MDAI_TOKEN", "not_configured_yet")
 
     shared_kwargs = dict(
         mdai_token=mdai_token,
-        data_dir=Path(raw["DATA_DIR"]).expanduser().resolve(),
-        domain=raw["DOMAIN"],
-        project_id=raw["PROJECT_ID"],
-        dataset_id=raw["DATASET_ID"],
-        label_id=raw["LABEL_ID"],
-        empty_id=raw["EMPTY_ID"],
-        flow_method=raw.get("FLOW_METHOD", "dis"),
-        test_study_uid=raw.get("TEST_STUDY_UID"),
-        test_series_uid=raw.get("TEST_SERIES_UID"),
+        data_dir=Path(data_dir).expanduser().resolve(),
+        domain=domain,
+        project_id=project_id,
+        dataset_id=dataset_id,
+        label_id=label_id,
+        empty_id=empty_id,
+        flow_method=get("optical_flow.method", "FLOW_METHOD", "dis"),
+        test_study_uid=get("test.study_uid", "TEST_STUDY_UID"),
+        test_series_uid=get("test.series_uid", "TEST_SERIES_UID"),
     )
 
     if role == "server":
-        # Resolve paths relative to project root (per DISTRIBUTED_ARCHITECTURE.md)
         server_kwargs = dict(
-            server_host=raw.get("SERVER_HOST", "0.0.0.0"),
-            server_port=int(raw.get("SERVER_PORT", 5000)),
+            server_host=get("server.host", "SERVER_HOST", "0.0.0.0"),
+            server_port=int(get("server.port", "SERVER_PORT", 5000)),
             server_state_path=(
-                base_path / raw.get("SERVER_STATE_PATH", "server_state")
+                base_path / get("server.state_path", "SERVER_STATE_PATH", "server_state")
             ).resolve(),
             mask_storage_path=(
-                base_path / raw.get("MASK_STORAGE_PATH", "output")
+                base_path / get("server.mask_dir", "MASK_STORAGE_PATH", "output")
             ).resolve(),
             recent_view_threshold_minutes=int(
-                raw.get("RECENT_VIEW_THRESHOLD_MINUTES", 60)
+                get("server.recent_minutes", "RECENT_VIEW_THRESHOLD_MINUTES", 60)
             ),
-            retrack_workers=int(raw.get("RETRACK_WORKERS", 2)),
-            # flow_method is already in shared_kwargs, don't duplicate
+            retrack_workers=int(get("server.retrack_workers", "RETRACK_WORKERS", 2)),
         )
         return ServerConfig(**shared_kwargs, **server_kwargs)
 
     if role == "client":
+        # Get Cloudflare headers
+        cf_headers = config.get("cloudflare_headers", {}) or {}
+        cf_id = cf_headers.get("CF-Access-Client-Id") or env.get("CF_ACCESS_CLIENT_ID")
+        cf_secret = cf_headers.get("CF-Access-Client-Secret") or env.get("CF_ACCESS_CLIENT_SECRET")
+        
         client_kwargs = dict(
-            client_port=int(raw.get("CLIENT_PORT", 8080)),
-            server_url=raw.get("SERVER_URL") or "http://localhost:5000",
-            user_email=raw.get("USER_EMAIL"),
+            client_port=int(get("client.port", "CLIENT_PORT", 8080)),
+            server_url=get("server.url", "SERVER_URL", "http://localhost:5000"),
+            user_email=get("client.user_email", "USER_EMAIL"),
             video_cache_path=Path(
-                raw.get("VIDEO_CACHE_PATH", "client_cache/data")
+                get("server.video_cache", "VIDEO_CACHE_PATH", "client_cache/data")
             ).resolve(),
             frames_path=Path(
-                raw.get("FRAMES_CACHE_PATH", "client_cache/frames")
+                get("server.frame_cache", "FRAMES_CACHE_PATH", "client_cache/frames")
             ).resolve(),
+            cf_access_client_id=cf_id,
+            cf_access_client_secret=cf_secret,
         )
         return ClientConfig(**shared_kwargs, **client_kwargs)
 

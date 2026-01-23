@@ -23,3 +23,4 @@ ios/Goobusters/Frameworks/
 ios/Goobusters/Goobusters/python-app/
 # Vendor directory - commit for reproducibility
 # lib/client/vendor/
+dot.yaml

@@ -3,8 +3,8 @@
 # This script packages the Python backend code that will be embedded in the iOS app
 #
 # Usage:
-#   ./bundle_python.sh           # Normal build (no credentials bundled)
-#   ./bundle_python.sh --debug   # Debug build with MDAI_TOKEN + USER_EMAIL bundled
+#   ./bundle_python.sh           # Normal build (strips mdai.token)
+#   ./bundle_python.sh --debug   # Debug build with mdai.token + user_email bundled
 #
 # Note: The client handles sync automatically based on credentials.
 # - If credentials present -> syncs on startup
@@ -67,22 +67,23 @@ echo "Copying static files..."
 rm -rf "$OUTPUT_DIR/static"
 cp -r "$REPO_ROOT/static" "$OUTPUT_DIR/"
 
-# Copy templates
+# Copy templates and inject Cloudflare headers
 if [ -d "$REPO_ROOT/templates" ]; then
     echo "Copying templates..."
     rm -rf "$OUTPUT_DIR/templates"
     cp -r "$REPO_ROOT/templates" "$OUTPUT_DIR/"
     
-    # Inject Cloudflare headers from dot.env into viewer.html if present
-    if [ -f "$REPO_ROOT/dot.env" ]; then
-        echo "Reading Cloudflare headers from dot.env..."
-        CF_ACCESS_CLIENT_ID=$(grep "^CF_ACCESS_CLIENT_ID=" "$REPO_ROOT/dot.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
-        CF_ACCESS_CLIENT_SECRET=$(grep "^CF_ACCESS_CLIENT_SECRET=" "$REPO_ROOT/dot.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
+    # Inject Cloudflare headers from dot.yaml into viewer.html if present
+    if [ -f "$REPO_ROOT/dot.yaml" ]; then
+        echo "Reading Cloudflare headers from dot.yaml..."
+        # Extract values using grep/sed (works without yq)
+        CF_ACCESS_CLIENT_ID=$(grep -A 2 "cloudflare_headers:" "$REPO_ROOT/dot.yaml" 2>/dev/null | grep "CF-Access-Client-Id:" | sed 's/.*CF-Access-Client-Id: *//' | tr -d ' ')
+        CF_ACCESS_CLIENT_SECRET=$(grep -A 3 "cloudflare_headers:" "$REPO_ROOT/dot.yaml" 2>/dev/null | grep "CF-Access-Client-Secret:" | sed 's/.*CF-Access-Client-Secret: *//' | tr -d ' ')
         
         # Replace placeholder values in viewer.html if CF vars exist
         if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
             echo "Injecting Cloudflare headers into viewer.html..."
-            # Use | as delimiter - only need to escape | and & in replacement string
+            # Escape special chars for sed
             CF_ID_ESC=$(printf '%s' "$CF_ACCESS_CLIENT_ID" | sed 's/[|&]/\\&/g')
             CF_SECRET_ESC=$(printf '%s' "$CF_ACCESS_CLIENT_SECRET" | sed 's/[|&]/\\&/g')
             sed -i '' "s|const CF_ACCESS_CLIENT_ID = \"\";|const CF_ACCESS_CLIENT_ID = \"$CF_ID_ESC\";|g" "$OUTPUT_DIR/templates/viewer.html"
@@ -91,46 +92,34 @@ if [ -d "$REPO_ROOT/templates" ]; then
     fi
 fi
 
-# Copy default config and merge non-secret values from dot.env
-echo "Copying default config..."
-cp "$REPO_ROOT/dot.env.defaults" "$OUTPUT_DIR/"
-
-# Merge config values from dot.env if it exists
-if [ -f "$REPO_ROOT/dot.env" ]; then
-    echo "Merging config from dot.env..."
-    # List of non-secret keys to copy
-    NON_SECRET_KEYS="DOMAIN PROJECT_ID DATASET_ID LABEL_ID EMPTY_ID FLOW_METHOD SERVER_URL"
-    
-    # In debug mode, also include MDAI_TOKEN
+# Copy dot.yaml config (stripping mdai.token unless --debug)
+echo "Copying dot.yaml config..."
+if [ -f "$REPO_ROOT/dot.yaml" ]; then
     if [ "$DEBUG_BUILD" = true ]; then
-        NON_SECRET_KEYS="$NON_SECRET_KEYS MDAI_TOKEN"
-        echo "  [DEBUG] Including MDAI_TOKEN"
-    fi
-    
-    for key in $NON_SECRET_KEYS; do
-        # Get value from dot.env (remove quotes)
-        value=$(grep "^$key=" "$REPO_ROOT/dot.env" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
-        if [ -n "$value" ] && [ "$value" != "REPLACE_ME" ] && [ "$value" != "REPLACE_ME_LABEL_ID" ] && [ "$value" != "REPLACE_ME_EMPTY_ID" ]; then
-            echo "  Setting $key"
-            # Update or append in dot.env.defaults
-            if grep -q "^$key=" "$OUTPUT_DIR/dot.env.defaults"; then
-                sed -i '' "s|^$key=.*|$key=$value|" "$OUTPUT_DIR/dot.env.defaults"
-            else
-                echo "$key=$value" >> "$OUTPUT_DIR/dot.env.defaults"
-            fi
-        fi
-    done
-    
-    # In debug mode, set default username to debugger-$hostname
-    if [ "$DEBUG_BUILD" = true ]; then
+        echo "  [DEBUG] Including mdai.token"
+        cp "$REPO_ROOT/dot.yaml" "$OUTPUT_DIR/dot.yaml"
+        
+        # In debug mode, set default username to debugger-$hostname
         DEBUG_USER="debugger-$(hostname -s)"
-        echo "  Setting USER_EMAIL=$DEBUG_USER"
-        if grep -q "^USER_EMAIL=" "$OUTPUT_DIR/dot.env.defaults"; then
-            sed -i '' "s|^USER_EMAIL=.*|USER_EMAIL=$DEBUG_USER|" "$OUTPUT_DIR/dot.env.defaults"
-        else
-            echo "USER_EMAIL=$DEBUG_USER" >> "$OUTPUT_DIR/dot.env.defaults"
+        echo "  Setting user_email=$DEBUG_USER"
+        # Add client.user_email if not present
+        if ! grep -q "^client:" "$OUTPUT_DIR/dot.yaml"; then
+            echo "" >> "$OUTPUT_DIR/dot.yaml"
+            echo "client:" >> "$OUTPUT_DIR/dot.yaml"
+            echo "    user_email: $DEBUG_USER" >> "$OUTPUT_DIR/dot.yaml"
+        elif ! grep -q "user_email:" "$OUTPUT_DIR/dot.yaml"; then
+            sed -i '' "/^client:/a\\
+    user_email: $DEBUG_USER
+" "$OUTPUT_DIR/dot.yaml"
         fi
+    else
+        # Strip mdai.token for non-debug builds
+        echo "  Stripping mdai.token for release build"
+        # Remove the token line from mdai section
+        sed '/^[[:space:]]*token:/d' "$REPO_ROOT/dot.yaml" > "$OUTPUT_DIR/dot.yaml"
     fi
+else
+    echo "WARNING: dot.yaml not found at $REPO_ROOT/dot.yaml"
 fi
 
 # Create iOS-specific config overrides
@@ -155,37 +144,50 @@ def get_ios_paths():
         "CLIENT_CACHE_DIR": os.path.join(documents_dir, "goobusters_client_cache"),
     }
 
-def _load_dotenv_defaults(bundle_path):
-    """Load config values from dot.env.defaults and set as environment variables"""
-    defaults_file = os.path.join(bundle_path, "dot.env.defaults")
-    if not os.path.exists(defaults_file):
-        return
+def _load_yaml_config(bundle_path):
+    """Load config values from dot.yaml and set as environment variables"""
+    import yaml
     
-    with open(defaults_file, "r") as f:
-        for line in f:
-            line = line.strip()
-            # Skip comments and empty lines
-            if not line or line.startswith("#"):
-                continue
-            # Parse KEY=VALUE (handle # comments at end of line)
-            if "=" in line:
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.split("#")[0].strip()  # Remove inline comments
-                # Remove quotes if present
-                if value.startswith('"') and value.endswith('"'):
-                    value = value[1:-1]
-                elif value.startswith("'") and value.endswith("'"):
-                    value = value[1:-1]
-                if key and value:
-                    os.environ.setdefault(key, value)
+    yaml_file = os.path.join(bundle_path, "dot.yaml")
+    if not os.path.exists(yaml_file):
+        return {}
+    
+    with open(yaml_file) as f:
+        config = yaml.safe_load(f) or {}
+    
+    # Flatten yaml to env vars for compatibility
+    env_map = {
+        "DOMAIN": ("mdai", "domain"),
+        "PROJECT_ID": ("mdai", "project_id"),
+        "DATASET_ID": ("mdai", "dataset"),
+        "MDAI_TOKEN": ("mdai", "token"),
+        "LABEL_ID": ("mdai", "label_id"),
+        "EMPTY_ID": ("mdai", "empty_id"),
+        "TRACK_ID": ("mdai", "track_id"),
+        "SERVER_URL": ("server", "url"),
+        "FLOW_METHOD": ("optical_flow", "method"),
+        "USER_EMAIL": ("client", "user_email"),
+    }
+    
+    for env_key, yaml_path in env_map.items():
+        val = config
+        for part in yaml_path:
+            if isinstance(val, dict) and part in val:
+                val = val[part]
+            else:
+                val = None
+                break
+        if val is not None:
+            os.environ.setdefault(env_key, str(val))
+    
+    return config
 
 def configure_environment():
     """Set up environment for iOS"""
     paths = get_ios_paths()
 
-    # Load config from dot.env.defaults in bundle
-    _load_dotenv_defaults(paths["BUNDLE_PATH"])
+    # Load config from dot.yaml in bundle
+    _load_yaml_config(paths["BUNDLE_PATH"])
 
     # Ensure directories exist
     for key in ["DATA_DIR", "CACHE_DIR", "CLIENT_CACHE_DIR"]:
@@ -265,7 +267,7 @@ def main(port=8080):
         from lib.config import load_config
         
         log("[iOS] Loading config...")
-        # Change to bundle directory so load_config finds dot.env.defaults
+        # Change to bundle directory so load_config finds dot.yaml
         original_cwd = os.getcwd()
         os.chdir(bundle_path)
         try:
@@ -331,7 +333,8 @@ find "$OUTPUT_DIR" -name "*.so" -type f -delete
 # Remove any .env files (secrets!)
 echo "Removing secret files..."
 find "$OUTPUT_DIR" -name ".env" -delete
-find "$OUTPUT_DIR" -name "*.env" ! -name "dot.env.defaults" -delete
+find "$OUTPUT_DIR" -name "*.env" -delete
+find "$OUTPUT_DIR" -name "dot.env*" -delete
 
 # Create requirements-ios.txt for reference
 cat > "$OUTPUT_DIR/requirements-ios.txt" << 'EOF'
@@ -340,7 +343,7 @@ cat > "$OUTPUT_DIR/requirements-ios.txt" << 'EOF'
 
 # Core (likely have iOS wheels)
 flask
-python-dotenv
+pyyaml
 httpx
 
 # Data handling
@@ -365,8 +368,11 @@ echo ""
 echo "=== Bundle Contents ==="
 find "$OUTPUT_DIR" -type f -name "*.py" | sort
 echo ""
+echo "=== Config Files ==="
+find "$OUTPUT_DIR" -type f -name "*.yaml" | sort
+echo ""
 echo "=== Other Files ==="
-find "$OUTPUT_DIR" -type f ! -name "*.py" | sort | head -20
+find "$OUTPUT_DIR" -type f ! -name "*.py" ! -name "*.yaml" | sort | head -20
 echo ""
 echo "Total files: $(find "$OUTPUT_DIR" -type f | wc -l)"
 echo "Bundle size: $(du -sh "$OUTPUT_DIR" | cut -f1)"

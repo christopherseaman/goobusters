@@ -105,16 +105,10 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             
             # Add Cloudflare headers if configured
             headers = {}
-            cf_client_id = os.environ.get("CF_ACCESS_CLIENT_ID", "")
-            cf_client_secret = os.environ.get("CF_ACCESS_CLIENT_SECRET", "")
-            if cf_client_id:
-                parts = cf_client_id.split(": ", 1)
-                if len(parts) == 2:
-                    headers[parts[0].strip()] = parts[1].strip()
-            if cf_client_secret:
-                parts = cf_client_secret.split(": ", 1)
-                if len(parts) == 2:
-                    headers[parts[0].strip()] = parts[1].strip()
+            if config.cf_access_client_id:
+                headers["CF-Access-Client-Id"] = config.cf_access_client_id
+            if config.cf_access_client_secret:
+                headers["CF-Access-Client-Secret"] = config.cf_access_client_secret
             
             resp = requests.get(server_url, headers=headers, timeout=5)
             if resp.ok:
@@ -442,16 +436,10 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             import os
             # Add Cloudflare headers if configured
             headers = {}
-            cf_client_id = os.environ.get("CF_ACCESS_CLIENT_ID", "")
-            cf_client_secret = os.environ.get("CF_ACCESS_CLIENT_SECRET", "")
-            if cf_client_id:
-                parts = cf_client_id.split(": ", 1)
-                if len(parts) == 2:
-                    headers[parts[0].strip()] = parts[1].strip()
-            if cf_client_secret:
-                parts = cf_client_secret.split(": ", 1)
-                if len(parts) == 2:
-                    headers[parts[0].strip()] = parts[1].strip()
+            if config.cf_access_client_id:
+                headers["CF-Access-Client-Id"] = config.cf_access_client_id
+            if config.cf_access_client_secret:
+                headers["CF-Access-Client-Secret"] = config.cf_access_client_secret
             
             server_resp = requests.get(
                 f"{config.server_url}/api/dataset/version",
@@ -464,7 +452,9 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             pass  # Server unreachable, can't compare
 
         # Compare by file size (mtime differs across machines)
-        in_sync = False
+        # Only set in_sync if we can actually compare both versions
+        # If server is unreachable, return None for in_sync (frontend will handle server connection warning separately)
+        in_sync = None  # None means can't determine (server unreachable)
         if client_version and server_version and "annotations_size" in server_version:
             in_sync = client_version["annotations_size"] == server_version["annotations_size"]
 

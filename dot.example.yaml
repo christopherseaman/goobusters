@@ -1,0 +1,18 @@
+cloudflare_headers: # Omit if not using Cloudflare Access
+    CF-Access-Client-Id: CLIENT_ID.access
+    CF-Access-Client-Secret: SECRET_KEY
+server_url: https://goo.badmath.org
+data_dir: data
+mdai:
+    domain: ucsf.md.ai
+    token: SECRET_KEY
+    project_id: x9N2LJBZ
+    dataset: D_V688LQ
+    # dataset: D_JrYYMV # Pelvic-1
+    empty_id: L_75K42J
+    label_id: L_13yPql
+    track_id: L_JykNe7
+optical_flow:
+    method: dis
+    preset: medium
+debug: False
