@@ -24,3 +24,5 @@ ios/Goobusters/Goobusters/python-app/
 # Vendor directory - commit for reproducibility
 # lib/client/vendor/
 dot.yaml
+build/
+ios/Goobusters/Goobusters.xcodeproj/project.xcworkspace/xcuserdata/christopher.xcuserdatad/UserInterfaceState.xcuserstate

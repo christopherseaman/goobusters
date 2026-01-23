@@ -3,13 +3,13 @@
 #
 # Prerequisites:
 #   - Xcode installed
-#   - dot.env configured (MDAI_TOKEN, SERVER_URL, etc.)
+#   - dot.yaml configured
 #
 # Usage:
 #   ./build_ios.sh              # Build and run (prompts for credentials on first run)
 #   ./build_ios.sh --skip-build # Just install and run (if already built)
 #   ./build_ios.sh --debug      # Build with MDAI_TOKEN + USER_EMAIL pre-bundled
-#   ./build_ios.sh --archive    # Create archive (convenience wrapper - or use Xcode Product → Archive)
+#   ./build_ios.sh --archive    # Create archive for TestFlight
 #
 # Note: TestFlight is configured in Xcode project settings and App Store Connect, not here.
 # This script only creates the archive. Upload via Xcode Organizer.
@@ -28,6 +28,8 @@ SIMULATOR_NAME="iPad Air 11-inch (M3)"
 BUNDLE_ID="org.badmath.goobusters"
 PROJECT="ios/Goobusters/Goobusters.xcodeproj"
 SCHEME="Goobusters"
+BUILD_DIR="$SCRIPT_DIR/build"
+DERIVED_DATA="$BUILD_DIR/DerivedData"
 
 # Parse arguments
 SKIP_BUILD=false
@@ -69,38 +71,47 @@ if [ -z "$BOOT_STATUS" ]; then
 fi
 
 if [ "$ARCHIVE_BUILD" = true ]; then
-    # Archive build for TestFlight
-    # Archive settings are configured in the Xcode scheme (Release config, reveal in Organizer)
-    # Xcode automatically uses ~/Library/Developer/Xcode/Archives/YYYY-MM-DD/ by default
+    echo ""
+    echo "=== Cleaning Build ==="
+    rm -rf "$BUILD_DIR"
+    rm -rf ~/Library/Developer/Xcode/DerivedData/Goobusters-*
+    mkdir -p "$BUILD_DIR"
+    
     echo ""
     echo "=== Bundling Python Code ==="
     bash ios/scripts/bundle_python.sh
     
     echo ""
     echo "=== Creating Archive ==="
-    echo "Using Xcode scheme settings (Release configuration)"
-    
     xcodebuild -project "$PROJECT" \
         -scheme "$SCHEME" \
         -sdk iphoneos \
-        archive 2>&1 | tail -10
+        -configuration Release \
+        -derivedDataPath "$DERIVED_DATA" \
+        -archivePath "$BUILD_DIR/Goobusters.xcarchive" \
+        -quiet \
+        archive
     
-    if [ $? -eq 0 ]; then
+    if [ -d "$BUILD_DIR/Goobusters.xcarchive" ]; then
         echo ""
-        echo "✓ Archive created in default Xcode location"
+        echo "✓ Archive created: $BUILD_DIR/Goobusters.xcarchive"
         echo ""
-        echo "To upload to TestFlight:"
-        echo "1. Open Xcode → Window → Organizer"
-        echo "2. Select the Goobusters archive from today"
-        echo "3. Click 'Distribute App' → 'App Store Connect'"
+        echo "To upload to TestFlight, run:"
+        echo "  uv run python3 testflight_push.py --upload"
     else
-        echo "Archive failed - check logs above"
+        echo "Archive failed"
         exit 1
     fi
     exit 0
 fi
 
 if [ "$SKIP_BUILD" = false ]; then
+    echo ""
+    echo "=== Cleaning Build ==="
+    rm -rf "$BUILD_DIR"
+    rm -rf ~/Library/Developer/Xcode/DerivedData/Goobusters-*
+    mkdir -p "$BUILD_DIR"
+    
     # Generate python-app bundle
     echo ""
     echo "=== Bundling Python Code ==="
@@ -117,11 +128,13 @@ if [ "$SKIP_BUILD" = false ]; then
         -scheme "$SCHEME" \
         -destination "id=$SIMULATOR_ID" \
         -configuration Debug \
-        build | tail -20
+        -derivedDataPath "$DERIVED_DATA" \
+        -quiet \
+        build
 fi
 
 # Find built app
-APP_PATH=$(find ~/Library/Developer/Xcode/DerivedData -name "Goobusters.app" -path "*/Debug-iphonesimulator/*" 2>/dev/null | head -1)
+APP_PATH=$(find "$DERIVED_DATA" -name "Goobusters.app" -path "*/Debug-iphonesimulator/*" 2>/dev/null | head -1)
 
 if [ -z "$APP_PATH" ]; then
     echo "Error: Built app not found. Run without --skip-build first."

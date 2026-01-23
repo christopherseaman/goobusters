@@ -15,4 +15,8 @@ mdai:
 optical_flow:
     method: dis
     preset: medium
+app_store: # Put X.p8 file in ~/.appstoreconnect/private_keys/
+    key_id: SX459LV8UL
+    issuer_id: 69a6de72-8650-47e3-e053-5b8c7c11a4d1
+    bundle_id: org.badmath.goobusters
 debug: False
