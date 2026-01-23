@@ -240,6 +240,14 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             server_url=config.server_url
         )
 
+    @app.route("/no_videos")
+    def no_videos():
+        """
+        Serve the setup page when credentials are missing.
+        This is called by JavaScript when showConfigModal() is invoked.
+        """
+        return render_template("no_videos.html")
+
     @app.get("/api/videos")
     def api_videos():
         """
