@@ -86,22 +86,44 @@ class AnnotationViewer {
     }
     
     /**
-     * Fetch from server API endpoint with Cloudflare headers if configured.
+     * Add Cloudflare headers to a headers object if configured.
      */
-    async fetchToServer(path, options = {}) {
-        const headers = { ...(options.headers || {}) };
+    _addCloudflareHeaders(headers = {}) {
+        const result = { ...headers };
         
         // Add Cloudflare headers if configured
         if (typeof CF_ACCESS_CLIENT_ID !== 'undefined' && CF_ACCESS_CLIENT_ID) {
             const [name, value] = CF_ACCESS_CLIENT_ID.split(': ');
-            if (name && value) headers[name.trim()] = value.trim();
+            if (name && value) result[name.trim()] = value.trim();
         }
         if (typeof CF_ACCESS_CLIENT_SECRET !== 'undefined' && CF_ACCESS_CLIENT_SECRET) {
             const [name, value] = CF_ACCESS_CLIENT_SECRET.split(': ');
-            if (name && value) headers[name.trim()] = value.trim();
+            if (name && value) result[name.trim()] = value.trim();
         }
         
+        return result;
+    }
+    
+    /**
+     * Fetch from server API endpoint with Cloudflare headers if configured.
+     */
+    async fetchToServer(path, options = {}) {
+        const headers = this._addCloudflareHeaders(options.headers);
         return fetch(this.serverUrlFor(path), { ...options, headers });
+    }
+    
+    /**
+     * Fetch a URL (full URL or relative path) with Cloudflare headers if it's a server URL.
+     */
+    async fetchWithCloudflare(url, options = {}) {
+        // Check if this is a server URL (starts with serverUrl)
+        const isServerUrl = url.startsWith(this.serverUrl);
+        
+        const headers = isServerUrl 
+            ? this._addCloudflareHeaders(options.headers)
+            : (options.headers || {});
+        
+        return fetch(url, { ...options, headers });
     }
     
     /**
@@ -2682,8 +2704,8 @@ class AnnotationViewer {
             }
 
             // Load frames archive (.tar format, no gzip)
-            // Client backend proxies to server (no local caching)
-            const framesArchiveResponse = await fetch(framesUrl);
+            // Use fetchWithCloudflare to add headers if this is a server URL
+            const framesArchiveResponse = await this.fetchWithCloudflare(framesUrl);
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesTarData = new Uint8Array(framesArrayBuffer);
 
@@ -2712,8 +2734,8 @@ class AnnotationViewer {
             // Load masks archive (.tar format, no gzip) - get version ID from headers
             this.masksArchive = {};
             if (masksUrl) {
-                // Client backend proxies to server (no local caching)
-                const masksArchiveResponse = await fetch(masksUrl);
+                // Use fetchWithCloudflare to add headers if this is a server URL
+                const masksArchiveResponse = await this.fetchWithCloudflare(masksUrl);
                 
                 if (!masksArchiveResponse.ok) {
                     console.warn(`Failed to load masks archive: ${masksArchiveResponse.status} ${masksArchiveResponse.statusText}`);
