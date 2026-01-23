@@ -9,6 +9,7 @@
 #   ./build_ios.sh              # Build and run (prompts for credentials on first run)
 #   ./build_ios.sh --skip-build # Just install and run (if already built)
 #   ./build_ios.sh --debug      # Build with MDAI_TOKEN + USER_EMAIL pre-bundled
+#   ./build_ios.sh --archive    # Create archive for TestFlight (device build)
 #
 # Startup behavior (handled by client):
 #   - If credentials present -> syncs automatically on startup
@@ -28,10 +29,12 @@ SCHEME="Goobusters"
 # Parse arguments
 SKIP_BUILD=false
 DEBUG_BUILD=false
+ARCHIVE_BUILD=false
 for arg in "$@"; do
     case $arg in
         --skip-build) SKIP_BUILD=true ;;
         --debug) DEBUG_BUILD=true ;;
+        --archive) ARCHIVE_BUILD=true ;;
     esac
 done
 
@@ -60,6 +63,40 @@ if [ -z "$BOOT_STATUS" ]; then
     echo "Booting simulator..."
     xcrun simctl boot "$SIMULATOR_ID" 2>/dev/null || true
     sleep 3
+fi
+
+if [ "$ARCHIVE_BUILD" = true ]; then
+    # Archive build for TestFlight
+    echo ""
+    echo "=== Bundling Python Code ==="
+    bash ios/scripts/bundle_python.sh
+    
+    echo ""
+    echo "=== Creating Archive ==="
+    ARCHIVE_DATE=$(date +%Y-%m-%d)
+    ARCHIVE_PATH="$HOME/Library/Developer/Xcode/Archives/$ARCHIVE_DATE/Goobusters.xcarchive"
+    mkdir -p "$(dirname "$ARCHIVE_PATH")"
+    
+    xcodebuild -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration Release \
+        -sdk iphoneos \
+        -archivePath "$ARCHIVE_PATH" \
+        archive 2>&1 | tail -10
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "✓ Archive created: $ARCHIVE_PATH"
+        echo ""
+        echo "To upload to TestFlight:"
+        echo "1. Open Xcode → Window → Organizer"
+        echo "2. Select the Goobusters archive from today"
+        echo "3. Click 'Distribute App' → 'App Store Connect'"
+    else
+        echo "Archive failed - check logs above"
+        exit 1
+    fi
+    exit 0
 fi
 
 if [ "$SKIP_BUILD" = false ]; then
