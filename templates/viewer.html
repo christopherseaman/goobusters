@@ -169,8 +169,15 @@
             <button class="modal-close" id="closeSettings">✕</button>
             <h2>Settings</h2>
             <div class="info-section settings-form">
-                <label for="settingsEmail">User Email (for activity/save headers)</label>
-                <input type="email" id="settingsEmail" placeholder="you@ucsf.edu">
+                <label for="settingsEmail">Your Name</label>
+                <select id="settingsEmail">
+                    <option value="" disabled>Select your name...</option>
+                    <option value="Aaron">Aaron</option>
+                    <option value="Christopher">Christopher</option>
+                    <option value="Faezeh">Faezeh</option>
+                    <option value="Kush">Kush</option>
+                    <option value="Newton">Newton</option>
+                </select>
                 <label for="settingsToken">MD.ai API Token</label>
                 <input type="password" id="settingsToken" placeholder="Set or update token">
                 <p class="muted">Leave token blank to keep the current token. Token is saved persistently.</p>

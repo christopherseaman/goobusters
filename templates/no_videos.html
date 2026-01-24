@@ -38,7 +38,8 @@
             color: #ccc;
             font-size: 0.9rem;
         }
-        .setup-form input {
+        .setup-form input,
+        .setup-form select {
             width: 100%;
             padding: 0.75rem;
             margin-bottom: 1rem;
@@ -49,9 +50,13 @@
             font-size: 1rem;
             box-sizing: border-box;
         }
-        .setup-form input:focus {
+        .setup-form input:focus,
+        .setup-form select:focus {
             outline: none;
             border-color: #4CAF50;
+        }
+        .setup-form select {
+            cursor: pointer;
         }
         .setup-btn {
             width: 100%;
@@ -124,9 +129,16 @@
             
             <form class="setup-form" id="setupForm">
                 <label for="userEmail">Your Name</label>
-                <input type="text" id="userEmail" placeholder="Your Name" required>
+                <select id="userEmail" required>
+                    <option value="" disabled selected>Select your name...</option>
+                    <option value="Aaron">Aaron</option>
+                    <option value="Christopher">Christopher</option>
+                    <option value="Faezeh">Faezeh</option>
+                    <option value="Kush">Kush</option>
+                    <option value="Newton">Newton</option>
+                </select>
                 <p class="help-text">Used to track who made annotations</p>
-                
+
                 <label for="mdaiToken">MD.ai API Token</label>
                 <input type="password" id="mdaiToken" placeholder="Paste your MD.ai token" required>
                 <p class="help-text">Get your token from MD.ai Settings → API</p>

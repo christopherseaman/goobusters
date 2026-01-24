@@ -40,6 +40,12 @@
 ### Onboarding & Auth
 
 - [ ] Persist failstate on app first start and not getting username (not email) or mdai token
+- [ ] Fetch active users from server to populate username dropdown dynamically
+    - Add endpoint: GET /api/users/active (returns list of users from recent activity)
+    - Use server list if available, fall back to fixed list on error
+- [ ] Add "Other" option to username dropdown to allow custom name entry
+    - Show text input when "Other" selected
+    - Save custom name and add to dynamic list
 
 ### Device QA
 

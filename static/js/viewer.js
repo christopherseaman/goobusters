@@ -508,9 +508,12 @@ class AnnotationViewer {
             const data = await resp.json();
             if (data.user_email) {
                 this.userEmail = data.user_email;
-                const emailInput = document.getElementById('settingsEmail');
-                if (emailInput) {
-                    emailInput.value = data.user_email;
+                const emailSelect = document.getElementById('settingsEmail');
+                if (emailSelect) {
+                    const matchingOption = Array.from(emailSelect.options).find(
+                        opt => opt.value === data.user_email
+                    );
+                    emailSelect.value = matchingOption ? data.user_email : '';
                 }
             }
             const tokenStatus = document.getElementById('tokenStatus');
@@ -563,9 +566,13 @@ class AnnotationViewer {
     }
 
     openSettings() {
-        const emailInput = document.getElementById('settingsEmail');
-        if (emailInput && !emailInput.value) {
-            emailInput.value = this.getUserEmail();
+        const emailSelect = document.getElementById('settingsEmail');
+        if (emailSelect) {
+            const currentEmail = this.getUserEmail();
+            const matchingOption = Array.from(emailSelect.options).find(
+                opt => opt.value === currentEmail
+            );
+            emailSelect.value = matchingOption ? currentEmail : '';
         }
         this.showModal('settingsModal');
     }
