@@ -59,7 +59,7 @@ class AnnotationViewer {
         this.masksArchive = {}; // Masks from tar archive (webp images)
         this.currentVersionId = null; // Track version ID from server for optimistic locking
         this.activityPingInterval = null; // Interval ID for activity pings (30s)
-        this.userEmail = null; // User email for identification (from localStorage or prompt)
+        this.userEmail = null; // User email for identification (from /api/settings)
 
         this.toolsVisible = true;
         
@@ -164,7 +164,9 @@ class AnnotationViewer {
     
     /**
      * Check if credentials are set, and if so, trigger sync.
-     * Show blocking config modal if credentials missing or sync fails.
+     * - Missing credentials → Setup page
+     * - Invalid token → Setup page (to re-enter)
+     * - Network/other error → Sync error overlay with retry button
      */
     async checkCredentialsAndSync() {
         try {
@@ -177,8 +179,7 @@ class AnnotationViewer {
             
             const settings = await settingsResp.json();
             const hasToken = settings.mdai_token_present === true;
-            const email = settings.user_email ? settings.user_email.trim() : '';
-            const hasName = email.length > 0;
+            const hasName = settings.user_email?.trim().length > 0;
             
             if (!hasToken || !hasName) {
                 // Missing credentials - show blocking config modal
@@ -186,14 +187,22 @@ class AnnotationViewer {
                 return;
             }
             
+            // Credentials present - try sync
             this.showServerConnectionScreen('Syncing dataset...');
             const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
             
             if (!syncResp.ok) {
-                // Sync failed - show blocking config modal
                 const errorData = await syncResp.json().catch(() => ({}));
                 console.error('Sync failed:', errorData);
-                this.showConfigModal();
+                
+                // Handle based on error type
+                if (errorData.error_type === 'invalid_token') {
+                    // Token invalid - show setup page to re-enter
+                    this.showConfigModal();
+                } else {
+                    // Network/other error - show retry UI (don't lose credentials)
+                    this.showSyncError(errorData.error_message || 'Sync failed');
+                }
                 return;
             }
             
@@ -205,7 +214,8 @@ class AnnotationViewer {
             this.hideServerConnectionScreen();
         } catch (error) {
             console.error('Error checking credentials/sync:', error);
-            this.showConfigModal();
+            // Network errors during fetch - show retry UI
+            this.showSyncError(error.message || 'Connection failed');
         }
     }
     
@@ -215,6 +225,38 @@ class AnnotationViewer {
     showConfigModal() {
         // Redirect to setup page
         window.location.href = '/no_videos';
+    }
+    
+    /**
+     * Show sync error overlay with retry button.
+     * Used for network errors where credentials are valid but sync failed.
+     */
+    showSyncError(message) {
+        this.hideServerConnectionScreen();
+        const overlay = document.getElementById('syncErrorOverlay');
+        const messageEl = document.getElementById('syncErrorMessage');
+        if (overlay && messageEl) {
+            messageEl.textContent = message;
+            overlay.classList.remove('hidden');
+        }
+    }
+    
+    /**
+     * Hide sync error overlay.
+     */
+    hideSyncError() {
+        const overlay = document.getElementById('syncErrorOverlay');
+        if (overlay) {
+            overlay.classList.add('hidden');
+        }
+    }
+    
+    /**
+     * Retry sync from error overlay.
+     */
+    async retrySyncFromError() {
+        this.hideSyncError();
+        await this.checkCredentialsAndSync();
     }
     
     /**
@@ -417,13 +459,13 @@ class AnnotationViewer {
     }
     
     async ensureUserEmail() {
-        // Check already loaded from settings/localStorage
+        // User email comes from /api/settings (loaded in loadSettings())
         let userEmail = this.getUserEmail();
         
         if (!userEmail) {
-            // Prompt user for email
+            // Prompt user for email if not set in backend
             userEmail = prompt(
-                'Please enter your email address for identification:\n\n' +
+                'Please enter your name for identification:\n\n' +
                 'This is used to track which series you\'ve worked on and coordinate with other users.',
                 ''
             );
@@ -431,15 +473,12 @@ class AnnotationViewer {
             if (!userEmail || !userEmail.trim()) {
                 // User cancelled or entered empty - use a default
                 userEmail = `user_${Date.now()}@local`;
-                console.warn('No email provided, using temporary identifier:', userEmail);
+                console.warn('No name provided, using temporary identifier:', userEmail);
             } else {
                 userEmail = userEmail.trim();
             }
-            
-            // Store in localStorage
-            localStorage.setItem('userEmail', userEmail);
 
-            // Persist to backend (best-effort)
+            // Persist to backend (this saves to credentials.json)
             try {
                 await fetch('/api/settings', {
                     method: 'POST',
@@ -469,7 +508,6 @@ class AnnotationViewer {
             const data = await resp.json();
             if (data.user_email) {
                 this.userEmail = data.user_email;
-                localStorage.setItem('userEmail', data.user_email);
                 const emailInput = document.getElementById('settingsEmail');
                 if (emailInput) {
                     emailInput.value = data.user_email;
@@ -511,7 +549,6 @@ class AnnotationViewer {
             const data = await resp.json();
             if (data.user_email) {
                 this.userEmail = data.user_email;
-                localStorage.setItem('userEmail', data.user_email);
             }
             if (tokenStatus) {
                 tokenStatus.textContent = data.mdai_token_present ? 'Token: set' : 'Token: not set';
@@ -2427,11 +2464,11 @@ class AnnotationViewer {
      */
     
     /**
-     * Get user email from localStorage (set during init).
+     * Get user email (loaded from /api/settings at init).
      * This is sent in X-User-Email header to identify the user.
      */
     getUserEmail() {
-        return this.userEmail || localStorage.getItem('userEmail') || '';
+        return this.userEmail || '';
     }
     
     /**

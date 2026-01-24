@@ -39,6 +39,52 @@ TEMPLATE_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 
 
+def _get_credentials_path() -> Path:
+    """Get writable path for credentials file (iOS uses DATA_DIR, others use PROJECT_ROOT)."""
+    data_dir = os.environ.get("DATA_DIR")
+    if data_dir:
+        return Path(data_dir) / "credentials.json"
+    return PROJECT_ROOT / "credentials.json"
+
+
+def _load_credentials() -> dict:
+    """Load saved credentials from file."""
+    logger = logging.getLogger(__name__)
+    creds_file = _get_credentials_path()
+    logger.info(
+        f"Loading credentials from {creds_file}, exists={creds_file.exists()}"
+    )
+    if creds_file.exists():
+        try:
+            with open(creds_file) as f:
+                creds = json.load(f)
+            logger.info(
+                f"Loaded credentials: user_email={'set' if creds.get('user_email') else 'empty'}, token={'set' if creds.get('mdai_token') else 'empty'}"
+            )
+            return creds
+        except Exception as e:
+            logger.warning(f"Failed to load credentials: {e}")
+    return {}
+
+
+def _save_credentials(user_email: str = None, mdai_token: str = None) -> None:
+    """Save credentials to file for persistence across app restarts."""
+    logger = logging.getLogger(__name__)
+    creds = _load_credentials()
+    if user_email is not None:
+        creds["user_email"] = user_email
+    if mdai_token is not None:
+        creds["mdai_token"] = mdai_token
+    try:
+        creds_file = _get_credentials_path()
+        creds_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(creds_file, "w") as f:
+            json.dump(creds, f)
+        logger.info(f"Saved credentials to {creds_file}")
+    except Exception as e:
+        logger.warning(f"Failed to save credentials: {e}")
+
+
 class ClientContext:
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
@@ -57,7 +103,7 @@ class ClientContext:
 def create_app(config: Optional[ClientConfig] = None) -> Flask:
     """
     Create the Flask client application.
-    
+
     The frontend handles sync and credential checking:
     - Frontend checks credentials after connecting to backend
     - If credentials present -> frontend triggers sync via /api/dataset/sync
@@ -75,7 +121,21 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
     # Initialize client: don't sync on startup - frontend will handle it
     logger = logging.getLogger(__name__)
-    logger.info("Flask app created. Frontend will handle sync if credentials are present.")
+
+    # Load saved credentials
+    creds_path = _get_credentials_path()
+    logger.info(f"Credentials path: {creds_path}")
+    saved_creds = _load_credentials()
+    if saved_creds.get("user_email"):
+        context.user_email_override = saved_creds["user_email"]
+        logger.info(f"Loaded saved user_email: {saved_creds['user_email']}")
+    if saved_creds.get("mdai_token"):
+        context.dataset.set_token(saved_creds["mdai_token"])
+        logger.info("Loaded saved mdai_token")
+
+    logger.info(
+        "Flask app created. Frontend will handle sync if credentials are present."
+    )
 
     def _current_user_email() -> str:
         return context.current_user_email()
@@ -101,15 +161,18 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         try:
             import requests
             import os
+
             server_url = f"{config.server_url}/api/series"
-            
+
             # Add Cloudflare headers if configured
             headers = {}
             if config.cf_access_client_id:
                 headers["CF-Access-Client-Id"] = config.cf_access_client_id
             if config.cf_access_client_secret:
-                headers["CF-Access-Client-Secret"] = config.cf_access_client_secret
-            
+                headers["CF-Access-Client-Secret"] = (
+                    config.cf_access_client_secret
+                )
+
             resp = requests.get(server_url, headers=headers, timeout=5)
             if resp.ok:
                 server_data = resp.json()
@@ -123,15 +186,23 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
                         "status": item.get("status", "pending"),
                         "activity": activity,
                     }
-                logger.debug(f"Fetched {len(server_series_map)} series from server, {activity_count} with activity")
+                logger.debug(
+                    f"Fetched {len(server_series_map)} series from server, {activity_count} with activity"
+                )
             else:
-                logger.warning(f"Server returned {resp.status_code} when fetching activity data")
+                logger.warning(
+                    f"Server returned {resp.status_code} when fetching activity data"
+                )
         except requests.exceptions.Timeout:
-            logger.warning(f"Timeout connecting to {config.server_url} for activity data")
+            logger.warning(
+                f"Timeout connecting to {config.server_url} for activity data"
+            )
         except requests.exceptions.ConnectionError as e:
             logger.warning(f"Connection error to {config.server_url}: {e}")
         except Exception as e:
-            logger.warning(f"Failed to fetch activity data: {type(e).__name__}: {e}")
+            logger.warning(
+                f"Failed to fetch activity data: {type(e).__name__}: {e}"
+            )
 
         # Build video list with server data merged
         videos = []
@@ -243,10 +314,10 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             selected_video = None
 
         return render_template(
-            "viewer.html", 
-            videos=videos or [], 
+            "viewer.html",
+            videos=videos or [],
             selected_video=selected_video,
-            server_url=config.server_url
+            server_url=config.server_url,
         )
 
     @app.route("/no_videos")
@@ -267,7 +338,6 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             return jsonify({"error": "Dataset not ready"}), 503
         return jsonify(videos)
 
-
     @app.get("/api/video/<method>/<study_uid>/<series_uid>")
     def api_video(method: str, study_uid: str, series_uid: str):
         """
@@ -285,10 +355,7 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
         # Return server URL for frontend to call directly
         server_url = f"{config.server_url.rstrip('/')}/api/video/{method}/{study_uid}/{series_uid}"
-        return jsonify({
-            "server_url": server_url,
-            "local": True
-        })
+        return jsonify({"server_url": server_url, "local": True})
 
     @app.get("/api/frames/<method>/<study_uid>/<series_uid>")
     def api_frames(method: str, study_uid: str, series_uid: str):
@@ -303,9 +370,7 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             return jsonify({"error": "Series not found locally"}), 404
 
         # Return direct server URLs (no proxy)
-        frames_archive_url = (
-            f"{config.server_url.rstrip('/')}/api/frames_archive/{study_uid}/{series_uid}.tar"
-        )
+        frames_archive_url = f"{config.server_url.rstrip('/')}/api/frames_archive/{study_uid}/{series_uid}.tar"
         masks_archive_url = f"{config.server_url.rstrip('/')}/api/masks/{study_uid}/{series_uid}"
         return jsonify({
             "frames_archive_url": frames_archive_url,
@@ -325,7 +390,7 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
                 series_count = len(context.dataset.list_local_series())
             except DatasetNotReady:
                 has_data = False
-        
+
         return jsonify({
             "has_data": has_data,
             "series_count": series_count,
@@ -336,16 +401,19 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
     def debug_paths():
         """Debug endpoint to check file paths."""
         import glob as glob_mod
+
         video_cache = str(context.dataset.video_cache_path)
         project_id = config.project_id
         dataset_id = config.dataset_id
-        
+
         ann_pattern = f"{video_cache}/mdai_*_project_{project_id}_annotations_dataset_{dataset_id}_*.json"
         img_pattern = f"{video_cache}/mdai_*_project_{project_id}_images_dataset_{dataset_id}_*"
-        
+
         ann_matches = glob_mod.glob(ann_pattern)
-        img_matches = [d for d in glob_mod.glob(img_pattern) if Path(d).is_dir()]
-        
+        img_matches = [
+            d for d in glob_mod.glob(img_pattern) if Path(d).is_dir()
+        ]
+
         return jsonify({
             "video_cache": video_cache,
             "project_id": project_id,
@@ -361,21 +429,54 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         """
         Download/refresh the MD.ai dataset. Frames are produced by the server
         tracking pipeline; the client no longer extracts or caches frames.
+
+        Returns error_type on failure for frontend to distinguish:
+        - "invalid_token": Token is missing or rejected by MD.ai
+        - "network_error": Connection/timeout issues
+        - "other": Other errors
         """
         try:
             images_dir = context.dataset.sync_dataset()
             series = context.dataset.list_local_series()
+
+            # Save credentials after successful sync
+            token = context.dataset._token_override or context.config.mdai_token
+            _save_credentials(
+                user_email=_current_user_email(),
+                mdai_token=token
+                if token and token != "not_configured_yet"
+                else "",
+            )
+
             return jsonify({
                 "images_dir": str(images_dir),
                 "series_count": len(series),
                 "frames_extracted_for": [],  # no local extraction
             })
         except DatasetNotReady as e:
-            return jsonify({"error": str(e), "error_message": str(e)}), 503
+            return jsonify({
+                "error": str(e),
+                "error_message": str(e),
+                "error_type": "other",
+            }), 503
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.error(f"Dataset sync failed: {e}", exc_info=True)
-            return jsonify({"error": str(e), "error_message": str(e)}), 500
+
+            # Categorize error for frontend handling
+            error_str = str(e).lower()
+            if any(kw in error_str for kw in ["401", "unauthorized", "invalid", "token", "authentication", "forbidden", "403"]):
+                error_type = "invalid_token"
+            elif any(kw in error_str for kw in ["connection", "timeout", "network", "unreachable", "dns", "refused"]):
+                error_type = "network_error"
+            else:
+                error_type = "other"
+
+            return jsonify({
+                "error": str(e),
+                "error_message": str(e),
+                "error_type": error_type,
+            }), 500
 
     @app.get("/api/local/series")
     def local_series():
@@ -434,17 +535,20 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         try:
             import requests
             import os
+
             # Add Cloudflare headers if configured
             headers = {}
             if config.cf_access_client_id:
                 headers["CF-Access-Client-Id"] = config.cf_access_client_id
             if config.cf_access_client_secret:
-                headers["CF-Access-Client-Secret"] = config.cf_access_client_secret
-            
+                headers["CF-Access-Client-Secret"] = (
+                    config.cf_access_client_secret
+                )
+
             server_resp = requests.get(
                 f"{config.server_url}/api/dataset/version",
                 headers=headers,
-                timeout=5
+                timeout=5,
             )
             if server_resp.ok:
                 server_version = server_resp.json()
@@ -455,8 +559,15 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         # Only set in_sync if we can actually compare both versions
         # If server is unreachable, return None for in_sync (frontend will handle server connection warning separately)
         in_sync = None  # None means can't determine (server unreachable)
-        if client_version and server_version and "annotations_size" in server_version:
-            in_sync = client_version["annotations_size"] == server_version["annotations_size"]
+        if (
+            client_version
+            and server_version
+            and "annotations_size" in server_version
+        ):
+            in_sync = (
+                client_version["annotations_size"]
+                == server_version["annotations_size"]
+            )
 
         return jsonify({
             "client": client_version,
@@ -490,10 +601,12 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         if user_email is not None:
             email_clean = user_email.strip()
             context.user_email_override = email_clean or None
+            _save_credentials(user_email=email_clean or "")
 
         if mdai_token is not None:
             token_clean = mdai_token.strip()
             context.dataset.set_token(token_clean or None)
+            _save_credentials(mdai_token=token_clean or "")
 
         return jsonify({
             "user_email": _current_user_email(),
@@ -599,7 +712,7 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             mimetype="application/x-tar",
             headers={
                 "Content-Disposition": f"attachment; filename=masks_{study_uid}_{series_uid}.tar"
-            }
+            },
         )
 
     @app.post("/api/retrack/<study_uid>/<series_uid>")
@@ -623,7 +736,6 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         return jsonify({
             "error": "Retrack status uses study/series, not task_id. Update viewer.js."
         }), 400
-
 
     # Close resources when the process exits (avoid closing per-request)
     atexit.register(context.close)

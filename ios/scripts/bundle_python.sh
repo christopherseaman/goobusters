@@ -278,6 +278,15 @@ def main(port=8080):
         log(f"[iOS] Token present: {bool(config.mdai_token and config.mdai_token != 'not_configured_yet')}")
         
         log("[iOS] Creating Flask app...")
+        # Debug: check credentials path
+        data_dir = os.environ.get("DATA_DIR", "NOT SET")
+        creds_path = os.path.join(data_dir, "credentials.json") if data_dir != "NOT SET" else "UNKNOWN"
+        creds_exists = os.path.exists(creds_path) if data_dir != "NOT SET" else False
+        log(f"[iOS] Credentials path: {creds_path}, exists: {creds_exists}")
+        if creds_exists:
+            with open(creds_path) as f:
+                log(f"[iOS] Credentials content: {f.read()}")
+        
         # Frontend will handle sync after connecting to backend
         app = create_app(config=config)
         

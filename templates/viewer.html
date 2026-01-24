@@ -31,6 +31,19 @@
         </div>
     </div>
 
+    <!-- Sync error overlay (shown when sync fails but credentials are valid) -->
+    <div id="syncErrorOverlay" class="sync-error-overlay hidden">
+        <div class="sync-error-content">
+            <div class="sync-error-icon">⚠️</div>
+            <h2>Sync Failed</h2>
+            <p id="syncErrorMessage">Unable to sync dataset</p>
+            <div class="sync-error-actions">
+                <button class="sync-error-btn primary" onclick="viewer.retrySyncFromError()">Retry</button>
+                <button class="sync-error-btn" onclick="viewer.showConfigModal()">Update Credentials</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Full-screen canvas for video -->
     <canvas id="canvas"></canvas>
     <!-- Overlay canvas for mask (stacked on top) -->
@@ -160,7 +173,7 @@
                 <input type="email" id="settingsEmail" placeholder="you@ucsf.edu">
                 <label for="settingsToken">MD.ai API Token</label>
                 <input type="password" id="settingsToken" placeholder="Set or update token">
-                <p class="muted">Leave token blank to keep the current token. Token is stored for this session only.</p>
+                <p class="muted">Leave token blank to keep the current token. Token is saved persistently.</p>
                 <div class="token-status" id="tokenStatus">Token: unknown</div>
                 <div class="settings-actions">
                     <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
