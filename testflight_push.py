@@ -15,8 +15,11 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+import jwt
+import requests
 import yaml
 
 SCRIPT_DIR = Path(__file__).parent
@@ -52,6 +55,92 @@ def increment_build_number() -> str:
         plistlib.dump(plist, f)
     
     return new_version
+
+
+def get_build_number() -> str:
+    """Get current CFBundleVersion from Info.plist."""
+    with open(INFO_PLIST, "rb") as f:
+        plist = plistlib.load(f)
+    return plist.get("CFBundleVersion", "1")
+
+
+def get_last_commit_message() -> str:
+    """Get the last git commit message."""
+    result = subprocess.run(
+        ["git", "log", "-1", "--pretty=%B"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def set_test_notes(key_id: str, issuer_id: str, key_path: Path, bundle_id: str, build_number: str):
+    """Wait for build to process and set 'What to Test' from last commit message."""
+    # Generate JWT token
+    private_key = key_path.read_text()
+    token = jwt.encode(
+        {"iss": issuer_id, "exp": int(time.time()) + 1200, "aud": "appstoreconnect-v1"},
+        private_key,
+        algorithm="ES256",
+        headers={"kid": key_id},
+    )
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    api = "https://api.appstoreconnect.apple.com/v1"
+
+    # Get app ID
+    resp = requests.get(f"{api}/apps?filter[bundleId]={bundle_id}", headers=headers)
+    resp.raise_for_status()
+    app_id = resp.json()["data"][0]["id"]
+
+    # Wait for build to be processed
+    print(f"Waiting for build {build_number} to be processed", end="", flush=True)
+    build_id = None
+    for _ in range(30):  # 10 min max (30 * 20s)
+        resp = requests.get(f"{api}/apps/{app_id}/builds?limit=10", headers=headers)
+        resp.raise_for_status()
+        for build in resp.json().get("data", []):
+            if build["attributes"].get("version") == build_number:
+                if build["attributes"].get("processingState") == "VALID":
+                    build_id = build["id"]
+                    break
+        if build_id:
+            break
+        print(".", end="", flush=True)
+        time.sleep(20)
+    print()
+
+    if not build_id:
+        raise TimeoutError(f"Build {build_number} not ready after 10 minutes")
+    print(f"Build {build_number} ready")
+
+    # Get commit message and set "What to Test"
+    commit_msg = get_last_commit_message()
+    print(f"Setting test notes: {commit_msg[:60]}{'...' if len(commit_msg) > 60 else ''}")
+
+    # Get existing localization or create new
+    resp = requests.get(f"{api}/builds/{build_id}/betaBuildLocalizations", headers=headers)
+    resp.raise_for_status()
+    loc_id = None
+    for loc in resp.json().get("data", []):
+        if loc["attributes"].get("locale") == "en-US":
+            loc_id = loc["id"]
+            break
+
+    if loc_id:
+        payload = {"data": {"type": "betaBuildLocalizations", "id": loc_id, "attributes": {"whatsNew": commit_msg}}}
+        resp = requests.patch(f"{api}/betaBuildLocalizations/{loc_id}", headers=headers, json=payload)
+    else:
+        payload = {
+            "data": {
+                "type": "betaBuildLocalizations",
+                "attributes": {"locale": "en-US", "whatsNew": commit_msg},
+                "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+            }
+        }
+        resp = requests.post(f"{api}/betaBuildLocalizations", headers=headers, json=payload)
+    resp.raise_for_status()
+    print("Test notes set successfully")
 
 
 def main():
@@ -95,8 +184,8 @@ def main():
         # Increment build number
         print()
         print("=== Incrementing Build Number ===")
-        new_build = increment_build_number()
-        print(f"Build number: {new_build}")
+        build_number = increment_build_number()
+        print(f"Build number: {build_number}")
         
         # Bundle Python code
         print()
@@ -121,6 +210,9 @@ def main():
             print("Error: Archive failed")
             sys.exit(1)
         print(f"Archive created: {ARCHIVE_PATH}")
+    else:
+        build_number = get_build_number()
+        print(f"Using existing build: {build_number}")
 
     # Create ExportOptions.plist
     print()
@@ -163,9 +255,19 @@ def main():
     ], env=env)
 
     print()
-    print("=== Done ===")
     print("Build uploaded to App Store Connect")
-    print("Check TestFlight in App Store Connect for processing status")
+
+    # Set test notes after build is processed
+    print()
+    print("=== Setting Test Notes ===")
+    try:
+        set_test_notes(key_id, issuer_id, key_path, bundle_id, build_number)
+    except Exception as e:
+        print(f"Warning: Failed to set test notes: {e}")
+        print("Build uploaded but test notes not set. Set manually in App Store Connect.")
+
+    print()
+    print("=== Done ===")
 
 
 if __name__ == "__main__":

@@ -21,3 +21,5 @@ psutil  # For performance monitoring
 flask  # For annotation review web app
 httpx  # For test scripts (HTTP client)
 imageio[pyav]  # Video frame extraction (shared server/iOS)
+PyJWT  # JWT for App Store Connect API
+cryptography  # Required by PyJWT for ES256
