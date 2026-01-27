@@ -741,12 +741,18 @@ class AnnotationViewer {
         }
 
         // Drawing events (mouse)
-        this.canvas.addEventListener('mousedown', (e) => this.startDrawing(e));
+        this.canvas.addEventListener('mousedown', (e) => {
+            this.startDrawing(e);
+        });
         this.canvas.addEventListener('mousemove', (e) => {
-            if (this.isDrawing) this.draw(e);
+            if (this.isDrawing) {
+                this.draw(e);
+            }
             this.updateBrushPreview(e);
         });
-        this.canvas.addEventListener('mouseup', () => this.stopDrawing());
+        this.canvas.addEventListener('mouseup', (e) => {
+            this.stopDrawing();
+        });
         this.canvas.addEventListener('mouseleave', () => {
             this.stopDrawing();
             this.hideBrushPreview();

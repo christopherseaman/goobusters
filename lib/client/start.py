@@ -40,10 +40,24 @@ STATIC_DIR = PROJECT_ROOT / "static"
 
 
 def _get_credentials_path() -> Path:
-    """Get writable path for credentials file (iOS uses DATA_DIR, others use PROJECT_ROOT)."""
+    """Get writable path for credentials file.
+
+    Priority:
+    1. DATA_DIR environment variable (iOS/macOS app bundle)
+    2. macOS: ~/Library/Application Support/Goobusters/
+    3. Fallback: PROJECT_ROOT
+    """
     data_dir = os.environ.get("DATA_DIR")
     if data_dir:
         return Path(data_dir) / "credentials.json"
+
+    # On macOS, use Application Support directory
+    if sys.platform == "darwin":
+        home = Path.home()
+        app_support = home / "Library" / "Application Support" / "Goobusters"
+        app_support.mkdir(parents=True, exist_ok=True)
+        return app_support / "credentials.json"
+
     return PROJECT_ROOT / "credentials.json"
 
 
@@ -465,9 +479,30 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
             # Categorize error for frontend handling
             error_str = str(e).lower()
-            if any(kw in error_str for kw in ["401", "unauthorized", "invalid", "token", "authentication", "forbidden", "403"]):
+            if any(
+                kw in error_str
+                for kw in [
+                    "401",
+                    "unauthorized",
+                    "invalid",
+                    "token",
+                    "authentication",
+                    "forbidden",
+                    "403",
+                ]
+            ):
                 error_type = "invalid_token"
-            elif any(kw in error_str for kw in ["connection", "timeout", "network", "unreachable", "dns", "refused"]):
+            elif any(
+                kw in error_str
+                for kw in [
+                    "connection",
+                    "timeout",
+                    "network",
+                    "unreachable",
+                    "dns",
+                    "refused",
+                ]
+            ):
                 error_type = "network_error"
             else:
                 error_type = "other"

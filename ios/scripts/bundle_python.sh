@@ -211,8 +211,65 @@ Startup flow (handled by create_app):
 2. If credentials missing -> skip sync, show setup page
 3. If sync fails -> log error, show setup page for retry
 """
-import os
+# CRITICAL: Fix mimetypes sandbox issue FIRST, before ANY other imports
+# This must be the very first thing we do to prevent permission errors
 import sys
+
+# Import mimetypes and immediately prevent it from reading system files
+# This is the most reliable fix - clear knownfiles so it never tries to read /etc files
+import mimetypes
+
+# Clear the list of system files mimetypes tries to read
+# This prevents PermissionError in sandboxed macOS apps
+mimetypes.knownfiles = []
+
+# Also patch the read method as a safety net (in case something tries to read files directly)
+_original_MimeTypes_read = mimetypes.MimeTypes.read
+def _safe_MimeTypes_read(self, filename):
+    """Read mime.types file, catching permission errors in sandboxed environments."""
+    try:
+        return _original_MimeTypes_read(self, filename)
+    except (PermissionError, OSError, IOError):
+        # Silently skip files we can't read (sandbox restrictions)
+        return None
+mimetypes.MimeTypes.read = _safe_MimeTypes_read
+
+# Patch init() to use empty knownfiles by default
+_original_init = mimetypes.init
+def _safe_init(files=None):
+    """Initialize mimetypes without reading system files."""
+    mimetypes.inited = True
+    if files is None or mimetypes._db is None:
+        db = mimetypes.MimeTypes()
+        db.read_windows_registry()
+        # Use empty list if files not specified (don't read system files)
+        if files is None:
+            files = []
+        else:
+            files = list(files)
+    else:
+        db = mimetypes._db
+    
+    import os
+    # Only read files that are explicitly provided (and safe)
+    for file in files:
+        if os.path.isfile(file):
+            try:
+                db.read(file)
+            except (PermissionError, OSError, IOError):
+                # Skip files we can't read
+                pass
+    
+    mimetypes.encodings_map = db.encodings_map
+    mimetypes.suffix_map = db.suffix_map
+    mimetypes.types_map = db.types_map[True]
+    mimetypes.common_types = db.types_map[False]
+    mimetypes._db = db
+
+mimetypes.init = _safe_init
+
+# Now safe to import other modules
+import os
 import traceback
 
 # Add bundle path to Python path
@@ -292,13 +349,25 @@ def main(port=8080):
         
         log("[iOS] Starting Flask server...")
 
-        # Run Flask (this blocks)
-        app.run(host="127.0.0.1", port=port, threaded=True, use_reloader=False)
+        # Run Flask (this blocks) - wrap in try/except to log crashes
+        try:
+            app.run(host="127.0.0.1", port=port, threaded=True, use_reloader=False)
+        except KeyboardInterrupt:
+            log("[iOS] Flask server interrupted")
+            raise
+        except Exception as e:
+            log(f"[iOS] Flask server crashed: {e}")
+            with open(log_file, "a") as f:
+                traceback.print_exc(file=f)
+            traceback.print_exc()
+            # Exit - BackendManager will detect process death and restart
+            sys.exit(1)
     except Exception as e:
         log(f"[iOS] FAILED to start Flask: {e}")
         with open(log_file, "a") as f:
             traceback.print_exc(file=f)
         traceback.print_exc()
+        # Exit - BackendManager will detect process death and restart
         sys.exit(1)
 
 if __name__ == "__main__":
