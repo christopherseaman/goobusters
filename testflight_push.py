@@ -252,6 +252,7 @@ def main():
             str(DERIVED_DATA),
             "-archivePath",
             str(ARCHIVE_PATH),
+            "-allowProvisioningUpdates",
             "archive",
         ])
 
