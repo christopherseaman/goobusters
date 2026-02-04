@@ -1,11 +1,14 @@
 import SwiftUI
 import WebKit
+import os.log
 
 #if os(macOS)
 import AppKit
 #else
 import UIKit
 #endif
+
+private let logger = Logger(subsystem: "com.goobusters.app", category: "WebView")
 
 struct GoobustersView: View {
     @StateObject private var backendManager = BackendManager()
@@ -18,7 +21,7 @@ struct GoobustersView: View {
             
             // Always show WebView - frontend handles connection state
             // This prevents losing state when backend restarts
-            WebView(url: backendManager.serverURL)
+            WebView(url: backendManager.serverURL, isReady: backendManager.isReady)
                 .id("webview") // Use stable ID to prevent unnecessary reloads
                 .background(Color.black) // Ensure black background
                 .opacity(backendManager.isReady ? 1.0 : 0.0) // Hide when not ready, but keep alive
@@ -60,88 +63,172 @@ struct GoobustersView: View {
 #if os(macOS)
 struct WebView: NSViewRepresentable {
     let url: URL
-    
+    let isReady: Bool
+
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
-        
+
+        // Add JavaScript console logging
+        let contentController = config.userContentController
+        contentController.add(context.coordinator, name: "consoleLog")
+        let consoleScript = WKUserScript(
+            source: """
+                (function() {
+                    const originalLog = console.log;
+                    const originalError = console.error;
+                    const originalWarn = console.warn;
+                    console.log = function(...args) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'log', message: args.map(String).join(' ')});
+                        originalLog.apply(console, args);
+                    };
+                    console.error = function(...args) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'error', message: args.map(String).join(' ')});
+                        originalError.apply(console, args);
+                    };
+                    console.warn = function(...args) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'warn', message: args.map(String).join(' ')});
+                        originalWarn.apply(console, args);
+                    };
+                    window.onerror = function(msg, url, line, col, error) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'error', message: 'JS Error: ' + msg + ' at ' + url + ':' + line});
+                        return false;
+                    };
+                })();
+                """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        contentController.addUserScript(consoleScript)
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         // Set black background to prevent white flash
         webView.setValue(false, forKey: "drawsBackground")
-        // Load URL immediately when WebView is created
-        let request = URLRequest(url: url)
-        webView.load(request)
+        // Don't load URL here - wait for updateNSView when isReady
         return webView
     }
-    
+
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // Always reload if URL is different or if webView has no URL yet
+        // Reload when backend becomes ready OR if URL changes
         let currentURL = webView.url?.absoluteString ?? ""
         let targetURL = url.absoluteString
-        if currentURL != targetURL {
+        let needsLoad = currentURL != targetURL || (isReady && currentURL.isEmpty)
+
+        if isReady && needsLoad {
+            logger.info("WebView loading URL: \(targetURL) (isReady=\(self.isReady), currentURL=\(currentURL))")
             let request = URLRequest(url: url)
             webView.load(request)
         }
     }
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
-    
-    class Coordinator: NSObject, WKNavigationDelegate {
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            print("WebView navigation error: \(error.localizedDescription)")
+            logger.error("WebView navigation error: \(error.localizedDescription)")
         }
-        
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            print("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
+            logger.info("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "consoleLog", let body = message.body as? [String: Any] {
+                let level = body["level"] as? String ?? "log"
+                let msg = body["message"] as? String ?? ""
+                logger.info("[JS \(level)] \(msg)")
+            }
         }
     }
 }
 #else
 struct WebView: UIViewRepresentable {
     let url: URL
-    
+    let isReady: Bool
+
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
-        
+
+        // Add JavaScript console logging
+        let contentController = config.userContentController
+        contentController.add(context.coordinator, name: "consoleLog")
+        let consoleScript = WKUserScript(
+            source: """
+                (function() {
+                    const originalLog = console.log;
+                    const originalError = console.error;
+                    const originalWarn = console.warn;
+                    console.log = function(...args) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'log', message: args.map(String).join(' ')});
+                        originalLog.apply(console, args);
+                    };
+                    console.error = function(...args) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'error', message: args.map(String).join(' ')});
+                        originalError.apply(console, args);
+                    };
+                    console.warn = function(...args) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'warn', message: args.map(String).join(' ')});
+                        originalWarn.apply(console, args);
+                    };
+                    window.onerror = function(msg, url, line, col, error) {
+                        window.webkit.messageHandlers.consoleLog.postMessage({level: 'error', message: 'JS Error: ' + msg + ' at ' + url + ':' + line});
+                        return false;
+                    };
+                })();
+                """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        contentController.addUserScript(consoleScript)
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         // Set black background to prevent white flash
         webView.backgroundColor = .black
         webView.isOpaque = false
         webView.scrollView.backgroundColor = .black
-        // Load URL immediately when WebView is created
-        let request = URLRequest(url: url)
-        webView.load(request)
+        // Don't load URL here - wait for updateUIView when isReady
         return webView
     }
-    
+
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Always reload if URL is different or if webView has no URL yet
+        // Reload when backend becomes ready OR if URL changes
         let currentURL = webView.url?.absoluteString ?? ""
         let targetURL = url.absoluteString
-        if currentURL != targetURL {
+        let needsLoad = currentURL != targetURL || (isReady && currentURL.isEmpty)
+
+        if isReady && needsLoad {
+            logger.info("WebView loading URL: \(targetURL) (isReady=\(self.isReady), currentURL=\(currentURL))")
             let request = URLRequest(url: url)
             webView.load(request)
         }
     }
-    
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
-    
-    class Coordinator: NSObject, WKNavigationDelegate {
+
+    class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            print("WebView navigation error: \(error.localizedDescription)")
+            logger.error("WebView navigation error: \(error.localizedDescription)")
         }
-        
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            print("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
+            logger.info("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "consoleLog", let body = message.body as? [String: Any] {
+                let level = body["level"] as? String ?? "log"
+                let msg = body["message"] as? String ?? ""
+                logger.info("[JS \(level)] \(msg)")
+            }
         }
     }
 }

@@ -57,7 +57,7 @@ class AnnotationViewer {
         this.frameCache = new Map(); // frameNum -> {frameImage, maskImageData, maskType, originalMaskImageData, originalMaskType, canvasWidth, canvasHeight}
         this.framesArchive = null; // Extracted frames from tar
         this.masksArchive = {}; // Masks from tar archive (webp images)
-        this.currentVersionId = null; // Track version ID from server for optimistic locking
+        this.versionIds = new Map(); // Map<videoKey, versionId> - per-series version tracking
         this.activityPingInterval = null; // Interval ID for activity pings (30s)
         this.userEmail = null; // User email for identification (from /api/settings)
 
@@ -636,16 +636,29 @@ class AnnotationViewer {
             videoSelect.addEventListener('change', async (e) => {
                 const [method, studyUid, seriesUid] = e.target.value.split('|');
                 try {
-                    // Mark activity immediately when selecting from dropdown
-                    const activityResponse = await this.markSeriesActivity(studyUid, seriesUid);
-                    // Update warnings from activity response
-                    if (activityResponse && activityResponse.ok) {
-                        const activityData = await activityResponse.json().catch(() => null);
-                        if (activityData) {
-                            await this.updateMultiplayerWarning(activityData);
+                    // Fetch series detail from server to get version_id
+                    const seriesResp = await this.fetchToServer(`api/series/${studyUid}/${seriesUid}`);
+                    let serverVersionId = null;
+                    if (seriesResp.ok) {
+                        const seriesData = await seriesResp.json();
+                        serverVersionId = seriesData.version_id;
+                        // Update warnings from activity data in response
+                        if (seriesData.activity) {
+                            await this.updateMultiplayerWarning(seriesData);
                         }
                     }
+
+                    // Mark activity when selecting from dropdown
+                    await this.markSeriesActivity(studyUid, seriesUid);
+
                     await this.loadVideo(method, studyUid, seriesUid);
+
+                    // Set version_id from server (server is definitive source)
+                    if (serverVersionId !== undefined) {
+                        this.setCurrentVersionId(serverVersionId);
+                        console.log(`[Version] Loaded from server (dropdown): ${serverVersionId}`);
+                    }
+
                     // Success - hide connection warning if shown
                     this.hideServerConnectionWarning();
                     // Close modal after selection
@@ -1687,10 +1700,10 @@ class AnnotationViewer {
 
             const allResponse = await this.fetchToServer(`api/masks/${studyUid}/${seriesUid}`, {
                 method: 'POST',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/x-tar',
                     'X-User-Email': this.getUserEmail(),
-                    'X-Previous-Version-ID': this.currentVersionId || ''
+                    'X-Previous-Version-ID': this.getCurrentVersionId() || ''
                 },
                 body: archiveData
             });
@@ -1700,7 +1713,7 @@ class AnnotationViewer {
                 console.log(`✅ Saved and queued retrack: ${result.version_id}`);
 
                 // Update version ID for next save
-                this.currentVersionId = result.version_id;
+                this.setCurrentVersionId(result.version_id);
 
                 // DO NOT clear modified frames yet - wait for retrack to complete
                 // Edits are only committed when retrack succeeds (atomic operation)
@@ -2456,6 +2469,12 @@ class AnnotationViewer {
             // Note: loadVideo() will also mark activity (redundant but safe)
             // Connection screen stays visible during loadVideo - it will be hidden after video is loaded
             await this.loadVideo(method, data.study_uid, data.series_uid);
+
+            // Set version_id from server response (server is definitive source for mask versions)
+            if (data.version_id !== undefined) {
+                this.setCurrentVersionId(data.version_id);
+                console.log(`[Version] Loaded from server: ${data.version_id}`);
+            }
             // Video is now loaded and rendered - connection screen will be hidden by caller
         } catch (error) {
             console.error('Error loading next series:', error);
@@ -2668,6 +2687,41 @@ class AnnotationViewer {
         return this.modifiedFrames.get(videoKey);
     }
 
+    getCurrentVersionId() {
+        if (!this.currentVideo) {
+            console.warn('getCurrentVersionId called with no currentVideo');
+            return null;
+        }
+        const videoKey = this.getVideoKey(
+            this.currentVideo.method,
+            this.currentVideo.studyUid,
+            this.currentVideo.seriesUid
+        );
+        const versionId = this.versionIds.get(videoKey) || null;
+        console.log(`[Version] GET ${videoKey}: ${versionId}`);
+        return versionId;
+    }
+
+    setCurrentVersionId(versionId) {
+        if (!this.currentVideo) {
+            console.warn('setCurrentVersionId called with no currentVideo');
+            return;
+        }
+        const videoKey = this.getVideoKey(
+            this.currentVideo.method,
+            this.currentVideo.studyUid,
+            this.currentVideo.seriesUid
+        );
+
+        if (versionId) {
+            this.versionIds.set(videoKey, versionId);
+            console.log(`[Version] SET ${videoKey}: ${versionId}`);
+        } else {
+            this.versionIds.delete(videoKey);
+            console.log(`[Version] CLEAR ${videoKey}`);
+        }
+    }
+
     async loadVideo(method, studyUid, seriesUid, skipModifiedFrames = false) {
         // Stop activity pings for previous video (if any)
         this.stopActivityPings();
@@ -2679,7 +2733,6 @@ class AnnotationViewer {
         this.frameCache.clear();
         this.framesArchive = null;
         this.masksArchive = {};
-        this.currentVersionId = null; // Reset version ID - will be set from server response
         this.currentVideo = { method, studyUid, seriesUid };
         // Load video data first so we know which frames are modified
         await this.loadVideoData(skipModifiedFrames);
@@ -2804,9 +2857,10 @@ class AnnotationViewer {
                 } else {
                 const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
                     const masksTarData = new Uint8Array(masksArrayBuffer);
-                    
+
                     // Store version ID from response headers for optimistic locking
-                    this.currentVersionId = masksArchiveResponse.headers.get('X-Version-ID') || null;
+                    const serverVersionId = masksArchiveResponse.headers.get('X-Version-ID') || null;
+                    this.setCurrentVersionId(serverVersionId);
 
                     let metadataBytes = null;
 

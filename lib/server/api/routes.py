@@ -47,13 +47,17 @@ from server.storage.series_manager import SeriesManager, SeriesMetadata
 from server.tracking_worker import trigger_lazy_tracking
 
 
-def _serialize_series(metadata: SeriesMetadata) -> dict:
-    payload = asdict(metadata)
-    return payload
-
-
 def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
     bp = Blueprint("distributed_api", __name__)
+
+    def _serialize_series(metadata: SeriesMetadata) -> dict:
+        """Serialize series metadata including version_id from server."""
+        payload = asdict(metadata)
+        # Add version_id from server (definitive source for mask versions)
+        payload["version_id"] = series_manager.get_version_id(
+            metadata.study_uid, metadata.series_uid
+        )
+        return payload
 
     # Register error handler to catch all exceptions in this blueprint
     @bp.errorhandler(Exception)
