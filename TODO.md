@@ -6,9 +6,14 @@
 
 - [ ] Test completion workflow end-to-end (mark complete → verify skipped in next → reopen → verify available again)
 
+### High Priority Bugfixes
+
+- [ ] Version mismatch error root cause? Client shows version unknown. Was able to reproduce by edit + save/retrack on one client, then attempt edit + save on second client for a different series. Series updates should not conflict. Are we updating a global version instead of per-series version?
+- [ ] Disable mark as complete when changes have not been saved/retracked
+- [ ] Incorrect error message when sync completes (can pull from md.ai) but server unresponsive. Currently shows "load failed" when sync works but server can't be reached.
+
 ### iPad App
 
-- [ ] Incorrect error message when sync completes (can pull from md.ai) but server unresponsive. Currently shows "load failed" when sync works but server can't be reached.
 - [ ] "Connection to server lost" (changes are saved locally) should retry server connection in background. Lost connect should drop to blocking modal after N retries. (think this was done, but wasn't the flow experienced when using app then putting it down and picking it back up)
 - [ ] UI to scale with device (landscape only for now), to allow larger devices (iPad Pro 12.9", etc) and iphones
 - [ ] **C1: Runtime wrapper** - Package Python runtime (Pyto or Pyodide-on-iOS) + native shell that launches backend and WebView
