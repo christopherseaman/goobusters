@@ -1778,7 +1778,13 @@ class AnnotationViewer {
                 console.log('Retrack complete, reloading...');
                 // Keep loading visible during reload
                 this.showRetrackLoading('Reloading retracked masks...');
-                
+
+                // Update version_id from retrack status (server is definitive source)
+                if (status.version_id) {
+                    this.setCurrentVersionId(status.version_id);
+                    console.log(`[Version] Updated after retrack: ${status.version_id}`);
+                }
+
                 // Clear edits only after retrack completes successfully (atomic operation)
                 const { studyUid, seriesUid, method } = this.currentVideo;
                 const videoKey = this.getVideoKey(method, studyUid, seriesUid);
