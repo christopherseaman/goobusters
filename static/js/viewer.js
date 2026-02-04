@@ -2864,9 +2864,13 @@ class AnnotationViewer {
                 const masksArrayBuffer = await masksArchiveResponse.arrayBuffer();
                     const masksTarData = new Uint8Array(masksArrayBuffer);
 
-                    // Store version ID from response headers for optimistic locking
-                    const serverVersionId = masksArchiveResponse.headers.get('X-Version-ID') || null;
-                    this.setCurrentVersionId(serverVersionId);
+                    // NOTE: version_id is intentionally NOT set from X-Version-ID header here.
+                    // The definitive version_id comes from API responses:
+                    // - /api/series/next (loadNextSeries)
+                    // - /api/series/{study}/{series} (dropdown selection)
+                    // - save response (saveChanges)
+                    // - retrack status (pollRetrackStatus)
+                    // Setting it from the masks archive could overwrite correct values with stale ones.
 
                     let metadataBytes = null;
 
