@@ -22,6 +22,7 @@ struct GoobustersView: View {
             // Always show WebView - frontend handles connection state
             // This prevents losing state when backend restarts
             WebView(url: backendManager.serverURL, isReady: backendManager.isReady)
+                .ignoresSafeArea()
                 .id("webview") // Use stable ID to prevent unnecessary reloads
                 .background(Color.black) // Ensure black background
                 .opacity(backendManager.isReady ? 1.0 : 0.0) // Hide when not ready, but keep alive

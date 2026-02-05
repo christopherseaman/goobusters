@@ -5,6 +5,76 @@
     -webkit-tap-highlight-color: transparent;
 }
 
+:root {
+    /* Scaling anchor: viewport height (vh) — the constraining dimension in landscape
+       iPhone SE:        320px → 1vh = 3.2px
+       iPhone 14:        390px → 1vh = 3.9px
+       iPad 10th gen:    820px → 1vh = 8.2px
+       iPad Pro 12.9":  1024px → 1vh = 10.24px
+    */
+
+    /* Button sizing: 44px min (Apple HIG touch target), 72px max */
+    --btn-size: clamp(44px, 8vh, 72px);
+    --btn-font: clamp(22px, 4vh, 36px);
+    --btn-radius: clamp(8px, 1.5vh, 14px);
+    --btn-gap: clamp(4px, 1vh, 10px);
+
+    /* Toolbar containers */
+    --toolbar-padding: clamp(6px, 1.5vh, 14px);
+    --toolbar-radius: clamp(8px, 1.5vh, 14px);
+
+    /* Corner offsets */
+    --edge-offset: clamp(6px, 1.5vh, 14px);
+
+    /* Safe area insets (0 on devices without notches) */
+    --sai-top: env(safe-area-inset-top, 0px);
+    --sai-right: env(safe-area-inset-right, 0px);
+    --sai-bottom: env(safe-area-inset-bottom, 0px);
+    --sai-left: env(safe-area-inset-left, 0px);
+
+    /* Slider/timeline */
+    --slider-height: clamp(18px, 3vh, 28px);
+    --slider-thumb: clamp(18px, 3vh, 28px);
+    --slider-container-padding: clamp(12px, 2.5vh, 24px);
+    --slider-landscape-inset: clamp(40px, 8vh, 100px);
+
+    /* Brush size slider (vertical) */
+    --brush-slider-height: clamp(100px, 22vh, 200px);
+    --brush-slider-width: clamp(48px, 9vh, 80px);
+    --brush-track-height: clamp(80px, 17vh, 160px);
+
+    /* Badge/label sizing */
+    --badge-font: clamp(14px, 2.5vh, 24px);
+    --badge-padding-v: clamp(5px, 1.2vh, 10px);
+    --badge-padding-h: clamp(8px, 1.8vh, 16px);
+    --badge-min-width: clamp(56px, 12vh, 110px);
+    --badge-top: clamp(36px, 7.5vh, 72px);
+
+    /* Frame labels and counters */
+    --label-font: clamp(12px, 2.2vh, 20px);
+    --label-min-width: clamp(28px, 5vh, 48px);
+    --counter-font: clamp(10px, 1.7vh, 16px);
+
+    /* Slider type bar inset */
+    --type-bar-inset: clamp(36px, 7vh, 64px);
+
+    /* Modal */
+    --modal-padding: clamp(20px, 4vh, 44px);
+    --modal-max-width: clamp(400px, 60vw, 720px);
+
+    /* Warning banners */
+    --warning-padding-v: clamp(4px, 1vh, 10px);
+    --warning-padding-h: clamp(6px, 1.5vh, 14px);
+    --warning-font: clamp(11px, 1.7vh, 16px);
+
+    /* Bottom-left offset (above slider) */
+    --bottom-left-bottom: clamp(60px, 12vh, 110px);
+
+    /* Brush slider indicator dots */
+    --indicator-large: clamp(20px, 4vh, 36px);
+    --indicator-small: clamp(12px, 2.2vh, 20px);
+}
+
 html, body {
     width: 100%;
     height: 100%;
@@ -64,52 +134,52 @@ html, body {
 .tool-buttons, .control-buttons, .save-button {
     position: fixed;
     display: flex;
-    gap: 8px;
+    gap: var(--btn-gap);
     z-index: 99;  /* Below slider */
-    padding: 12px;
+    padding: var(--toolbar-padding);
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
-    border-radius: 12px;
+    border-radius: var(--toolbar-radius);
     transition: all 0.3s ease;
 }
 
 .top-left {
-    top: 12px;
-    left: 12px;
+    top: calc(var(--edge-offset) + var(--sai-top));
+    left: calc(var(--edge-offset) + var(--sai-left));
     flex-direction: column;
     align-items: center;
 }
 
 .bottom-left {
-    bottom: 100px;
-    left: 12px;
+    bottom: var(--bottom-left-bottom);
+    left: calc(var(--edge-offset) + var(--sai-left));
     flex-direction: column;
     align-items: center;
 }
 
 .frame-counter {
-    margin-top: 8px;
-    font-size: 14px;
+    margin-top: var(--btn-gap);
+    font-size: var(--counter-font);
     color: #fff;
     text-align: center;
     font-family: monospace;
 }
 
 .top-right {
-    top: 12px;
-    right: 12px;
+    top: calc(var(--edge-offset) + var(--sai-top));
+    right: calc(var(--edge-offset) + var(--sai-right));
     flex-direction: column;
 }
 
 .control-buttons.right-center {
     top: 33.33%;
-    right: 12px;
+    right: calc(var(--edge-offset) + var(--sai-right));
     transform: translateY(-50%);
     flex-direction: column;
 }
 
 .top-center {
-    top: 12px;
+    top: calc(var(--edge-offset) + var(--sai-top));
     left: 66%;
     transform: translateX(-50%);
     flex-direction: row;
@@ -122,17 +192,17 @@ html, body {
 
 .control-badge {
     position: fixed;
-    top: 60px; /* Moved down to avoid warning banners */
-    right: 12px;
-    padding: 9px 15px; /* Increased 50% (6->9, 10->15) */
+    top: calc(var(--badge-top) + var(--sai-top));
+    right: calc(var(--edge-offset) + var(--sai-right));
+    padding: var(--badge-padding-v) var(--badge-padding-h);
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.85);
     border: 2px solid rgba(255, 255, 255, 0.2);
     color: #fff;
     font-weight: 700;
-    font-size: 21px; /* Increased 50% (14->21) */
+    font-size: var(--badge-font);
     letter-spacing: 0.5px;
-    min-width: 96px; /* Increased 50% (64->96) */
+    min-width: var(--badge-min-width);
     z-index: 121; /* Above warning banners (120) */
     text-align: center;
 }
@@ -150,13 +220,13 @@ html, body {
 
 /* Tool and control buttons */
 .tool-btn, .control-btn {
-    width: 64px;
-    height: 64px;
+    width: var(--btn-size);
+    height: var(--btn-size);
     border: none;
-    border-radius: 12px;
+    border-radius: var(--btn-radius);
     background: transparent; /* Transparent - toolbar container provides background */
     color: #fff;
-    font-size: 32px;
+    font-size: var(--btn-font);
     cursor: pointer;
     transition: all 0.2s;
     display: flex;
@@ -249,23 +319,23 @@ html, body {
 .playback-buttons {
     position: fixed;
     display: flex;
-    gap: 8px;
+    gap: var(--btn-gap);
     z-index: 99;  /* Below slider */
-    padding: 12px;
+    padding: var(--toolbar-padding);
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(10px);
-    border-radius: 12px;
+    border-radius: var(--toolbar-radius);
     transition: all 0.3s ease;
 }
 
 .playback-btn {
-    width: 64px;
-    height: 64px;
+    width: var(--btn-size);
+    height: var(--btn-size);
     border: none;
-    border-radius: 12px;
+    border-radius: var(--btn-radius);
     background: rgba(0, 0, 0, 0.7); /* Black background for all buttons */
     color: #fff;
-    font-size: 32px;
+    font-size: var(--btn-font);
     cursor: pointer;
     transition: all 0.2s;
     display: flex;
@@ -292,10 +362,10 @@ html, body {
 /* Frame slider */
 .slider-container {
     position: fixed;
-    bottom: 0;
+    bottom: var(--sai-bottom);
     left: 0;
     right: 0;
-    padding: 20px;
+    padding: var(--slider-container-padding);
     background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
     z-index: 101;  /* Above overlay canvas */
 }
@@ -308,24 +378,24 @@ html, body {
 }
 
 .slider-label {
-    font-size: 18px;
+    font-size: var(--label-font);
     font-weight: bold;
     color: #4CAF50;
     font-variant-numeric: tabular-nums;
-    min-width: 40px;
+    min-width: var(--label-min-width);
     text-align: center;
 }
 
 /* Background bar for frame type indicators */
 .slider-type-bar {
     position: absolute;
-    left: 56px; /* After min label */
-    right: 56px; /* Before max label */
+    left: var(--type-bar-inset);
+    right: var(--type-bar-inset);
     top: 50%;
     transform: translateY(-50%);
-    height: 24px; /* Match thumb height for larger click target */
+    height: var(--slider-height);
     pointer-events: none;
-    border-radius: 12px;
+    border-radius: calc(var(--slider-height) / 2);
     z-index: 0;
 }
 
@@ -338,7 +408,7 @@ html, body {
 
 #frameSlider {
     width: 100%;
-    height: 24px;  /* Match thumb height for larger click target */
+    height: var(--slider-height);
     -webkit-appearance: none;
     appearance: none;
     background: transparent;  /* Transparent, type bar shows colors */
@@ -358,8 +428,8 @@ html, body {
     background: transparent;  /* Transparent - scrubline drawn on type bar canvas */
     border: none;
     border-radius: 2px;
-    margin-top: 10.5px; /* Center vertically: (24px - 3px) / 2 = 10.5px */
-    margin-bottom: 10.5px; /* Match top margin for centering */
+    margin-top: calc((var(--slider-height) - 3px) / 2);
+    margin-bottom: calc((var(--slider-height) - 3px) / 2);
 }
 
 #frameSlider::-moz-range-track {
@@ -373,21 +443,21 @@ html, body {
 #frameSlider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 24px;
-    height: 24px;
+    width: var(--slider-thumb);
+    height: var(--slider-thumb);
     background: #4CAF50;
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 0 10px rgba(76, 175, 80, 0.8);
-    margin-top: -10.5px; /* Center on track: (24px - 3px) / 2 = 10.5px */
-    margin-bottom: -10.5px; /* Match top margin for centering */
+    margin-top: calc((var(--slider-thumb) - 3px) / -2);
+    margin-bottom: calc((var(--slider-thumb) - 3px) / -2);
     position: relative;
     z-index: 2;
 }
 
 #frameSlider::-moz-range-thumb {
-    width: 24px;
-    height: 24px;
+    width: var(--slider-thumb);
+    height: var(--slider-thumb);
     background: #4CAF50;
     border-radius: 50%;
     cursor: pointer;
@@ -399,8 +469,8 @@ html, body {
 
 .frame-info {
     text-align: center;
-    margin-top: 8px;
-    font-size: 18px;
+    margin-top: var(--btn-gap);
+    font-size: var(--label-font);
     font-weight: bold;
     color: #4CAF50;
     font-variant-numeric: tabular-nums;
@@ -430,14 +500,14 @@ html, body {
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 20px;
+    padding: var(--modal-padding);
 }
 
 .modal-content {
     background: #1a1a1a;
     border-radius: 16px;
     padding: 32px;
-    max-width: 600px;
+    max-width: var(--modal-max-width);
     width: 100%;
     margin: 40px auto;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
@@ -690,7 +760,7 @@ kbd {
 
 /* Spacer between tools and slider */
 .slider-spacer {
-    height: 12px;
+    height: var(--toolbar-padding);
     width: 100%;
 }
 
@@ -700,20 +770,20 @@ kbd {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 180px;
-    width: 72px;
+    height: var(--brush-slider-height);
+    width: var(--brush-slider-width);
     gap: 6px;
 }
 
 .slider-indicator-top {
-    font-size: 32px;
+    font-size: var(--indicator-large);
     line-height: 1;
     color: rgba(255, 255, 255, 0.7);
     user-select: none;
 }
 
 .slider-indicator-bottom {
-    font-size: 18px;
+    font-size: var(--indicator-small);
     line-height: 1;
     color: rgba(255, 255, 255, 0.7);
     user-select: none;
@@ -723,7 +793,7 @@ kbd {
     -webkit-appearance: slider-vertical;
     writing-mode: bt-lr;
     width: 12px;
-    height: 140px;
+    height: var(--brush-track-height);
     background: rgba(255, 255, 255, 0.2);
     border-radius: 6px;
     outline: none;
@@ -748,31 +818,11 @@ kbd {
     border: none;
 }
 
-/* iPad-specific optimizations */
-@media (min-width: 768px) {
-    .tool-btn, .control-btn {
-        width: 64px;
-        height: 64px;
-        font-size: 32px;
-    }
-    
-    .playback-btn {
-        width: 64px;
-        height: 64px;
-        font-size: 32px;
-    }
-
-    .modal-content {
-        max-width: 700px;
-        padding: 40px;
-    }
-}
-
 /* Landscape orientation */
 @media (orientation: landscape) {
     .slider-container {
-        left: 80px;
-        right: 80px;
+        left: calc(var(--slider-landscape-inset) + var(--sai-left));
+        right: calc(var(--slider-landscape-inset) + var(--sai-right));
     }
 }
 
@@ -1101,14 +1151,16 @@ kbd {
 
 .dataset-warning {
     position: fixed;
-    top: 0;
+    top: var(--sai-top);
     left: 0;
     right: 0;
     z-index: 120;
-    padding: 8px 12px;
+    padding: var(--warning-padding-v) var(--warning-padding-h);
+    padding-left: calc(var(--warning-padding-h) + var(--sai-left));
+    padding-right: calc(var(--warning-padding-h) + var(--sai-right));
     background: rgba(255, 193, 7, 0.95);
     color: #000;
-    font-size: 14px;
+    font-size: var(--warning-font);
     text-align: center;
     font-weight: 600;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
@@ -1120,14 +1172,16 @@ kbd {
 
 .multiplayer-warning {
     position: fixed;
-    top: 0;
+    top: var(--sai-top);
     left: 0;
     right: 0;
     z-index: 119; /* Below dataset warning (120) */
-    padding: 8px 12px;
+    padding: var(--warning-padding-v) var(--warning-padding-h);
+    padding-left: calc(var(--warning-padding-h) + var(--sai-left));
+    padding-right: calc(var(--warning-padding-h) + var(--sai-right));
     background: rgba(255, 152, 0, 0.95); /* Orange warning */
     color: #000;
-    font-size: 14px;
+    font-size: var(--warning-font);
     text-align: center;
     font-weight: 600;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);

@@ -72,6 +72,8 @@ class AnnotationViewer {
         this.serverConnectionRetryCount = 0;
         this.serverConnectionRetryTimeout = null;
         this.serverConnectionWarningVisible = false;
+        this.reconnectPingInterval = null;
+        this.needsRemoteServerConnection = false;
 
         this.init();
     }
@@ -159,9 +161,17 @@ class AnnotationViewer {
     }
 
     resizeCanvas() {
-        // Main canvas sized to viewport for rendering
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
+        const dpr = window.devicePixelRatio || 1;
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+
+        // Set canvas backing store to physical pixels for crisp Retina rendering
+        this.canvas.width = w * dpr;
+        this.canvas.height = h * dpr;
+
+        // Scale context so drawing code uses logical (CSS) coordinates
+        this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
         // Overlay canvas will be sized to image dimensions in goToFrame()
         if (this.frameImage) {
             this.render();
@@ -224,11 +234,19 @@ class AnnotationViewer {
             }
             
             await new Promise(resolve => setTimeout(resolve, 500));
-            
+
             await this.populateVideoSelectFromLocal();
             await this.refreshAllSeriesStatuses();
-            await this.loadNextSeries();
-            this.hideServerConnectionScreen();
+
+            // Server-dependent: loadNextSeries talks to remote server
+            // If server is unreachable, show connection screen (not "Sync Failed")
+            try {
+                await this.loadNextSeries();
+                this.hideServerConnectionScreen();
+            } catch (serverError) {
+                console.warn('Server unreachable after sync:', serverError.message);
+                await this.connectToRemoteServerWithRetry();
+            }
         } catch (error) {
             console.error('Error checking credentials/sync:', error);
             // Network errors during fetch - show retry UI
@@ -386,7 +404,37 @@ class AnnotationViewer {
         
         return await attemptConnection();
     }
-    
+
+    /**
+     * Retry connecting to the REMOTE server with a 30s timeout.
+     * Pings api/status every 3s. On success, loads next series.
+     * After 30s, stops and shows "Server unavailable" — user can tap emoji to retry.
+     */
+    async connectToRemoteServerWithRetry() {
+        this.needsRemoteServerConnection = true;
+        this.showServerConnectionScreen('Connecting to server...');
+        const deadline = Date.now() + 30000;
+        const interval = 3000;
+
+        while (Date.now() < deadline) {
+            try {
+                const resp = await this.fetchToServer('api/status');
+                if (resp.ok) {
+                    this.needsRemoteServerConnection = false;
+                    await this.loadNextSeries();
+                    this.hideServerConnectionScreen();
+                    return;
+                }
+            } catch (e) {
+                // Still unreachable
+            }
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
+            await new Promise(r => setTimeout(r, Math.min(interval, remaining)));
+        }
+        this.showServerConnectionScreen('Server unavailable');
+    }
+
     /**
      * Show blocking server connection screen.
      */
@@ -461,9 +509,10 @@ class AnnotationViewer {
                 warning.classList.remove('hidden');
                 this.serverConnectionWarningVisible = true;
             }
+            this.startServerReconnectPings();
         }
     }
-    
+
     /**
      * Hide server connection warning.
      */
@@ -472,6 +521,39 @@ class AnnotationViewer {
         if (warning) {
             warning.classList.add('hidden');
             this.serverConnectionWarningVisible = false;
+        }
+        this.stopServerReconnectPings();
+    }
+
+    /**
+     * Background pings while warning banner is visible.
+     * Auto-dismisses the banner when server comes back.
+     */
+    startServerReconnectPings() {
+        if (this.reconnectPingInterval) return;
+        const started = Date.now();
+        this.reconnectPingInterval = setInterval(async () => {
+            try {
+                const resp = await this.fetchToServer('api/status');
+                if (resp.ok) {
+                    this.hideServerConnectionWarning();
+                    return;
+                }
+            } catch (e) { /* still down */ }
+            // Escalate to blocking after 30s
+            if (Date.now() - started >= 30000) {
+                this.stopServerReconnectPings();
+                this.hideServerConnectionWarning();
+                this.showServerConnectionScreen('Server unavailable');
+                this.needsRemoteServerConnection = true;
+            }
+        }, 10000);
+    }
+
+    stopServerReconnectPings() {
+        if (this.reconnectPingInterval) {
+            clearInterval(this.reconnectPingInterval);
+            this.reconnectPingInterval = null;
         }
     }
     
@@ -697,8 +779,11 @@ class AnnotationViewer {
         const serverConnectionSpinner = document.getElementById('serverConnectionSpinner');
         if (serverConnectionSpinner) {
             serverConnectionSpinner.addEventListener('click', async () => {
-                // Force immediate attempt (don't reset retry count, just force retry)
-                await this.connectToServerWithRetry(true);
+                if (this.needsRemoteServerConnection) {
+                    await this.connectToRemoteServerWithRetry();
+                } else {
+                    await this.connectToServerWithRetry(true);
+                }
             });
         }
         
@@ -991,7 +1076,7 @@ class AnnotationViewer {
             
             // Set canvas size to match slider width
             typeBar.width = sliderRect.width;
-            typeBar.height = 24; // Match thumb height
+            typeBar.height = slider.offsetHeight || 24;
             
             const ctx = typeBar.getContext('2d');
             const width = typeBar.width;
@@ -1245,8 +1330,8 @@ class AnnotationViewer {
     }
 
     render() {
-        // Clear both canvases
-        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        // Clear both canvases (main canvas uses logical dimensions due to DPR transform)
+        this.ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
         this.overlayCtx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
 
         if (!this.frameImage) return;
