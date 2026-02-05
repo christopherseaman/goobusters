@@ -139,6 +139,23 @@ class AnnotationViewer {
             saveBtn.classList.remove('unsaved');
             saveBtn.classList.remove('success');
         }
+        this.updateMarkCompleteButtonState();
+    }
+
+    updateMarkCompleteButtonState() {
+        const btn = document.getElementById('markComplete');
+        if (!btn) return;
+        const hasUnsaved = this.hasUnsavedChangesForCurrentVideo();
+        const isCompleted = this.videoData && this.videoData.status === 'completed';
+        if (hasUnsaved || isCompleted) {
+            btn.classList.add('disabled');
+            btn.title = hasUnsaved
+                ? 'Save changes before marking complete'
+                : 'Series already complete';
+        } else {
+            btn.classList.remove('disabled');
+            btn.title = 'Mark Complete & Get Next Series';
+        }
     }
 
     resizeCanvas() {
@@ -1837,6 +1854,11 @@ class AnnotationViewer {
         if (!this.currentVideo) {
             return;
         }
+        // Block completion if there are unsaved changes
+        if (this.hasUnsavedChangesForCurrentVideo()) {
+            alert('Please save your changes before marking this series as complete.');
+            return;
+        }
         // If already completed, show reopen option instead
         if (this.videoData && this.videoData.status === 'completed') {
             if (confirm('This series is already marked as complete. Reopen it for editing?')) {
@@ -1925,23 +1947,24 @@ class AnnotationViewer {
     updateCompletionIndicator() {
         const markCompleteBtn = document.getElementById('markComplete');
         const examBadge = document.getElementById('examBadge');
-        
+
         if (!this.videoData) {
             return;
         }
-        
+
         const isCompleted = this.videoData.status === 'completed';
-        
-        // Update button appearance and tooltip
+
+        // Update button completed styling (green glow)
         if (markCompleteBtn) {
             if (isCompleted) {
                 markCompleteBtn.classList.add('completed');
-                markCompleteBtn.title = 'Series Complete - Click to Reopen';
             } else {
                 markCompleteBtn.classList.remove('completed');
-                markCompleteBtn.title = 'Mark Complete & Get Next Series';
             }
         }
+
+        // Update disabled state and title
+        this.updateMarkCompleteButtonState();
         
         // Update exam badge to show completion status
         if (examBadge) {

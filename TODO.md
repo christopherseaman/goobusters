@@ -8,8 +8,8 @@
 
 ### High Priority Bugfixes
 
-- [ ] Version mismatch error root cause? Client shows version unknown. Was able to reproduce by edit + save/retrack on one client, then attempt edit + save on second client for a different series. Series updates should not conflict. Are we updating a global version instead of per-series version?
-- [ ] Disable mark as complete when changes have not been saved/retracked
+- [x] Version mismatch error root cause? Client shows version unknown. Was able to reproduce by edit + save/retrack on one client, then attempt edit + save on second client for a different series. Series updates should not conflict. Are we updating a global version instead of per-series version?
+- [x] Disable mark as complete when changes have not been saved/retracked
 - [ ] Incorrect error message when sync completes (can pull from md.ai) but server unresponsive. Currently shows "load failed" when sync works but server can't be reached.
 
 ### iPad App
