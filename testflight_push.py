@@ -268,7 +268,8 @@ def main():
     print()
     print("=== Exporting IPA ===")
     export_options = BUILD_DIR / "ExportOptions.plist"
-    export_options.write_text("""\
+    team_id = app_store.get("team_id", "KTGSS9PB3A")
+    export_options.write_text(f"""\
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -277,6 +278,8 @@ def main():
     <string>app-store-connect</string>
     <key>destination</key>
     <string>upload</string>
+    <key>teamID</key>
+    <string>{team_id}</string>
     <key>signingStyle</key>
     <string>automatic</string>
     <key>uploadSymbols</key>
@@ -308,6 +311,12 @@ def main():
             "-exportOptionsPlist",
             str(export_options),
             "-allowProvisioningUpdates",
+            "-authenticationKeyPath",
+            str(key_path),
+            "-authenticationKeyID",
+            key_id,
+            "-authenticationKeyIssuerID",
+            issuer_id,
         ],
         env=env,
     )
