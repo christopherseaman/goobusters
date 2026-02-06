@@ -1870,63 +1870,72 @@ class AnnotationViewer {
     async pollRetrackStatus(studyUid, seriesUid) {
         const maxAttempts = 180; // 3 minutes at 1s intervals
         let attempts = 0;
-        
+
         const poll = async () => {
             attempts++;
-            const response = await this.fetchToServer(`api/retrack/status/${studyUid}/${seriesUid}`);
-            const status = await response.json();
-            
-            if (status.status === 'completed') {
-                console.log('Retrack complete, reloading...');
-                // Keep loading visible during reload
-                this.showRetrackLoading('Reloading retracked masks...');
+            try {
+                const response = await this.fetchToServer(`api/retrack/status/${studyUid}/${seriesUid}`);
+                const status = await response.json();
 
-                // Update version_id from retrack status (server is definitive source)
-                if (status.version_id) {
-                    this.setCurrentVersionId(status.version_id);
-                    console.log(`[Version] Updated after retrack: ${status.version_id}`);
-                }
+                if (status.status === 'completed') {
+                    console.log('Retrack complete, reloading...');
+                    this.showRetrackLoading('Reloading retracked masks...');
 
-                // Clear edits only after retrack completes successfully (atomic operation)
-                const { studyUid, seriesUid, method } = this.currentVideo;
-                const videoKey = this.getVideoKey(method, studyUid, seriesUid);
-                const videoModifiedFrames = this.modifiedFrames.get(videoKey);
-                if (videoModifiedFrames) {
-                    videoModifiedFrames.clear();
+                    // Update version_id from retrack status (server is definitive source)
+                    if (status.version_id) {
+                        this.setCurrentVersionId(status.version_id);
+                        console.log(`[Version] Updated after retrack: ${status.version_id}`);
+                    }
+
+                    // Clear edits only after retrack completes successfully (atomic operation)
+                    const cv = this.currentVideo;
+                    const videoKey = this.getVideoKey(cv.method, cv.studyUid, cv.seriesUid);
+                    const videoModifiedFrames = this.modifiedFrames.get(videoKey);
+                    if (videoModifiedFrames) {
+                        videoModifiedFrames.clear();
+                    }
+                    this.hasUnsavedChanges = false;
+
+                    // Reload from server to ensure fresh masks
+                    try {
+                        this.frameCache.clear();
+                        this.framesArchive = null;
+                        this.masksArchive = {};
+                        await this.loadVideoData();
+                        await this.loadFramesArchive();
+                        // Force reload current frame to ensure fresh masks are displayed
+                        const currentFrameNum = this.currentFrame;
+                        this.currentFrame = -1; // Force reload
+                        await this.goToFrame(currentFrameNum);
+                    } catch (reloadErr) {
+                        console.error('Error reloading after retrack:', reloadErr);
+                    }
+
+                    this.updateSaveButtonState();
+                    this.hideRetrackLoading();
+                } else if (status.status === 'failed') {
+                    console.error('Retrack failed:', status.error);
+                    this.hideRetrackLoading();
+                    alert(`Retrack failed: ${status.error || 'Unknown error'}`);
+                    this.hasUnsavedChanges = true;
+                    this.updateSaveButtonState();
+                } else if (attempts < maxAttempts) {
+                    setTimeout(poll, 1000);
+                } else {
+                    this.hideRetrackLoading();
+                    alert('Retrack timeout - check server status');
                 }
-                this.hasUnsavedChanges = false;
-                
-                // Reload from server to ensure fresh masks
-                this.frameCache.clear();
-                this.framesArchive = null;
-                this.masksArchive = {};
-                await this.loadVideoData();
-                await this.loadFramesArchive();
-                // Force reload current frame to ensure fresh masks are displayed
-                const currentFrameNum = this.currentFrame;
-                this.currentFrame = -1; // Force reload
-                await this.goToFrame(currentFrameNum);
-                
-                // Update save button state after reload
-                this.updateSaveButtonState();
-                this.hideRetrackLoading();
-            } else if (status.status === 'failed') {
-                console.error('Retrack failed:', status.error);
-                this.hideRetrackLoading();
-                alert(`Retrack failed: ${status.error || 'Unknown error'}`);
-                // On failure, edits remain in modifiedFrames - user can try again or reset
-                // Keep unsaved state so user knows edits are still pending
-                this.hasUnsavedChanges = true;
-                this.updateSaveButtonState();
-            } else if (attempts < maxAttempts) {
-                // Still processing - poll again
-                setTimeout(poll, 1000);
-            } else {
-                this.hideRetrackLoading();
-                alert('Retrack timeout - check server status');
+            } catch (err) {
+                console.warn(`Retrack poll error (attempt ${attempts}/${maxAttempts}):`, err);
+                if (attempts < maxAttempts) {
+                    setTimeout(poll, 1000);
+                } else {
+                    this.hideRetrackLoading();
+                    alert('Retrack timeout - check server status');
+                }
             }
         };
-        
+
         poll();
     }
 

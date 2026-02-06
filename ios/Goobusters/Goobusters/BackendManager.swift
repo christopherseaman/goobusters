@@ -83,61 +83,49 @@ class BackendManager: ObservableObject {
     }
     
     private func startHealthMonitoring() {
-        // Cancel any existing health check task
         healthCheckTask?.cancel()
-        
+
         healthCheckTask = Task {
             let url = URL(string: "http://127.0.0.1:\(port)/healthz")!
             var consecutiveFailures = 0
-            let maxFailures = 3 // Require 3 consecutive failures before considering it down
-            
+            let maxFailures = 3
+
+            let session = URLSession(configuration: {
+                let config = URLSessionConfiguration.ephemeral
+                config.timeoutIntervalForRequest = 3
+                config.timeoutIntervalForResource = 3
+                return config
+            }())
+
             while !isStopped && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+
+                let isRunning = await pythonRunner?.isRunning() ?? false
+                if !isRunning {
+                    consecutiveFailures = 0
+                    await handleBackendCrash()
+                    continue
+                }
+
                 do {
-                    // Check less frequently - every 10 seconds when healthy
-                    // Check more frequently (every 2 seconds) if we've had failures
-                    let checkInterval: UInt64 = consecutiveFailures > 0 ? 2_000_000_000 : 10_000_000_000
-                    try await Task.sleep(nanoseconds: checkInterval)
-                    
-                    // Check if Python process is still running
-                    let isRunning = await pythonRunner?.isRunning() ?? false
-                    if !isRunning {
-                        // Process died - restart it
-                        consecutiveFailures = 0
-                        await handleBackendCrash()
-                        continue
-                    }
-                    
-                    // Check if server is responding (with timeout)
-                    let (_, response) = try await URLSession.shared.data(from: url)
+                    let (_, response) = try await session.data(from: url)
                     if let httpResponse = response as? HTTPURLResponse,
                        httpResponse.statusCode == 200 {
-                        // Server is healthy
                         consecutiveFailures = 0
                         if !isReady {
                             isReady = true
                             errorMessage = nil
                         }
                     } else {
-                        // Server not responding but process is running
                         consecutiveFailures += 1
-                        if consecutiveFailures >= maxFailures && isReady {
-                            isReady = false
-                            statusMessage = "Reconnecting..."
-                        }
                     }
                 } catch {
-                    // Health check failed - server might be down
                     consecutiveFailures += 1
-                    let isRunning = await pythonRunner?.isRunning() ?? false
-                    if !isRunning {
-                        // Process died - restart it
-                        consecutiveFailures = 0
-                        await handleBackendCrash()
-                    } else if consecutiveFailures >= maxFailures && isReady {
-                        // Process running but server not responding after multiple failures
-                        isReady = false
-                        statusMessage = "Reconnecting..."
-                    }
+                }
+
+                if consecutiveFailures >= maxFailures && isReady {
+                    isReady = false
+                    statusMessage = "Reconnecting..."
                 }
             }
         }
