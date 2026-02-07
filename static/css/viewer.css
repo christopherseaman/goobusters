@@ -48,15 +48,17 @@
     --badge-padding-v: clamp(5px, 1.2vh, 10px);
     --badge-padding-h: clamp(8px, 1.8vh, 16px);
     --badge-min-width: clamp(56px, 12vh, 110px);
-    --badge-top: clamp(36px, 7.5vh, 72px);
+
+    /* Sidebar top offset (clears warning banners) */
+    --sidebar-top-offset: clamp(36px, 7vh, 60px);
 
     /* Frame labels and counters */
     --label-font: clamp(12px, 2.2vh, 20px);
     --label-min-width: clamp(28px, 5vh, 48px);
     --counter-font: clamp(10px, 1.7vh, 16px);
 
-    /* Slider type bar inset */
-    --type-bar-inset: clamp(36px, 7vh, 64px);
+    /* Slider type bar inset (matches label width + gap) */
+    --type-bar-inset: clamp(28px, 5vh, 48px);
 
     /* Modal */
     --modal-padding: clamp(20px, 4vh, 44px);
@@ -66,9 +68,6 @@
     --warning-padding-v: clamp(4px, 1vh, 10px);
     --warning-padding-h: clamp(6px, 1.5vh, 14px);
     --warning-font: clamp(11px, 1.7vh, 16px);
-
-    /* Bottom-left offset (above slider) */
-    --bottom-left-bottom: clamp(60px, 12vh, 110px);
 
     /* Brush slider indicator dots */
     --indicator-large: clamp(20px, 4vh, 36px);
@@ -130,12 +129,16 @@ html, body {
     box-sizing: border-box; /* Include border in size calculation */
 }
 
-/* Floating buttons */
-.tool-buttons, .control-buttons, .save-button {
+/* Left toolbar */
+.toolbar-left {
     position: fixed;
+    top: calc(var(--sidebar-top-offset) + var(--sai-top));
+    left: calc(var(--edge-offset) + var(--sai-left));
     display: flex;
+    flex-direction: column;
+    align-items: center;
     gap: var(--btn-gap);
-    z-index: 99;  /* Below slider */
+    z-index: 99;
     padding: var(--toolbar-padding);
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
@@ -143,57 +146,63 @@ html, body {
     transition: all 0.3s ease;
 }
 
-.top-left {
-    top: calc(var(--edge-offset) + var(--sai-top));
-    left: calc(var(--edge-offset) + var(--sai-left));
+/* Right toolbar */
+.toolbar-right {
+    position: fixed;
+    top: calc(var(--sidebar-top-offset) + var(--sai-top));
+    right: calc(var(--edge-offset) + var(--sai-right));
+    display: flex;
     flex-direction: column;
     align-items: center;
+    gap: var(--btn-gap);
+    z-index: 99;
+    padding: var(--toolbar-padding);
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(10px);
+    border-radius: var(--toolbar-radius);
+    transition: all 0.3s ease;
 }
 
-.bottom-left {
-    bottom: var(--bottom-left-bottom);
-    left: calc(var(--edge-offset) + var(--sai-left));
-    flex-direction: column;
+/* Bottom toolbar */
+.toolbar-bottom {
+    position: fixed;
+    bottom: var(--sai-bottom);
+    left: 0;
+    right: 0;
+    display: flex;
     align-items: center;
+    gap: var(--btn-gap);
+    padding: var(--slider-container-padding);
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+    z-index: 101;
 }
 
-.frame-counter {
-    margin-top: var(--btn-gap);
-    font-size: var(--counter-font);
-    color: #fff;
-    text-align: center;
-    font-family: monospace;
-}
-
-.top-right {
-    top: calc(var(--edge-offset) + var(--sai-top));
-    right: calc(var(--edge-offset) + var(--sai-right));
-    flex-direction: column;
-}
-
-.control-buttons.right-center {
-    top: 33.33%;
-    right: calc(var(--edge-offset) + var(--sai-right));
-    transform: translateY(-50%);
-    flex-direction: column;
-}
-
-.top-center {
-    top: calc(var(--edge-offset) + var(--sai-top));
-    left: 66%;
-    transform: translateX(-50%);
+.bottom-bar-controls {
+    display: flex;
     flex-direction: row;
+    gap: var(--btn-gap);
+    flex-shrink: 0;
 }
 
-.tool-buttons.hidden, .control-buttons.hidden {
+.bottom-bar-slider {
+    flex: 1;
+    min-width: 0;
+}
+
+.bottom-bar-save {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.toolbar-left.hidden, .toolbar-right.hidden {
     opacity: 0;
     pointer-events: none;
 }
 
+/* Exam badge (in-flow inside right toolbar) */
 .control-badge {
-    position: fixed;
-    top: calc(var(--badge-top) + var(--sai-top));
-    right: calc(var(--edge-offset) + var(--sai-right));
     padding: var(--badge-padding-v) var(--badge-padding-h);
     border-radius: 999px;
     background: rgba(0, 0, 0, 0.85);
@@ -203,7 +212,6 @@ html, body {
     font-size: var(--badge-font);
     letter-spacing: 0.5px;
     min-width: var(--badge-min-width);
-    z-index: 121; /* Above warning banners (120) */
     text-align: center;
 }
 
@@ -216,6 +224,14 @@ html, body {
     background: rgba(0, 0, 0, 0.95);
     border-color: rgba(255, 255, 255, 0.4);
     transform: scale(1.05);
+}
+
+.frame-counter {
+    margin-top: var(--btn-gap);
+    font-size: var(--counter-font);
+    color: #fff;
+    text-align: center;
+    font-family: monospace;
 }
 
 /* Tool and control buttons */
@@ -316,18 +332,6 @@ html, body {
 }
 
 /* Playback buttons */
-.playback-buttons {
-    position: fixed;
-    display: flex;
-    gap: var(--btn-gap);
-    z-index: 99;  /* Below slider */
-    padding: var(--toolbar-padding);
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(10px);
-    border-radius: var(--toolbar-radius);
-    transition: all 0.3s ease;
-}
-
 .playback-btn {
     width: var(--btn-size);
     height: var(--btn-size);
@@ -360,16 +364,6 @@ html, body {
 }
 
 /* Frame slider */
-.slider-container {
-    position: fixed;
-    bottom: var(--sai-bottom);
-    left: 0;
-    right: 0;
-    padding: var(--slider-container-padding);
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-    z-index: 101;  /* Above overlay canvas */
-}
-
 .slider-wrapper {
     display: flex;
     align-items: center;
@@ -670,32 +664,6 @@ html, body {
     background: rgba(255, 255, 255, 0.2);
 }
 
-.playback-grid {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 8px;
-}
-
-.playback-btn {
-    padding: 20px;
-    background: rgba(255, 255, 255, 0.1);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 20px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.playback-btn.large {
-    grid-column: span 1;
-    background: rgba(76, 175, 80, 0.3);
-}
-
-.playback-btn:hover {
-    background: rgba(255, 255, 255, 0.2);
-}
-
 .slider-group {
     margin-bottom: 16px;
 }
@@ -820,7 +788,7 @@ kbd {
 
 /* Landscape orientation */
 @media (orientation: landscape) {
-    .slider-container {
+    .toolbar-bottom {
         left: calc(var(--slider-landscape-inset) + var(--sai-left));
         right: calc(var(--slider-landscape-inset) + var(--sai-right));
     }

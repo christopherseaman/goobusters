@@ -54,11 +54,12 @@
     <!-- Brush size preview circle -->
     <div id="brushPreview" class="brush-preview"></div>
 
-    <!-- Floating tool buttons (top-left) -->
-    <div class="tool-buttons top-left" id="toolButtons">
+    <!-- Left toolbar -->
+    <div class="toolbar-left" id="toolbarLeft">
         <button class="tool-btn warning" id="markEmpty" title="Mark Empty">🚫</button>
         <button class="tool-btn" id="eraseMode" title="Erase">🧽</button>
         <button class="tool-btn active" id="drawMode" title="Draw">🖌️</button>
+        <button class="tool-btn" id="toggleMask" title="Toggle Mask">🥸</button>
         <div class="slider-spacer"></div>
         <div class="slider-group-vertical">
             <div class="slider-indicator-top">●</div>
@@ -67,38 +68,33 @@
         </div>
     </div>
 
-    <!-- Floating control buttons (right, center 1/3 down) -->
-    <div class="control-buttons right-center" id="controlButtons">
+    <!-- Right toolbar -->
+    <div class="toolbar-right" id="toolbarRight">
+        <div class="control-badge clickable" id="examBadge" title="Click to select series"># --</div>
         <button class="control-btn" id="markComplete" title="Mark Complete & Get Next Series">✅</button>
         <button class="control-btn" id="infoBtn" title="Info">ℹ️</button>
         <button class="control-btn" id="settingsBtn" title="Settings">⚙️</button>
         <button class="control-btn" id="resetMask" title="Reset">↺</button>
     </div>
-    
-    <!-- Exam badge (top-right, clickable for navigation) -->
-    <div class="control-badge clickable" id="examBadge" title="Click to select series"># --</div>
 
-    <!-- Save button (bottom-left) -->
-    <div class="save-button bottom-left">
-        <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
-        <div class="frame-counter" id="frameCounter">0 / 0</div>
-    </div>
-
-    <!-- Playback controls (top-center) -->
-    <div class="playback-buttons top-center" id="playbackButtons">
-        <button class="playback-btn" id="prevFrame" title="Previous Frame">⏮</button>
-        <button class="playback-btn" id="playPause" title="Play/Pause">▶️</button>
-        <button class="playback-btn" id="nextFrame" title="Next Frame">⏭</button>
-        <button class="playback-btn" id="toggleMask" title="Toggle Mask">🥸</button>
-    </div>
-
-    <!-- Frame slider (bottom) -->
-    <div class="slider-container" id="sliderContainer">
-        <div class="slider-wrapper">
-            <span class="slider-label" id="sliderMin">0</span>
-            <canvas id="sliderTypeBar" class="slider-type-bar"></canvas>
-            <input type="range" id="frameSlider" min="0" max="100" value="0">
-            <span class="slider-label" id="sliderMax">0</span>
+    <!-- Bottom toolbar -->
+    <div class="toolbar-bottom" id="toolbarBottom">
+        <div class="bottom-bar-controls">
+            <button class="playback-btn" id="playPause" title="Play/Pause">▶️</button>
+            <button class="playback-btn" id="prevFrame" title="Previous Frame">⏮</button>
+            <button class="playback-btn" id="nextFrame" title="Next Frame">⏭</button>
+        </div>
+        <div class="bottom-bar-slider">
+            <div class="slider-wrapper">
+                <span class="slider-label" id="sliderMin">0</span>
+                <canvas id="sliderTypeBar" class="slider-type-bar"></canvas>
+                <input type="range" id="frameSlider" min="0" max="100" value="0">
+                <span class="slider-label" id="sliderMax">0</span>
+            </div>
+        </div>
+        <div class="bottom-bar-save">
+            <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
+            <div class="frame-counter" id="frameCounter">0 / 0</div>
         </div>
     </div>
 

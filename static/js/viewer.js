@@ -715,16 +715,37 @@ class AnnotationViewer {
         if (cancelConflict) cancelConflict.addEventListener('click', () => this.hideModal('conflictModal'));
         if (resetAndReload) resetAndReload.addEventListener('click', () => this.handleResetAndReload());
 
-        // Reset retrack buttons (moved to info modal)
+        // Reset retrack buttons — show confirmation modal instead of acting directly
         const resetRetrackBtn = document.getElementById('resetRetrackBtn');
         if (resetRetrackBtn) resetRetrackBtn.addEventListener('click', () => {
             this.hideModal('infoModal');
-            this.confirmResetRetrack();
+            this.showModal('resetRetrackModal');
         });
 
         const resetRetrackAllBtn = document.getElementById('resetRetrackAllBtn');
         if (resetRetrackAllBtn) resetRetrackAllBtn.addEventListener('click', () => {
             this.hideModal('infoModal');
+            this.showModal('resetRetrackAllModal');
+        });
+
+        // Reset retrack confirmation modals
+        const closeResetRetrack = document.getElementById('closeResetRetrack');
+        const cancelResetRetrack = document.getElementById('cancelResetRetrack');
+        const confirmResetRetrackBtn = document.getElementById('confirmResetRetrack');
+        if (closeResetRetrack) closeResetRetrack.addEventListener('click', () => this.hideModal('resetRetrackModal'));
+        if (cancelResetRetrack) cancelResetRetrack.addEventListener('click', () => this.hideModal('resetRetrackModal'));
+        if (confirmResetRetrackBtn) confirmResetRetrackBtn.addEventListener('click', () => {
+            this.hideModal('resetRetrackModal');
+            this.confirmResetRetrack();
+        });
+
+        const closeResetRetrackAll = document.getElementById('closeResetRetrackAll');
+        const cancelResetRetrackAll = document.getElementById('cancelResetRetrackAll');
+        const confirmResetRetrackAllBtn = document.getElementById('confirmResetRetrackAll');
+        if (closeResetRetrackAll) closeResetRetrackAll.addEventListener('click', () => this.hideModal('resetRetrackAllModal'));
+        if (cancelResetRetrackAll) cancelResetRetrackAll.addEventListener('click', () => this.hideModal('resetRetrackAllModal'));
+        if (confirmResetRetrackAllBtn) confirmResetRetrackAllBtn.addEventListener('click', () => {
+            this.hideModal('resetRetrackAllModal');
             this.confirmResetRetrackAll();
         });
 
