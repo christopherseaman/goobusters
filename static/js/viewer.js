@@ -172,10 +172,28 @@ class AnnotationViewer {
         // Scale context so drawing code uses logical (CSS) coordinates
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+        this.updateButtonSize();
+
         // Overlay canvas will be sized to image dimensions in goToFrame()
         if (this.frameImage) {
             this.render();
         }
+    }
+
+    updateButtonSize() {
+        // Compute button size from the most constrained bar (left bar: 4 buttons vertical).
+        // Left bar available height = viewport - top offset - bottom bar - safe areas.
+        // Bottom bar height ≈ btn + 2*padding + slider, estimate ~15% of vh.
+        const vh = window.innerHeight;
+        const sidebarTop = vh * 0.07;   // --sidebar-top-offset ~7vh
+        const bottomBar = vh * 0.15;    // bottom bar approximate height
+        const available = vh - sidebarTop - bottomBar;
+
+        // 4 buttons + 3 gaps(0.1*btn) + 2 paddings(0.14*btn) = 4.58 * btn
+        const computed = Math.floor(available / 4.58);
+        const btnSize = Math.max(44, Math.min(72, computed));
+
+        document.documentElement.style.setProperty('--btn-size', `${btnSize}px`);
     }
 
     async init() {
