@@ -240,10 +240,6 @@ class MultiFrameTracker:
         # Sort annotations by frame number
         annotations = sorted(annotations, key=lambda x: x["frame"])
 
-        # Identify clear frames that need to be propagated
-        clear_frames = self._identify_clear_frames(annotations, total_frames)
-
-        # Process each segment according to the rules
         all_masks = {}
 
         # First, store all annotation frames
@@ -283,118 +279,43 @@ class MultiFrameTracker:
             # Process segment from start of video to first annotation
             # Track backward from annotation frame to start
             if i == 0 and current["frame"] > 0:
-                # Only process if the first annotation is fluid (has content to track)
-                if current["type"] == "fluid":
-                    # Track backward from annotation frame to frame 0
-                    # Include annotation frame in range for proper backward tracking reference
-                    # The annotation frame itself won't be overwritten due to the is_annotation check
-                    if current["frame"] > 0:
-                        self._process_segment(
-                            0,
-                            current["frame"],
-                            None,
-                            current["mask"],
-                            all_masks,
-                            clear_frames,
-                            video_path,
-                        )
-                # If first annotation is empty, no tracking needed (no fluid to propagate)
+                if current["frame"] > 0:
+                    self._process_segment(
+                        0,
+                        current["frame"],
+                        None,
+                        current["mask"],
+                        all_masks,
+                        video_path,
+                    )
 
             # Process segment between consecutive annotations
             if i < len(all_annotations) - 1:
                 next_ann = all_annotations[i + 1]
                 if next_ann["frame"] - current["frame"] > 1:
-                    # Determine tracking strategy based on annotation types
-                    tracking_strategy = self._determine_tracking_strategy(
-                        current, next_ann
+                    self._process_segment(
+                        current["frame"],
+                        next_ann["frame"],
+                        current["mask"],
+                        next_ann["mask"],
+                        all_masks,
+                        video_path,
                     )
 
-                    if tracking_strategy == "forward_only":
-                        # EMPTY_ID → LABEL_ID: only track forward from LABEL_ID (the fluid annotation)
-                        if (
-                            current["type"] == "empty"
-                            and next_ann["type"] == "fluid"
-                        ):
-                            # Track forward from the fluid annotation only
-                            self._process_segment(
-                                current["frame"],
-                                next_ann["frame"],
-                                None,
-                                next_ann["mask"],
-                                all_masks,
-                                clear_frames,
-                                video_path,
-                            )
-                        else:
-                            # Track forward from current annotation
-                            self._process_segment(
-                                current["frame"],
-                                next_ann["frame"],
-                                current["mask"],
-                                next_ann["mask"],
-                                all_masks,
-                                clear_frames,
-                                video_path,
-                            )
-                    elif tracking_strategy == "backward_only":
-                        # LABEL_ID → EMPTY_ID: only track backward from LABEL_ID (the fluid annotation)
-                        if (
-                            current["type"] == "fluid"
-                            and next_ann["type"] == "empty"
-                        ):
-                            # Track backward from the fluid annotation only
-                            self._process_segment(
-                                current["frame"],
-                                next_ann["frame"],
-                                current["mask"],
-                                None,
-                                all_masks,
-                                clear_frames,
-                                video_path,
-                            )
-                        else:
-                            # Track backward from next annotation
-                            self._process_segment(
-                                current["frame"],
-                                next_ann["frame"],
-                                current["mask"],
-                                next_ann["mask"],
-                                all_masks,
-                                clear_frames,
-                                video_path,
-                            )
-                    else:
-                        # Default bidirectional or other strategies
-                        self._process_segment(
-                            current["frame"],
-                            next_ann["frame"],
-                            current["mask"],
-                            next_ann["mask"],
-                            all_masks,
-                            clear_frames,
-                            video_path,
-                        )
-
             # Process segment from last annotation to end of video
-            # Exclude the annotation frame itself (it's already stored)
             if (
                 i == len(all_annotations) - 1
                 and current["frame"] < total_frames - 1
             ):
-                # Only process if the last annotation is fluid (has content to track)
-                if current["type"] == "fluid":
-                    # Process from after the annotation frame to end
-                    if current["frame"] + 1 < total_frames:
-                        self._process_segment(
-                            current["frame"] + 1,
-                            total_frames - 1,
-                            current["mask"],
-                            None,
-                            all_masks,
-                            clear_frames,
-                            video_path,
-                        )
-                # If last annotation is empty, no tracking needed (no fluid to propagate)
+                if current["frame"] + 1 < total_frames:
+                    self._process_segment(
+                        current["frame"] + 1,
+                        total_frames - 1,
+                        current["mask"],
+                        None,
+                        all_masks,
+                        video_path,
+                    )
 
         # Save results (version_id will be set by caller if retracking)
         version_id = getattr(self, 'version_id', None)
@@ -485,30 +406,6 @@ class MultiFrameTracker:
 
         return annotations
 
-    def _determine_tracking_strategy(self, current_annotation, next_annotation):
-        """
-        Determine tracking strategy based on annotation types.
-
-        Special handling for EMPTY_ID:
-        - EMPTY_ID → LABEL_ID: forward_only (track from LABEL_ID)
-        - LABEL_ID → EMPTY_ID: backward_only (track from LABEL_ID)
-        - Other combinations: bidirectional
-        """
-        current_type = current_annotation["type"]
-        next_type = next_annotation["type"]
-
-        # Special case: EMPTY_ID → LABEL_ID (forward only from LABEL_ID)
-        if current_type == "empty" and next_type == "fluid":
-            return "forward_only"
-
-        # Special case: LABEL_ID → EMPTY_ID (backward only from LABEL_ID)
-        elif current_type == "fluid" and next_type == "empty":
-            return "backward_only"
-
-        # Default: bidirectional for other combinations
-        else:
-            return "bidirectional"
-
     def _polygons_to_mask(self, polygons, height, width):
         """Convert polygon data to binary mask."""
         mask = np.zeros((height, width), dtype=np.uint8)
@@ -520,25 +417,6 @@ class MultiFrameTracker:
 
         return mask
 
-    def _identify_clear_frames(self, annotations, total_frames):
-        """
-        Identify verified empty frames (from EMPTY_ID annotations only).
-
-        NOTE: Only identifies frames with EMPTY_ID annotations (verified empty).
-        Does NOT infer empty frames from lack of annotations.
-        Unreviewed frames (no annotation) are NOT verified empty.
-        """
-        clear_frames = []
-
-        # Only use EMPTY_ID annotations to identify verified empty frames
-        # Do NOT infer verified empty from lack of annotations
-        for annotation in annotations:
-            if annotation["type"] == "empty":
-                # This frame is explicitly verified empty via EMPTY_ID annotation
-                clear_frames.append(annotation["frame"])
-
-        return clear_frames
-
     def _process_segment(
         self,
         start_frame,
@@ -546,7 +424,6 @@ class MultiFrameTracker:
         start_mask,
         end_mask,
         all_masks,
-        clear_frames,
         video_path,
     ):
         """
@@ -558,7 +435,6 @@ class MultiFrameTracker:
             start_mask: Mask at start frame (None if tracking from beginning)
             end_mask: Mask at end frame (None if tracking to end)
             all_masks: Dictionary to store results
-            clear_frames: Set of frames marked as clear
             video_path: Path to video file
         """
         if end_frame < start_frame:
@@ -635,15 +511,12 @@ class MultiFrameTracker:
 
         # Combine masks with distance-based weighting
         for frame_idx in range(start_frame, end_frame + 1):
-            if frame_idx in clear_frames:
-                continue  # Skip clear frames
-
             # Preserve original annotations - don't overwrite them with tracked masks
             if frame_idx in all_masks and isinstance(
                 all_masks[frame_idx], dict
             ):
                 if all_masks[frame_idx].get("is_annotation", False):
-                    continue  # Skip annotation frames - preserve original annotation
+                    continue
 
             if frame_idx in forward_masks and frame_idx in backward_masks:
                 # Calculate distance-based weights
@@ -759,12 +632,6 @@ class MultiFrameTracker:
             fluid_annotations, key=lambda x: abs(x["frame"] - target_frame)
         )
         return nearest
-
-    def _propagate_clear_frame(self, target_frame, source_frame, source_mask):
-        """Propagate a clear frame from a source annotation."""
-        # For clear frames, we can use a simplified approach
-        # In practice, you might want to use optical flow here too
-        return np.zeros_like(source_mask)
 
     def _save_results(self, all_masks, video_path, study_uid, series_uid, version_id=None):
         """Save the tracking results with individual frame masks and comprehensive data."""
