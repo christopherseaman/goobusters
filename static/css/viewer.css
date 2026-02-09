@@ -38,8 +38,6 @@
     --slider-height: calc(var(--btn-size) * 0.4);
     --slider-thumb: calc(var(--btn-size) * 0.4);
     --slider-container-padding: calc(var(--btn-size) * 0.28);
-    --slider-landscape-inset: calc(var(--btn-size) * 1.2);
-
     /* Brush size slider (vertical) */
     --brush-slider-height: calc(var(--btn-size) * 2.8);
     --brush-slider-width: var(--btn-size);
@@ -181,13 +179,16 @@ html, body {
 /* Bottom toolbar */
 .toolbar-bottom {
     position: fixed;
-    bottom: var(--sai-bottom);
+    bottom: 0;
     left: 0;
     right: 0;
     display: flex;
     align-items: center;
     gap: var(--btn-gap);
     padding: var(--slider-container-padding);
+    padding-bottom: calc(var(--slider-container-padding) + var(--sai-bottom));
+    padding-left: calc(var(--slider-container-padding) + var(--sai-left));
+    padding-right: calc(var(--slider-container-padding) + var(--sai-right));
     background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
     z-index: 101;
 }
@@ -795,13 +796,7 @@ kbd {
     border: none;
 }
 
-/* Landscape orientation */
-@media (orientation: landscape) {
-    .toolbar-bottom {
-        left: calc(var(--slider-landscape-inset) + var(--sai-left));
-        right: calc(var(--slider-landscape-inset) + var(--sai-right));
-    }
-}
+/* Landscape orientation — no special rules needed, safe area padding handles insets */
 
 /* Dark mode scrollbar */
 ::-webkit-scrollbar {
