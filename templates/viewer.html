@@ -74,7 +74,6 @@
     <div class="toolbar-right" id="toolbarRight">
         <div class="control-badge clickable" id="examBadge" title="Click to select series"># --</div>
         <button class="control-btn" id="markComplete" title="Mark Complete & Get Next Series">✅</button>
-        <button class="control-btn" id="infoBtn" title="Info">ℹ️</button>
         <button class="control-btn" id="settingsBtn" title="Settings">⚙️</button>
         <button class="control-btn" id="resetMask" title="Reset">↺</button>
     </div>
@@ -96,50 +95,6 @@
         <div class="bottom-bar-save">
             <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
             <div class="frame-counter" id="frameCounter">0 / 0</div>
-        </div>
-    </div>
-
-    <!-- Info Modal -->
-    <div class="modal" id="infoModal">
-        <div class="modal-content">
-            <button class="modal-close" id="closeInfo">✕</button>
-            <h2>Video Info</h2>
-            <div class="info-section">
-                <p><strong>Method:</strong> <span id="infoMethod">{{ selected_video.method }}</span></p>
-                <p><strong>Exam:</strong> <span id="infoExam">{{ selected_video.exam_number }}</span></p>
-                <p><strong>Study:</strong> <span id="infoStudy" class="monospace">{{ selected_video.study_uid }}</span></p>
-                <p><strong>Series:</strong> <span id="infoSeries" class="monospace">{{ selected_video.series_uid }}</span></p>
-            </div>
-
-            <h3>Current Frame</h3>
-            <div class="info-section">
-                <p><strong>Frame:</strong> <span id="frameInfo">0 / 0</span></p>
-                <p><strong>Type:</strong> <span id="frameType">-</span></p>
-                <p><strong>Label:</strong> <span id="frameLabelId" class="monospace">-</span></p>
-                <p><strong>Modified:</strong> <span id="frameModified">No</span></p>
-            </div>
-
-            <h3>Color Guide</h3>
-            <div class="info-section">
-                <div class="label-item">
-                    <span class="color-box" style="background: rgba(0, 255, 0, 0.5);"></span>
-                    <span>Human annotation (LABEL_ID)</span>
-                </div>
-                <div class="label-item">
-                    <span class="color-box" style="background: rgba(255, 165, 0, 0.5);"></span>
-                    <span>Tracking prediction (TRACK_ID)</span>
-                </div>
-            </div>
-
-            <div class="nav-section">
-                <h3>Advanced</h3>
-                <button class="modal-btn warning" id="resetRetrackBtn" style="width: 100%; margin-top: 10px;">
-                    🔄 Reset Retrack Data (Current Series)
-                </button>
-                <button class="modal-btn warning" id="resetRetrackAllBtn" style="width: 100%; margin-top: 10px;">
-                    🔄 Reset Retrack Data (All Series)
-                </button>
-            </div>
         </div>
     </div>
 
@@ -183,6 +138,24 @@
                     <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
                     <button class="control-btn" id="resyncDataset" title="Resync Dataset">🔄</button>
                 </div>
+            </div>
+
+            <h3>Series Info</h3>
+            <div class="info-section">
+                <p><strong>Method:</strong> <span id="infoMethod">{{ selected_video.method }}</span></p>
+                <p><strong>Exam:</strong> <span id="infoExam">{{ selected_video.exam_number }}</span></p>
+                <p><strong>Study:</strong> <span id="infoStudy" class="monospace">{{ selected_video.study_uid }}</span></p>
+                <p><strong>Series:</strong> <span id="infoSeries" class="monospace">{{ selected_video.series_uid }}</span></p>
+            </div>
+
+            <div class="nav-section">
+                <h3>Advanced</h3>
+                <button class="modal-btn warning" id="resetRetrackBtn" style="width: 100%; margin-top: 10px;">
+                    🔄 Reset Retrack Data (Current Series)
+                </button>
+                <button class="modal-btn warning" id="resetRetrackAllBtn" style="width: 100%; margin-top: 10px;">
+                    🔄 Reset Retrack Data (All Series)
+                </button>
             </div>
         </div>
     </div>

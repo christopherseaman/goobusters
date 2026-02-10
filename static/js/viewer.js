@@ -186,9 +186,12 @@ class AnnotationViewer {
         const bottomBar = vh * 0.15;
         const available = vh - sidebarTop - bottomBar;
 
-        // 3 buttons + 2 gaps(0.1*btn) + 2 paddings(0.14*btn) = 3.48 * btn
-        const computed = Math.floor(available / 3.48);
-        const btnSize = Math.max(44, Math.min(72, computed));
+        // Right bar (tallest): badge + 3 buttons + 3 gaps(0.1) + 2 paddings(0.1) = 4.5 * btn
+        const computed = Math.floor(available / 4.5);
+        // Phone/iPad mini (vh<800): smaller buttons; iPad Air+ (vh>=800): larger buttons
+        const minSize = vh < 800 ? 36 : 44;
+        const maxSize = vh < 800 ? 56 : 88;
+        const btnSize = Math.max(minSize, Math.min(maxSize, computed));
 
         document.documentElement.style.setProperty('--btn-size', `${btnSize}px`);
     }
@@ -688,14 +691,13 @@ class AnnotationViewer {
             );
             emailSelect.value = matchingOption ? currentEmail : '';
         }
+        this.updateVideoInfo();
         this.showModal('settingsModal');
     }
 
     setupEventListeners() {
         // Modal controls
-        document.getElementById('infoBtn').addEventListener('click', () => this.showModal('infoModal'));
         document.getElementById('examBadge').addEventListener('click', () => this.showModal('seriesSelectModal'));
-        document.getElementById('closeInfo').addEventListener('click', () => this.hideModal('infoModal'));
         document.getElementById('closeSeriesSelect').addEventListener('click', () => this.hideModal('seriesSelectModal'));
         document.getElementById('closeKeyboardShortcuts').addEventListener('click', () => this.hideModal('keyboardShortcutsModal'));
         document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
@@ -733,13 +735,13 @@ class AnnotationViewer {
         // Reset retrack buttons — show confirmation modal instead of acting directly
         const resetRetrackBtn = document.getElementById('resetRetrackBtn');
         if (resetRetrackBtn) resetRetrackBtn.addEventListener('click', () => {
-            this.hideModal('infoModal');
+            this.hideModal('settingsModal');
             this.showModal('resetRetrackModal');
         });
 
         const resetRetrackAllBtn = document.getElementById('resetRetrackAllBtn');
         if (resetRetrackAllBtn) resetRetrackAllBtn.addEventListener('click', () => {
-            this.hideModal('infoModal');
+            this.hideModal('settingsModal');
             this.showModal('resetRetrackAllModal');
         });
 
@@ -1344,7 +1346,6 @@ class AnnotationViewer {
 
         this.updateSaveButtonState();
         this.render();
-        this.updateInfoPanel();
         this.updateSliderTypeBar();
     }
 
@@ -3153,13 +3154,6 @@ class AnnotationViewer {
         }
     }
     
-    updateInfoPanel() {
-        const frameMetadata = this.videoData?.mask_data?.[this.currentFrame];
-        document.getElementById('frameInfo').textContent = `${this.currentFrame} / ${this.totalFrames - 1}`;
-        document.getElementById('frameType').textContent = frameMetadata?.type || '-';
-        document.getElementById('frameLabelId').textContent = frameMetadata?.label_id || '-';
-        document.getElementById('frameModified').textContent = frameMetadata?.modified ? 'Yes ✓' : 'No';
-    }
 }
 
 AnnotationViewer.prototype.checkDatasetSyncStatus = async function () {

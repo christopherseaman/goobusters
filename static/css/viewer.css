@@ -16,7 +16,7 @@
     /* Button sizing — set dynamically by JS from left bar constraint.
        Fallback uses vh for initial render before JS runs.
        JS sets --btn-size on :root based on available height / 4 buttons. */
-    --btn-size: clamp(44px, 8vh, 72px);
+    --btn-size: clamp(36px, 8vh, 88px);
     --btn-font: calc(var(--btn-size) * 0.5);
     --btn-radius: calc(var(--btn-size) * 0.18);
     --btn-gap: calc(var(--btn-size) * 0.1);
@@ -133,9 +133,9 @@ html, body {
 .brush-slider-top {
     position: fixed;
     top: calc(var(--sidebar-top-offset) + var(--sai-top));
-    left: calc(var(--btn-size) + var(--toolbar-padding) * 2 + var(--edge-offset) * 2 + var(--sai-left));
+    left: calc(var(--btn-size) + var(--btn-gap) * 3 + var(--sai-left));
     z-index: 99;
-    padding: var(--toolbar-padding);
+    padding: var(--btn-gap);
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
     border-radius: var(--toolbar-radius);
@@ -146,16 +146,16 @@ html, body {
 .toolbar-left {
     position: fixed;
     top: calc(var(--sidebar-top-offset) + var(--sai-top));
-    left: calc(var(--edge-offset) + var(--sai-left));
+    left: var(--sai-left);
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--btn-gap);
     z-index: 99;
-    padding: var(--toolbar-padding);
+    padding: var(--btn-gap);
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
-    border-radius: var(--toolbar-radius);
+    border-radius: 0 var(--toolbar-radius) var(--toolbar-radius) 0;
     transition: all 0.3s ease;
 }
 
@@ -163,16 +163,16 @@ html, body {
 .toolbar-right {
     position: fixed;
     top: calc(var(--sidebar-top-offset) + var(--sai-top));
-    right: calc(var(--edge-offset) + var(--sai-right));
+    right: var(--sai-right);
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--btn-gap);
     z-index: 99;
-    padding: var(--toolbar-padding);
+    padding: var(--btn-gap);
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
-    border-radius: var(--toolbar-radius);
+    border-radius: var(--toolbar-radius) 0 0 var(--toolbar-radius);
     transition: all 0.3s ease;
 }
 
