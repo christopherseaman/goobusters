@@ -41,6 +41,10 @@ class AnnotationViewer {
         this.maskOpacity = 0.3;
         this.maskVisible = true; // Mask visibility toggle
 
+        // Retry state tracking for robust reconnect
+        this.retryController = null;  // AbortController for current retry
+        this.isRetrying = false;      // Guard against concurrent retries
+
         this.isDrawing = false;
         this.lastX = 0;
         this.lastY = 0;
@@ -115,8 +119,11 @@ class AnnotationViewer {
         const url = pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')
             ? pathOrUrl
             : this.serverUrlFor(pathOrUrl);
-        
-        return fetch(url, { ...options, headers });
+
+        // Add abort signal from retryController if retrying and no signal provided
+        const signal = options.signal || (this.retryController?.signal);
+
+        return fetch(url, { ...options, headers, signal });
     }
     
     /**
@@ -425,33 +432,48 @@ class AnnotationViewer {
     }
 
     /**
-     * Retry connecting to the REMOTE server with a 30s timeout.
-     * Pings api/status every 3s. On success, loads next series.
-     * After 30s, stops and shows "Server unavailable" — user can tap emoji to retry.
+     * Retry connecting to the REMOTE server indefinitely.
+     * Pings api/status every 3s until success or abort.
+     * On success, loads next series and hides connection screen.
      */
     async connectToRemoteServerWithRetry() {
+        // Guard: prevent concurrent retries
+        if (this.isRetrying) {
+            console.log('Retry already in progress, skipping');
+            return;
+        }
+
+        this.isRetrying = true;
+        this.retryController = new AbortController();
         this.needsRemoteServerConnection = true;
         this.showServerConnectionScreen('Connecting to server...');
-        const deadline = Date.now() + 30000;
+
         const interval = 3000;
 
-        while (Date.now() < deadline) {
-            try {
-                const resp = await this.fetchToServer('api/status');
-                if (resp.ok) {
-                    this.needsRemoteServerConnection = false;
-                    await this.loadNextSeries();
-                    this.hideServerConnectionScreen();
-                    return;
+        try {
+            while (true) {  // Retry forever until success or abort
+                try {
+                    const resp = await this.fetchToServer('api/status');
+                    if (resp.ok) {
+                        this.needsRemoteServerConnection = false;
+                        await this.loadNextSeries();
+                        this.hideServerConnectionScreen();
+                        return;  // Success!
+                    }
+                } catch (e) {
+                    if (e.name === 'AbortError') {
+                        console.log('Retry aborted');
+                        return;  // Aborted, exit cleanly
+                    }
+                    // Other errors - continue retrying
                 }
-            } catch (e) {
-                // Still unreachable
+                await new Promise(r => setTimeout(r, interval));
             }
-            const remaining = deadline - Date.now();
-            if (remaining <= 0) break;
-            await new Promise(r => setTimeout(r, Math.min(interval, remaining)));
+        } finally {
+            // Always clean up (runs even on return/throw)
+            this.isRetrying = false;
+            this.retryController = null;
         }
-        this.showServerConnectionScreen('Server unavailable');
     }
 
     /**
@@ -963,6 +985,13 @@ class AnnotationViewer {
                         this.saveChanges();
                     }
                     break;
+            }
+        });
+
+        // Restart retry on wake if needed (but don't interfere with in-progress retry)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && this.needsRemoteServerConnection && !this.isRetrying) {
+                this.connectToRemoteServerWithRetry();
             }
         });
     }
