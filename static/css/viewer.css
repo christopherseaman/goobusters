@@ -185,11 +185,12 @@ html, body {
     display: flex;
     align-items: center;
     gap: var(--btn-gap);
-    padding: var(--slider-container-padding);
-    padding-bottom: calc(var(--slider-container-padding) + var(--sai-bottom));
+    padding: var(--btn-gap) var(--slider-container-padding);
+    padding-bottom: var(--sai-bottom);
     padding-left: calc(var(--slider-container-padding) + var(--sai-left));
     padding-right: calc(var(--slider-container-padding) + var(--sai-right));
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(10px);
     z-index: 101;
 }
 
@@ -207,8 +208,9 @@ html, body {
 
 .bottom-bar-save {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
+    gap: var(--btn-gap);
     flex-shrink: 0;
 }
 
@@ -243,7 +245,6 @@ html, body {
 }
 
 .frame-counter {
-    margin-top: var(--btn-gap);
     font-size: var(--counter-font);
     color: #fff;
     text-align: center;

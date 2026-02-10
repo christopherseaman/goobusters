@@ -181,12 +181,9 @@ class AnnotationViewer {
     }
 
     updateButtonSize() {
-        // Compute button size from the most constrained bar (left bar: 3 buttons vertical).
-        // Left bar available height = viewport - top offset - bottom bar - safe areas.
-        // Bottom bar height ≈ btn + 2*padding, estimate ~15% of vh.
         const vh = window.innerHeight;
-        const sidebarTop = vh * 0.07;   // --sidebar-top-offset ~7vh
-        const bottomBar = vh * 0.15;    // bottom bar approximate height
+        const sidebarTop = vh * 0.07;
+        const bottomBar = vh * 0.15;
         const available = vh - sidebarTop - bottomBar;
 
         // 3 buttons + 2 gaps(0.1*btn) + 2 paddings(0.14*btn) = 3.48 * btn

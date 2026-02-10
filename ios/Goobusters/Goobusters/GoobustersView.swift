@@ -194,6 +194,8 @@ struct WebView: UIViewRepresentable {
         webView.backgroundColor = .black
         webView.isOpaque = false
         webView.scrollView.backgroundColor = .black
+        // Prevent WKWebView from adding its own content insets for safe areas
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         // Don't load URL here - wait for updateUIView when isReady
         return webView
     }
