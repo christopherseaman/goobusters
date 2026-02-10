@@ -54,9 +54,10 @@ class AnnotationViewer {
         this.modifiedFrames = new Map(); // videoKey -> Map(frame_num -> data)
         
         
-        this.frameCache = new Map(); // frameNum -> {frameImage, maskImageData, maskType, originalMaskImageData, originalMaskType, canvasWidth, canvasHeight}
-        this.framesArchive = null; // Extracted frames from tar
-        this.masksArchive = {}; // Masks from tar archive (webp images)
+        this.frameCache = new Map(); // Kept for compatibility but no longer caches ImageData
+        this.framesArchive = null; // Extracted frames from tar (compressed WebP)
+        this.masksArchive = {}; // Masks from tar archive (compressed WebP)
+        this.currentMaskWebP = null; // WebP bytes for current frame's mask
         this.versionIds = new Map(); // Map<videoKey, versionId> - per-series version tracking
         this.activityPingInterval = null; // Interval ID for activity pings (30s)
         this.userEmail = null; // User email for identification (from /api/settings)
@@ -1228,121 +1229,79 @@ class AnnotationViewer {
     async goToFrame(frameNum) {
         const targetFrame = Math.max(0, Math.min(frameNum, this.totalFrames - 1));
         if (targetFrame === this.currentFrame && this.frameImage) return;
-        
-        // Preserve unsaved changes
+
+        // Preserve unsaved changes when leaving current frame
         if (this.hasUnsavedChanges && this.maskImageData && this.currentFrame !== targetFrame) {
             const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
             videoModifiedFrames.set(this.currentFrame, {
-                maskData: this.cloneImageData(this.maskImageData),
+                maskData: this.maskImageData, // Store directly, no clone needed
                 maskType: this.maskType,
                 is_empty: this.maskType === 'empty'
             });
         }
-        
+
         this.currentFrame = targetFrame;
         document.getElementById('frameSlider').value = this.currentFrame;
         this.updateFrameCounter();
         this.updateSaveButtonState();
 
-        // Get from cache or load from archive
-        let cached = this.frameCache.get(targetFrame);
-        if (!cached) {
-            const frameData = this.framesArchive[`frames/frame_${targetFrame.toString().padStart(6, '0')}.webp`];
-            if (!frameData) {
-                console.error(`Frame ${targetFrame} not found in archive`);
-                return;
-            }
-            const blob = new Blob([frameData], { type: 'image/webp' });
-            const frameUrl = URL.createObjectURL(blob);
-            const frameImage = await this.loadImage(frameUrl);
-            
-            // Load mask from JSON (RLE encoded)
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = frameImage.width;
-            tempCanvas.height = frameImage.height;
-            const tempCtx = tempCanvas.getContext('2d');
-            
-            // Load current mask (may be modified or original)
-            let maskImageData;
-            // Server mask archives store files as "frame_XXXXXX_mask.webp" at root
-            const maskFileName = `frame_${String(targetFrame).padStart(6, '0')}_mask.webp`;
-            if (this.masksArchive && this.masksArchive[maskFileName]) {
-                // Load mask from archive (webp image) - may be modified or original
-                const maskData = this.masksArchive[maskFileName];
-                const blob = new Blob([maskData], { type: 'image/webp' });
-                const maskUrl = URL.createObjectURL(blob);
-                const maskImg = new Image();
-                await new Promise((resolve, reject) => {
-                    maskImg.onload = () => {
-                        tempCtx.drawImage(maskImg, 0, 0);
-                        maskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-                        URL.revokeObjectURL(maskUrl);
-                        resolve();
-                    };
-                    maskImg.onerror = reject;
-                    maskImg.src = maskUrl;
-                });
-            } else {
-                // No mask - create empty
-                tempCtx.fillStyle = 'black';
-                tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-                maskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-            }
-            
-            // Derive mask type from per-frame metadata where available
-            const originalMaskImageData = this.cloneImageData(maskImageData);
-            const frameMeta = this.videoData?.mask_data?.[targetFrame];
-            let maskType = 'tracked';
-            if (frameMeta) {
-                if (frameMeta.type === 'empty') {
-                    maskType = 'empty';
-                } else if (frameMeta.type === 'fluid') {
-                    maskType = 'human';
-                } else if (frameMeta.type === 'tracked') {
-                    maskType = 'tracked';
-                }
-            } else {
-                const hasMask = !!(this.masksArchive && this.masksArchive[maskFileName]);
-                maskType = hasMask ? 'tracked' : 'empty';
-            }
-            const originalMaskType = maskType;
-            
-            cached = {
-                frameImage,
-                maskImageData: this.cloneImageData(maskImageData),
-                originalMaskImageData: this.cloneImageData(originalMaskImageData), // Original unmodified mask from output/
-                maskType,
-                originalMaskType: originalMaskType,
-                canvasWidth: frameImage.width,
-                canvasHeight: frameImage.height
-            };
-            this.frameCache.set(targetFrame, cached);
+        // Load frame from archive (no caching)
+        const frameData = this.framesArchive[`frames/frame_${targetFrame.toString().padStart(6, '0')}.webp`];
+        if (!frameData) {
+            console.error(`Frame ${targetFrame} not found in archive`);
+            return;
         }
 
-        // Use preprocessed data (instant)
-        this.frameImage = cached.frameImage;
-        this.maskCanvas.width = cached.canvasWidth;
-        this.maskCanvas.height = cached.canvasHeight;
-        this.overlayCanvas.width = cached.canvasWidth;
-        this.overlayCanvas.height = cached.canvasHeight;
-        
-        this.maskImageData = this.cloneImageData(cached.maskImageData);
-        this.originalMaskImageData = this.cloneImageData(cached.originalMaskImageData);
-        this.maskType = cached.maskType;
-        this.originalMaskType = cached.originalMaskType;
-        
-        this.maskCtx.putImageData(this.maskImageData, 0, 0);
-        
-        // Check if this frame was already modified in this session
-        // Only restore if hasUnsavedChanges is true (prevents restoring after reset)
+        // Load frame image
+        const blob = new Blob([frameData], { type: 'image/webp' });
+        const frameUrl = URL.createObjectURL(blob);
+        this.frameImage = await this.loadImage(frameUrl);
+        URL.revokeObjectURL(frameUrl);
+
+        // Set canvas dimensions
+        this.maskCanvas.width = this.frameImage.width;
+        this.maskCanvas.height = this.frameImage.height;
+        this.overlayCanvas.width = this.frameImage.width;
+        this.overlayCanvas.height = this.frameImage.height;
+
+        // Determine mask type from metadata
+        const frameMeta = this.videoData?.mask_data?.[targetFrame];
+        const maskFileName = `frame_${String(targetFrame).padStart(6, '0')}_mask.webp`;
+        const hasMaskInArchive = !!(this.masksArchive && this.masksArchive[maskFileName]);
+
+        if (frameMeta) {
+            if (frameMeta.type === 'empty') {
+                this.maskType = 'empty';
+            } else if (frameMeta.type === 'fluid') {
+                this.maskType = 'human';
+            } else if (frameMeta.type === 'tracked') {
+                this.maskType = 'tracked';
+            }
+        } else {
+            this.maskType = hasMaskInArchive ? 'tracked' : 'empty';
+        }
+        this.originalMaskType = this.maskType;
+
+        // Check if frame was modified this session
         const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        if (this.hasUnsavedChanges && videoModifiedFrames.has(this.currentFrame)) {
+        if (videoModifiedFrames.has(this.currentFrame)) {
+            // Use modified version (already ImageData)
             const saved = videoModifiedFrames.get(this.currentFrame);
             this.maskImageData = saved.maskData;
             this.maskType = saved.maskType;
+            this.hasUnsavedChanges = true;
+
+            // Put mask data in maskCanvas for drawing operations
+            this.maskCtx.putImageData(this.maskImageData, 0, 0);
         } else {
+            // Frame not modified - will render mask directly from WebP in render()
+            // Don't create ImageData unless user starts editing
+            this.maskImageData = null;
             this.hasUnsavedChanges = false;
         }
+
+        // Store mask WebP for lazy loading if needed
+        this.currentMaskWebP = hasMaskInArchive ? this.masksArchive[maskFileName] : null;
 
         this.updateSaveButtonState();
         this.render();
@@ -1425,25 +1384,89 @@ class AnnotationViewer {
         this.overlayCanvas.style.left = `${displayX}px`;
         this.overlayCanvas.style.top = `${displayY}px`;
 
-        // Draw mask overlay directly at image resolution (like teef applyMaskToOverlay)
-        if (this.maskImageData && this.maskVisible) {
+        // Draw mask overlay
+        if (this.maskVisible) {
             const isHuman = this.maskType === 'human' || this.maskType === 'empty';
             const maskColor = isHuman ? { r: 0, g: 255, b: 0 } : { r: 255, g: 165, b: 0 };
 
-            // Create overlay imageData at image resolution
-            const overlayImageData = this.overlayCtx.createImageData(this.overlayCanvas.width, this.overlayCanvas.height);
+            if (this.maskImageData) {
+                // Modified mask - render from ImageData
+                const overlayImageData = this.overlayCtx.createImageData(this.overlayCanvas.width, this.overlayCanvas.height);
 
-            for (let i = 0; i < this.maskImageData.data.length; i += 4) {
-                const gray = this.maskImageData.data[i];
-                overlayImageData.data[i] = maskColor.r;
-                overlayImageData.data[i + 1] = maskColor.g;
-                overlayImageData.data[i + 2] = maskColor.b;
-                overlayImageData.data[i + 3] = gray > 0 ? Math.round(gray * this.maskOpacity) : 0;
+                for (let i = 0; i < this.maskImageData.data.length; i += 4) {
+                    const gray = this.maskImageData.data[i];
+                    overlayImageData.data[i] = maskColor.r;
+                    overlayImageData.data[i + 1] = maskColor.g;
+                    overlayImageData.data[i + 2] = maskColor.b;
+                    overlayImageData.data[i + 3] = gray > 0 ? Math.round(gray * this.maskOpacity) : 0;
+                }
+
+                this.overlayCtx.putImageData(overlayImageData, 0, 0);
+            } else if (this.currentMaskWebP && this.maskType !== 'empty') {
+                // Unmodified mask - render directly from WebP without creating ImageData
+                this.renderMaskFromWebP(this.currentMaskWebP, maskColor).catch(err => {
+                    console.error('Failed to render mask from WebP:', err);
+                });
             }
-
-            // Put directly on overlay canvas (no scaling, CSS handles that)
-            this.overlayCtx.putImageData(overlayImageData, 0, 0);
         }
+    }
+
+    async loadMaskAsImageData() {
+        // Create ImageData from current mask WebP
+        if (this.currentMaskWebP) {
+            const blob = new Blob([this.currentMaskWebP], { type: 'image/webp' });
+            const maskUrl = URL.createObjectURL(blob);
+            const maskImg = await this.loadImage(maskUrl);
+            URL.revokeObjectURL(maskUrl);
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = maskImg.width;
+            tempCanvas.height = maskImg.height;
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCtx.drawImage(maskImg, 0, 0);
+            this.maskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+        } else {
+            // No mask - create blank
+            this.maskImageData = this.maskCtx.createImageData(this.maskCanvas.width, this.maskCanvas.height);
+            // Fill with black (empty mask)
+            for (let i = 0; i < this.maskImageData.data.length; i += 4) {
+                this.maskImageData.data[i] = 0;
+                this.maskImageData.data[i + 1] = 0;
+                this.maskImageData.data[i + 2] = 0;
+                this.maskImageData.data[i + 3] = 255;
+            }
+        }
+
+        // Put in maskCanvas for drawing operations
+        this.maskCtx.putImageData(this.maskImageData, 0, 0);
+    }
+
+    async renderMaskFromWebP(maskWebPData, maskColor) {
+        // Load mask image from WebP bytes
+        const blob = new Blob([maskWebPData], { type: 'image/webp' });
+        const maskUrl = URL.createObjectURL(blob);
+        const maskImg = await this.loadImage(maskUrl);
+        URL.revokeObjectURL(maskUrl);
+
+        // Create temp canvas to extract grayscale values
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = maskImg.width;
+        tempCanvas.height = maskImg.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(maskImg, 0, 0);
+        const maskImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+
+        // Create colored overlay
+        const overlayImageData = this.overlayCtx.createImageData(this.overlayCanvas.width, this.overlayCanvas.height);
+        for (let i = 0; i < maskImageData.data.length; i += 4) {
+            const gray = maskImageData.data[i];
+            overlayImageData.data[i] = maskColor.r;
+            overlayImageData.data[i + 1] = maskColor.g;
+            overlayImageData.data[i + 2] = maskColor.b;
+            overlayImageData.data[i + 3] = gray > 0 ? Math.round(gray * this.maskOpacity) : 0;
+        }
+
+        this.overlayCtx.putImageData(overlayImageData, 0, 0);
     }
 
     getCanvasCoordinates(e) {
@@ -1460,7 +1483,7 @@ class AnnotationViewer {
         return { x: Math.floor(maskX), y: Math.floor(maskY) };
     }
 
-    startDrawing(e) {
+    async startDrawing(e) {
         this.isDrawing = true;
         const coords = this.getCanvasCoordinates(e);
         this.lastX = coords.x;
@@ -1470,24 +1493,22 @@ class AnnotationViewer {
         if (this.maskType === 'tracked') {
             console.log('CONVERTING tracked to human on edit');
             this.maskType = 'human';
-            this.render(); // Show color change immediately
         }
 
         // Remove empty marker when drawing
         if (this.maskType === 'empty') {
             console.log('REMOVING empty marker on draw');
             this.maskType = 'human';
-            this.render(); // Show color change immediately
         }
 
         console.log('Start drawing - Mode:', this.drawMode, 'Type:', this.maskType);
-        
+
+        // Lazy-create ImageData when user starts editing
         if (!this.maskImageData) {
-            console.error('Cannot start drawing: maskImageData not initialized');
-            this.isDrawing = false;
-            return;
+            await this.loadMaskAsImageData();
         }
 
+        this.render(); // Show color change immediately
         this.draw(e);
     }
 
@@ -1722,20 +1743,14 @@ class AnnotationViewer {
         // This ensures previously saved empty_id frames are preserved
         const allAnnotationFrames = {};
         
-        // Helper to get mask ImageData for a frame (from cache, modified, or archive)
+        // Helper to get mask ImageData for a frame (from modified frames or archive)
         const getMaskImageDataForFrame = async (frameNum) => {
             // Check if frame is in modified frames (has current edits)
             if (videoModifiedFrames.has(frameNum)) {
                 return videoModifiedFrames.get(frameNum).maskData;
             }
-            
-            // Check frame cache
-            const cached = this.frameCache.get(frameNum);
-            if (cached && cached.maskImageData) {
-                return cached.maskImageData;
-            }
-            
-            // Load from archive if available
+
+            // Load from archive if available (lazy conversion)
             const maskFileName = `frame_${frameNum.toString().padStart(6, '0')}_mask.webp`;
             if (this.masksArchive && this.masksArchive[maskFileName]) {
                 const maskData = this.masksArchive[maskFileName];
@@ -1757,7 +1772,7 @@ class AnnotationViewer {
                 });
                 return canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
             }
-            
+
             // No mask - return empty black mask
             const emptyCanvas = document.createElement('canvas');
             emptyCanvas.width = this.maskCanvas.width;
@@ -2507,7 +2522,12 @@ class AnnotationViewer {
         this.updateSliderTypeBar();
     }
 
-    markEmpty() {
+    async markEmpty() {
+        // Lazy-load ImageData if not already loaded
+        if (!this.maskImageData) {
+            await this.loadMaskAsImageData();
+        }
+
         // Clear the mask (set all pixels to black)
         for (let i = 0; i < this.maskImageData.data.length; i += 4) {
             this.maskImageData.data[i] = 0;
@@ -2519,15 +2539,15 @@ class AnnotationViewer {
         // Mark as empty type (clears label_id & track_id, adds empty_id annotation)
         this.maskType = 'empty';
         this.hasUnsavedChanges = true;
-        
-        // Store in modified frames map (in memory only, will be saved when user clicks Save)
+
+        // Store in modified frames map (no clone needed)
         const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
         videoModifiedFrames.set(this.currentFrame, {
-            maskData: this.cloneImageData(this.maskImageData),
+            maskData: this.maskImageData,
             maskType: 'empty',
             is_empty: true
         });
-        
+
         this.updateSaveButtonState();
         this.render();
     }
