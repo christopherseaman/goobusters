@@ -915,33 +915,21 @@ class AnnotationViewer {
             });
         }
 
-        // Drawing events (mouse)
-        this.canvas.addEventListener('mousedown', (e) => {
+        // Drawing events (pointer — covers mouse, touch, and Apple Pencil)
+        this.canvas.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
             this.startDrawing(e);
         });
-        this.canvas.addEventListener('mousemove', (e) => {
+        this.canvas.addEventListener('pointermove', (e) => {
             if (this.isDrawing) {
+                e.preventDefault();
                 this.draw(e);
             }
         });
-        this.canvas.addEventListener('mouseup', (e) => {
+        this.canvas.addEventListener('pointerup', () => {
             this.stopDrawing();
         });
-        this.canvas.addEventListener('mouseleave', () => {
-            this.stopDrawing();
-        });
-
-        // Drawing events (touch)
-        this.canvas.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            this.startDrawing(e);
-        });
-        this.canvas.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            if (this.isDrawing) this.draw(e);
-        });
-        this.canvas.addEventListener('touchend', (e) => {
-            e.preventDefault();
+        this.canvas.addEventListener('pointerleave', () => {
             this.stopDrawing();
         });
 
@@ -1505,8 +1493,8 @@ class AnnotationViewer {
 
     getCanvasCoordinates(e) {
         const rect = this.canvas.getBoundingClientRect();
-        const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
-        const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
+        const x = (e.clientX ?? e.touches?.[0]?.clientX ?? 0) - rect.left;
+        const y = (e.clientY ?? e.touches?.[0]?.clientY ?? 0) - rect.top;
 
         // Convert to mask coordinates
         if (!this.renderRect) return { x: 0, y: 0 };
