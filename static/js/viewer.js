@@ -67,6 +67,7 @@ class AnnotationViewer {
         this.userEmail = null; // User email for identification (from /api/settings)
 
         this.toolsVisible = true;
+        this._renderGeneration = 0;
         
         // Server URL for direct API calls (injected from template)
         this.serverUrl = typeof SERVER_URL !== 'undefined' ? SERVER_URL : 'http://localhost:5000';
@@ -206,8 +207,9 @@ class AnnotationViewer {
 
     async init() {
         this.showServerConnectionScreen('Connecting...');
-        
+
         this.setupEventListeners();
+        this.initBrushPreview();
         await this.loadSettings();
         await this.connectToServerWithRetry();
         await this.checkCredentialsAndSync();
@@ -897,7 +899,6 @@ class AnnotationViewer {
         if (brushSizeInline) {
             brushSizeInline.addEventListener('input', (e) => {
                 this.brushSize = parseInt(e.target.value);
-                this.updateBrushPreview();
             });
         }
 
@@ -922,14 +923,12 @@ class AnnotationViewer {
             if (this.isDrawing) {
                 this.draw(e);
             }
-            this.updateBrushPreview(e);
         });
         this.canvas.addEventListener('mouseup', (e) => {
             this.stopDrawing();
         });
         this.canvas.addEventListener('mouseleave', () => {
             this.stopDrawing();
-            this.hideBrushPreview();
         });
 
         // Drawing events (touch)
@@ -996,40 +995,37 @@ class AnnotationViewer {
         });
     }
 
-    updateBrushPreview(e) {
+    initBrushPreview() {
         const preview = document.getElementById('brushPreview');
         if (!preview) return;
 
-        // Calculate display scale (mask pixels to screen pixels)
-        const scale = this.renderRect ? (this.renderRect.width / this.maskCanvas.width) : 1;
-        const displayRadius = this.brushSize * scale;
-        const displayDiameter = displayRadius * 2;
+        const getDisplayDiameter = (size) => {
+            const scale = (this.renderRect && this.maskCanvas && this.maskCanvas.width)
+                ? (this.renderRect.width / this.maskCanvas.width) : 1;
+            return (size !== undefined ? size : this.brushSize) * scale * 2;
+        };
 
-        if (e) {
-            const rect = this.canvas.getBoundingClientRect();
-            const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
-            const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-            // Center the preview on cursor by offsetting by scaled brush radius
-            preview.style.left = `${x - displayRadius}px`;
-            preview.style.top = `${y - displayRadius}px`;
-            preview.style.width = `${displayDiameter}px`;
-            preview.style.height = `${displayDiameter}px`;
+        document.addEventListener('pointermove', (e) => {
+            const d = getDisplayDiameter();
+            const maxD = getDisplayDiameter(50);
+            preview.style.left = `${e.clientX - d / 2 + maxD * 1.5}px`;
+            preview.style.top = `${e.clientY - d / 2}px`;
+            preview.style.width = `${d}px`;
+            preview.style.height = `${d}px`;
             preview.style.display = 'block';
-        } else {
-            preview.style.width = `${displayDiameter}px`;
-            preview.style.height = `${displayDiameter}px`;
-            preview.style.display = 'block';
-            setTimeout(() => preview.style.display = 'none', 1000);
-        }
+        });
+
+        document.addEventListener('pointerleave', () => {
+            preview.style.display = 'none';
+        });
     }
 
-
-
-    hideBrushPreview() {
-        const preview = document.getElementById('brushPreview');
-        if (preview) {
-            preview.style.display = 'none';
-        }
+    normalizeFrameType(type, hasMask) {
+        if (type === 'empty') return 'empty';
+        if (type === 'fluid') return 'fluid';
+        if (type === 'tracked') return 'tracked';
+        if (type?.startsWith('fluid_')) return 'tracked';
+        return hasMask ? 'tracked' : 'empty';
     }
 
     async loadVideoData(skipModifiedFrames = false) {
@@ -1085,7 +1081,7 @@ class AnnotationViewer {
             for (const ann of data.masks_annotations) {
                 const frameNum = ann.frameNumber;
                 this.videoData.mask_data[frameNum] = {
-                    type: ann.type || 'unknown',
+                    type: this.normalizeFrameType(ann.type, ann.has_mask !== false),
                     label_id: ann.labelId || ann.label_id || '',
                     is_annotation: ann.is_annotation || false,
                     modified: false
@@ -1225,21 +1221,7 @@ class AnnotationViewer {
             const labelId = entry.label_id;
             const isAnnotation = !!entry.is_annotation;
             
-            // Use type from metadata if provided (server is source of truth)
-            // Otherwise derive from is_annotation + has_mask
-            let type = entry.type;
-            if (!type) {
-                // Fallback: derive type from is_annotation + has_mask
-                if (isAnnotation && hasMask) {
-                    type = 'fluid';
-                } else if (isAnnotation && !hasMask) {
-                    type = 'empty';
-                } else if (!hasMask) {
-                    type = 'empty';
-                } else {
-                    type = 'tracked';
-                }
-            }
+            let type = this.normalizeFrameType(entry.type, hasMask);
 
             this.videoData.mask_data[frameNum] = {
                 type,
@@ -1303,7 +1285,7 @@ class AnnotationViewer {
                 this.maskType = 'empty';
             } else if (frameMeta.type === 'fluid') {
                 this.maskType = 'human';
-            } else if (frameMeta.type === 'tracked') {
+            } else {
                 this.maskType = 'tracked';
             }
         } else {
@@ -1414,6 +1396,7 @@ class AnnotationViewer {
         this.overlayCanvas.style.top = `${displayY}px`;
 
         // Draw mask overlay
+        const generation = ++this._renderGeneration;
         if (this.maskVisible) {
             const isHuman = this.maskType === 'human' || this.maskType === 'empty';
             const maskColor = isHuman ? { r: 0, g: 255, b: 0 } : { r: 255, g: 165, b: 0 };
@@ -1433,7 +1416,7 @@ class AnnotationViewer {
                 this.overlayCtx.putImageData(overlayImageData, 0, 0);
             } else if (this.currentMaskWebP && this.maskType !== 'empty') {
                 // Unmodified mask - render directly from WebP without creating ImageData
-                this.renderMaskFromWebP(this.currentMaskWebP, maskColor).catch(err => {
+                this.renderMaskFromWebP(this.currentMaskWebP, maskColor, generation).catch(err => {
                     console.error('Failed to render mask from WebP:', err);
                 });
             }
@@ -1470,12 +1453,15 @@ class AnnotationViewer {
         this.maskCtx.putImageData(this.maskImageData, 0, 0);
     }
 
-    async renderMaskFromWebP(maskWebPData, maskColor) {
+    async renderMaskFromWebP(maskWebPData, maskColor, generation) {
         // Load mask image from WebP bytes
         const blob = new Blob([maskWebPData], { type: 'image/webp' });
         const maskUrl = URL.createObjectURL(blob);
         const maskImg = await this.loadImage(maskUrl);
         URL.revokeObjectURL(maskUrl);
+
+        // Bail if a newer render started while we were loading
+        if (generation !== undefined && generation !== this._renderGeneration) return;
 
         // Create temp canvas to extract grayscale values
         const tempCanvas = document.createElement('canvas');

@@ -125,7 +125,6 @@ html, body {
     display: none;
     background: rgba(76, 175, 80, 0.1);
     box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
-    transition: width 0.1s ease, height 0.1s ease;
     box-sizing: border-box;
 }
 
