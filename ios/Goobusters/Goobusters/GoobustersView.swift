@@ -105,6 +105,7 @@ struct WebView: NSViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        context.coordinator.webView = webView
         // Set black background to prevent white flash
         webView.setValue(false, forKey: "drawsBackground")
         // Don't load URL here - wait for updateNSView when isReady
@@ -129,12 +130,19 @@ struct WebView: NSViewRepresentable {
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        weak var webView: WKWebView?
+
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             logger.error("WebView navigation error: \(error.localizedDescription)")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             logger.info("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            logger.error("WebView content process terminated, reloading")
+            webView.reload()
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -190,6 +198,7 @@ struct WebView: UIViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
+        context.coordinator.webView = webView
         // Set black background to prevent white flash
         webView.backgroundColor = .black
         webView.isOpaque = false
@@ -218,12 +227,43 @@ struct WebView: UIViewRepresentable {
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        weak var webView: WKWebView?
+
+        override init() {
+            super.init()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(appDidBecomeActive),
+                name: UIApplication.didBecomeActiveNotification,
+                object: nil
+            )
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        @objc func appDidBecomeActive() {
+            logger.info("App became active, notifying WebView")
+            webView?.evaluateJavaScript("if (window.viewer) viewer.handleAppForeground();") { _, error in
+                if let error = error {
+                    logger.error("Foreground JS call failed: \(error.localizedDescription)")
+                }
+            }
+        }
+
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             logger.error("WebView navigation error: \(error.localizedDescription)")
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             logger.info("WebView finished loading: \(webView.url?.absoluteString ?? "unknown")")
+        }
+
+        // Recover from iOS killing the WKWebView content process (memory pressure)
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            logger.error("WebView content process terminated, reloading")
+            webView.reload()
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {

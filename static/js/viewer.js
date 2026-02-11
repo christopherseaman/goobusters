@@ -574,7 +574,8 @@ class AnnotationViewer {
      */
     startServerReconnectPings() {
         if (this.reconnectPingInterval) return;
-        const started = Date.now();
+        let attempts = 0;
+        const maxAttempts = 3; // 3 attempts * 10s = ~30s before escalation
         this.reconnectPingInterval = setInterval(async () => {
             try {
                 const resp = await this.fetchToServer('api/status');
@@ -583,12 +584,12 @@ class AnnotationViewer {
                     return;
                 }
             } catch (e) { /* still down */ }
-            // Escalate to blocking after 30s
-            if (Date.now() - started >= 30000) {
+            attempts++;
+            if (attempts >= maxAttempts) {
                 this.stopServerReconnectPings();
                 this.hideServerConnectionWarning();
-                this.showServerConnectionScreen('Server unavailable');
                 this.needsRemoteServerConnection = true;
+                this.connectToRemoteServerWithRetry();
             }
         }, 10000);
     }
@@ -599,7 +600,49 @@ class AnnotationViewer {
             this.reconnectPingInterval = null;
         }
     }
-    
+
+    /**
+     * Comprehensive connection check on app foreground.
+     * Called by native bridge (iOS) and visibilitychange/pageshow (fallback).
+     * Checks both local backend and remote server, clears stale overlays.
+     */
+    async handleAppForeground() {
+        console.log('[Foreground] App became active, checking connection state');
+
+        // Check LOCAL backend first
+        try {
+            const healthResp = await fetch('/healthz', {
+                method: 'GET',
+                signal: AbortSignal.timeout(3000)
+            });
+            if (!healthResp.ok) throw new Error('Backend not ready');
+        } catch (e) {
+            console.log('[Foreground] Local backend not ready, starting retry');
+            this.serverConnectionRetryCount = 0;
+            await this.connectToServerWithRetry(true);
+            return;
+        }
+
+        // Local is up — check REMOTE server
+        try {
+            const statusResp = await this.fetchToServer('api/status', {
+                signal: AbortSignal.timeout(5000)
+            });
+            if (!statusResp.ok) throw new Error('Remote server not ready');
+
+            // Both connections OK — clear all overlays
+            this.needsRemoteServerConnection = false;
+            this.hideServerConnectionScreen();
+            this.hideServerConnectionWarning();
+            console.log('[Foreground] All connections verified OK');
+        } catch (e) {
+            console.log('[Foreground] Remote server not available, starting retry');
+            if (!this.isRetrying) {
+                this.connectToRemoteServerWithRetry();
+            }
+        }
+    }
+
     async ensureUserEmail() {
         // User email comes from /api/settings (loaded in loadSettings())
         let userEmail = this.getUserEmail();
@@ -975,10 +1018,17 @@ class AnnotationViewer {
             }
         });
 
-        // Restart retry on wake if needed (but don't interfere with in-progress retry)
+        // Reconnect on wake — comprehensive check via handleAppForeground
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && this.needsRemoteServerConnection && !this.isRetrying) {
-                this.connectToRemoteServerWithRetry();
+            if (!document.hidden) {
+                this.handleAppForeground();
+            }
+        });
+
+        // Backup for WKWebView where visibilitychange may not fire
+        window.addEventListener('pageshow', (event) => {
+            if (event.persisted) {
+                this.handleAppForeground();
             }
         });
     }
