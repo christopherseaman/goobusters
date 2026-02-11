@@ -1005,10 +1005,18 @@ class AnnotationViewer {
             return (size !== undefined ? size : this.brushSize) * scale * 2;
         };
 
+        // Only offset the brush preview circle during slider drag
+        let isSliderActive = false;
+        const slider = document.getElementById('brushSizeInline');
+        if (slider) {
+            slider.addEventListener('pointerdown', () => { isSliderActive = true; });
+            document.addEventListener('pointerup', () => { isSliderActive = false; });
+        }
+
         document.addEventListener('pointermove', (e) => {
             const d = getDisplayDiameter();
-            const maxD = getDisplayDiameter(50);
-            preview.style.left = `${e.clientX - d / 2 + maxD * 1.5}px`;
+            const offset = isSliderActive ? getDisplayDiameter(50) * 1.5 : 0;
+            preview.style.left = `${e.clientX - d / 2 + offset}px`;
             preview.style.top = `${e.clientY - d / 2}px`;
             preview.style.width = `${d}px`;
             preview.style.height = `${d}px`;
@@ -1135,26 +1143,37 @@ class AnnotationViewer {
         // Wait for next frame to ensure layout is complete
         requestAnimationFrame(() => {
             const sliderRect = slider.getBoundingClientRect();
-            
+
             // Set canvas size to match slider width
             typeBar.width = sliderRect.width;
-            typeBar.height = slider.offsetHeight || 24;
-            
+            typeBar.height = typeBar.offsetHeight || 24;
+
             const ctx = typeBar.getContext('2d');
             const width = typeBar.width;
             const height = typeBar.height;
-            const frameWidth = width / this.totalFrames;
-            
+
+            // Account for thumb inset: range input thumb center at min is thumbHalf from left edge
+            const btnSize = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--btn-size')) || 0;
+            const thumbSize = btnSize * 0.3;
+            const thumbHalf = thumbSize / 2;
+            const trackWidth = width - thumbSize;
+            const lastFrame = this.totalFrames - 1;
+            // Slider has totalFrames values but (totalFrames-1) intervals between stops
+            const step = lastFrame > 0 ? trackWidth / lastFrame : trackWidth;
+
             // Clear canvas
             ctx.clearRect(0, 0, width, height);
-            
+
             // Get unsaved edits to check for modified frames
             const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-            
-            // Draw colored sections for each frame
+
+            // Draw band centered on each thumb stop; first/last extend to canvas edges
             for (let frameNum = 0; frameNum < this.totalFrames; frameNum++) {
-                const x = frameNum * frameWidth;
-                const w = frameWidth;
+                const center = thumbHalf + frameNum * step;
+                let x = center - step / 2;
+                let w = step;
+                if (frameNum === 0) { x = 0; w = center + step / 2; }
+                else if (frameNum === lastFrame) { w = width - x; }
                 
                 let color = 'transparent';
                 
@@ -1188,7 +1207,7 @@ class AnnotationViewer {
             // Scrubline is always green - empty_id frames are indicated by the red glow around the image
             const scrublineColor = 'rgba(76, 175, 80, 0.9)';
             
-            // Draw scrubline across entire width (draw on top of colored sections)
+            // Draw scrubline across thumb-travel range (draw on top of colored sections)
             const scrublineY = height / 2;
             const scrublineHeight = 3;
             ctx.fillStyle = scrublineColor;

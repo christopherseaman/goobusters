@@ -36,7 +36,7 @@
 
     /* Slider/timeline — derived from btn-size */
     --slider-height: calc(var(--btn-size) * 0.4);
-    --slider-thumb: calc(var(--btn-size) * 0.4);
+    --slider-thumb: calc(var(--btn-size) * 0.3);
     --slider-container-padding: calc(var(--btn-size) * 0.28);
     /* Brush size slider (vertical) */
     --brush-slider-height: calc(var(--btn-size) * 2.8);
@@ -56,9 +56,6 @@
     --label-font: calc(var(--btn-size) * 0.3);
     --label-min-width: calc(var(--btn-size) * 0.65);
     --counter-font: calc(var(--btn-size) * 0.24);
-
-    /* Slider type bar inset (matches label width + gap) */
-    --type-bar-inset: calc(var(--btn-size) * 0.65);
 
     /* Modal */
     --modal-padding: clamp(20px, 4vh, 44px);
@@ -205,13 +202,7 @@ html, body {
     min-width: 0;
 }
 
-.bottom-bar-save {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: var(--btn-gap);
-    flex-shrink: 0;
-}
+
 
 .toolbar-left.hidden, .toolbar-right.hidden {
     opacity: 0;
@@ -381,10 +372,10 @@ html, body {
 
 /* Frame slider */
 .slider-wrapper {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
     align-items: center;
-    gap: 16px;
-    position: relative;
+    column-gap: var(--btn-gap);
 }
 
 .slider-label {
@@ -396,35 +387,30 @@ html, body {
     text-align: center;
 }
 
+#sliderMin { grid-column: 1; grid-row: 1; }
+#sliderMax { grid-column: 3; grid-row: 1; }
+
 /* Background bar for frame type indicators */
 .slider-type-bar {
-    position: absolute;
-    left: var(--type-bar-inset);
-    right: var(--type-bar-inset);
-    top: 50%;
-    transform: translateY(-50%);
+    grid-column: 2;
+    grid-row: 1;
+    width: 100%;
     height: var(--slider-height);
     pointer-events: none;
     border-radius: calc(var(--slider-height) / 2);
     z-index: 0;
 }
 
-/* Slider wrapper needs relative positioning */
-.slider-wrapper {
-    position: relative;
-    display: flex;
-    align-items: center;
-}
-
 #frameSlider {
+    grid-column: 2;
+    grid-row: 1;
     width: 100%;
     height: var(--slider-height);
     -webkit-appearance: none;
     appearance: none;
-    background: transparent;  /* Transparent, type bar shows colors */
+    background: transparent;
     border-radius: 2px;
     outline: none;
-    position: relative;
     z-index: 1;
     cursor: pointer;
     margin: 0;

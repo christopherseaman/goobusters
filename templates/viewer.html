@@ -59,6 +59,7 @@
         <button class="tool-btn warning" id="markEmpty" title="Mark Empty">🚫</button>
         <button class="tool-btn" id="eraseMode" title="Erase">🧽</button>
         <button class="tool-btn active" id="drawMode" title="Draw">🖌️</button>
+        <button class="tool-btn" id="toggleMask" title="Toggle Mask">🥸</button>
     </div>
 
     <!-- Brush size slider (top, offset right of left toolbar) -->
@@ -73,6 +74,8 @@
     <!-- Right toolbar -->
     <div class="toolbar-right" id="toolbarRight">
         <div class="control-badge clickable" id="examBadge" title="Click to select series"># --</div>
+        <div class="frame-counter" id="frameCounter">0 / 0</div>
+        <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
         <button class="control-btn" id="markComplete" title="Mark Complete & Get Next Series">✅</button>
         <button class="control-btn" id="settingsBtn" title="Settings">⚙️</button>
         <button class="control-btn" id="resetMask" title="Reset">↺</button>
@@ -81,7 +84,6 @@
     <!-- Bottom toolbar -->
     <div class="toolbar-bottom" id="toolbarBottom">
         <div class="bottom-bar-controls">
-            <button class="tool-btn" id="toggleMask" title="Toggle Mask">🥸</button>
             <button class="playback-btn" id="playPause" title="Play/Pause">▶️</button>
         </div>
         <div class="bottom-bar-slider">
@@ -91,10 +93,6 @@
                 <input type="range" id="frameSlider" min="0" max="100" value="0">
                 <span class="slider-label" id="sliderMax">0</span>
             </div>
-        </div>
-        <div class="bottom-bar-save">
-            <button class="tool-btn" id="saveChanges" title="Save (automatically triggers retrack)">💾</button>
-            <div class="frame-counter" id="frameCounter">0 / 0</div>
         </div>
     </div>
 
