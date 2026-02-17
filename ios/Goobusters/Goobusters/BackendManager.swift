@@ -13,7 +13,7 @@ class BackendManager: ObservableObject {
     private var isStopped = false
     private let port = 8080
     private let entryScript = "python-app/start_server.py"
-    
+
     private var resourcePath: String {
         #if os(macOS) || targetEnvironment(macCatalyst)
         // On macOS or Mac Catalyst, use bundle path or fallback to executable path
@@ -49,7 +49,7 @@ class BackendManager: ObservableObject {
 
                 // Poll for server readiness
                 await waitForServer()
-                
+
                 // Start continuous health monitoring
                 startHealthMonitoring()
             } catch {
@@ -82,37 +82,33 @@ class BackendManager: ObservableObject {
         errorMessage = "Backend Error"
         statusMessage = "Backend Error"
     }
-    
+
     private func startHealthMonitoring() {
         healthCheckTask?.cancel()
 
         healthCheckTask = Task {
             let url = URL(string: "http://127.0.0.1:\(port)/healthz")!
             var consecutiveFailures = 0
-            let maxFailures = 3
-
-            let session = URLSession(configuration: {
-                let config = URLSessionConfiguration.ephemeral
-                config.timeoutIntervalForRequest = 3
-                config.timeoutIntervalForResource = 3
-                return config
-            }())
+            let maxFailures = 5
 
             while !isStopped && !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
 
-                let isRunning = await pythonRunner?.isRunning() ?? false
-                if !isRunning {
-                    consecutiveFailures = 0
-                    await handleBackendCrash()
-                    continue
-                }
+                // Create a fresh session each time to avoid stale connection state after sleep
+                let session = URLSession(configuration: {
+                    let config = URLSessionConfiguration.ephemeral
+                    config.timeoutIntervalForRequest = 5
+                    config.timeoutIntervalForResource = 5
+                    return config
+                }())
 
                 do {
                     let (_, response) = try await session.data(from: url)
                     if let httpResponse = response as? HTTPURLResponse,
                        httpResponse.statusCode == 200 {
-                        consecutiveFailures = 0
+                        if consecutiveFailures > 0 {
+                            consecutiveFailures = 0
+                        }
                         if !isReady {
                             isReady = true
                             needsReload = true
@@ -125,6 +121,8 @@ class BackendManager: ObservableObject {
                     consecutiveFailures += 1
                 }
 
+                session.invalidateAndCancel()
+
                 if consecutiveFailures >= maxFailures && isReady {
                     isReady = false
                     statusMessage = "Reconnecting..."
@@ -132,48 +130,12 @@ class BackendManager: ObservableObject {
             }
         }
     }
-    
-    private func handleBackendCrash() async {
-        // Backend process died - restart it
-        isReady = false
-        statusMessage = "Restarting backend..."
-        errorMessage = nil
-        
-        // Stop the old runner
-        await pythonRunner?.stop()
-        
-        // Wait a moment before restarting
-        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-        
-        // Restart
-        let path = resourcePath
-        guard !path.isEmpty else {
-            errorMessage = "Bundle resource path not found"
-            statusMessage = "Error: Bundle missing"
-            return
-        }
-        
-        pythonRunner = PythonBackendRunner(resourcePath: path)
-        
-        do {
-            try await pythonRunner?.start(entryScriptRelativePath: entryScript)
-            statusMessage = "Connecting..."
-            await waitForServer()
-            // Health monitoring will continue automatically
-        } catch {
-            errorMessage = error.localizedDescription
-            statusMessage = "Error: \(error.localizedDescription)"
-            // Try again in a few seconds
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            await handleBackendCrash()
-        }
-    }
 
     func stop() {
         isStopped = true
         healthCheckTask?.cancel()
         healthCheckTask = nil
-        
+
         Task {
             await pythonRunner?.stop()
         }
