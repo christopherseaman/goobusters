@@ -88,13 +88,12 @@ class BackendManager: ObservableObject {
 
         healthCheckTask = Task {
             let url = URL(string: "http://127.0.0.1:\(port)/healthz")!
-            var consecutiveFailures = 0
-            let maxFailures = 5
+            var hadFailure = false
 
             while !isStopped && !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
 
-                // Create a fresh session each time to avoid stale connection state after sleep
+                // Fresh session each time — stale connections fail after sleep
                 let session = URLSession(configuration: {
                     let config = URLSessionConfiguration.ephemeral
                     config.timeoutIntervalForRequest = 5
@@ -102,30 +101,25 @@ class BackendManager: ObservableObject {
                     return config
                 }())
 
+                var ok = false
                 do {
                     let (_, response) = try await session.data(from: url)
                     if let httpResponse = response as? HTTPURLResponse,
                        httpResponse.statusCode == 200 {
-                        if consecutiveFailures > 0 {
-                            consecutiveFailures = 0
-                        }
-                        if !isReady {
-                            isReady = true
-                            needsReload = true
-                            errorMessage = nil
-                        }
-                    } else {
-                        consecutiveFailures += 1
+                        ok = true
                     }
                 } catch {
-                    consecutiveFailures += 1
+                    // Network briefly unavailable (e.g. after sleep) — not a real failure
                 }
 
                 session.invalidateAndCancel()
 
-                if consecutiveFailures >= maxFailures && isReady {
-                    isReady = false
-                    statusMessage = "Reconnecting..."
+                if ok && hadFailure {
+                    // Backend recovered after a blip — tell JS to clear stale UI
+                    hadFailure = false
+                    needsReload = true
+                } else if !ok {
+                    hadFailure = true
                 }
             }
         }
