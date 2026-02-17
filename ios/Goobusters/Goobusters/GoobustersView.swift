@@ -21,7 +21,12 @@ struct GoobustersView: View {
             
             // Always show WebView - frontend handles connection state
             // This prevents losing state when backend restarts
-            WebView(url: backendManager.serverURL, isReady: backendManager.isReady)
+            WebView(
+                url: backendManager.serverURL,
+                isReady: backendManager.isReady,
+                needsReload: backendManager.needsReload,
+                onReloaded: { backendManager.needsReload = false }
+            )
                 .ignoresSafeArea()
                 .id("webview") // Use stable ID to prevent unnecessary reloads
                 .background(Color.black) // Ensure black background
@@ -65,6 +70,8 @@ struct GoobustersView: View {
 struct WebView: NSViewRepresentable {
     let url: URL
     let isReady: Bool
+    let needsReload: Bool
+    let onReloaded: () -> Void
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -113,6 +120,13 @@ struct WebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        if isReady && needsReload {
+            logger.info("WebView reloading after backend recovery")
+            webView.reload()
+            DispatchQueue.main.async { onReloaded() }
+            return
+        }
+
         // Reload when backend becomes ready OR if URL changes
         let currentURL = webView.url?.absoluteString ?? ""
         let targetURL = url.absoluteString
@@ -158,6 +172,8 @@ struct WebView: NSViewRepresentable {
 struct WebView: UIViewRepresentable {
     let url: URL
     let isReady: Bool
+    let needsReload: Bool
+    let onReloaded: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -210,6 +226,13 @@ struct WebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
+        if isReady && needsReload {
+            logger.info("WebView reloading after backend recovery")
+            webView.reload()
+            DispatchQueue.main.async { onReloaded() }
+            return
+        }
+
         // Reload when backend becomes ready OR if URL changes
         let currentURL = webView.url?.absoluteString ?? ""
         let targetURL = url.absoluteString
@@ -228,29 +251,6 @@ struct WebView: UIViewRepresentable {
 
     class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
-
-        override init() {
-            super.init()
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(appDidBecomeActive),
-                name: UIApplication.didBecomeActiveNotification,
-                object: nil
-            )
-        }
-
-        deinit {
-            NotificationCenter.default.removeObserver(self)
-        }
-
-        @objc func appDidBecomeActive() {
-            logger.info("App became active, notifying WebView")
-            webView?.evaluateJavaScript("if (window.viewer) viewer.handleAppForeground();") { _, error in
-                if let error = error {
-                    logger.error("Foreground JS call failed: \(error.localizedDescription)")
-                }
-            }
-        }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             logger.error("WebView navigation error: \(error.localizedDescription)")

@@ -4,6 +4,7 @@ import Combine
 @MainActor
 class BackendManager: ObservableObject {
     @Published var isReady = false
+    @Published var needsReload = false
     @Published var statusMessage = "Starting backend..."
     @Published var errorMessage: String?
 
@@ -114,6 +115,7 @@ class BackendManager: ObservableObject {
                         consecutiveFailures = 0
                         if !isReady {
                             isReady = true
+                            needsReload = true
                             errorMessage = nil
                         }
                     } else {

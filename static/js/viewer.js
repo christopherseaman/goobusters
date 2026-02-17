@@ -76,7 +76,6 @@ class AnnotationViewer {
         // Connection state tracking
         this.hasConnectedToServer = false; // Track if we've ever successfully connected
         this.serverConnectionRetryCount = 0;
-        this.serverConnectionRetryTimeout = null;
         this.serverConnectionWarningVisible = false;
         this.reconnectPingInterval = null;
         this.needsRemoteServerConnection = false;
@@ -375,62 +374,35 @@ class AnnotationViewer {
     }
     
     /**
-     * Connect to server with exponential backoff retry.
+     * Connect to local backend with exponential backoff retry.
      * Shows blocking screen until first successful connection.
      */
-    async connectToServerWithRetry(forceImmediate = false) {
-        // If forcing immediate (from manual button), clear any pending timeout
-        if (forceImmediate && this.serverConnectionRetryTimeout) {
-            clearTimeout(this.serverConnectionRetryTimeout);
-            this.serverConnectionRetryTimeout = null;
-            this.serverConnectionRetryCount = 0;
-        }
-        
+    async connectToServerWithRetry() {
         this.showServerConnectionScreen('Connecting...');
-        
+
         const maxRetries = 30;
-        let retryDelay = 1000; // Start with 1 second
-        
-        const attemptConnection = async () => {
+
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
-                // Check if backend is responding (don't try to load data - that requires sync)
-                const healthResp = await fetch('/healthz', { 
+                const healthResp = await fetch('/healthz', {
                     method: 'GET',
                     signal: AbortSignal.timeout(5000)
                 });
-                
-                if (!healthResp.ok) {
-                    throw new Error(`Backend returned ${healthResp.status}`);
-                }
-                
-                const healthData = await healthResp.json();
-                // Health check just verifies LOCAL backend is running - don't check client_ready
-                // (data sync status is checked separately)
-                
+                if (!healthResp.ok) throw new Error(`Backend returned ${healthResp.status}`);
+
                 this.hasConnectedToServer = true;
                 this.serverConnectionRetryCount = 0;
                 return true;
-            } catch (error) {
-                this.serverConnectionRetryCount++;
-                
-                if (this.serverConnectionRetryCount >= maxRetries) {
-                    this.showServerConnectionScreen('Backend Error');
-                    return false;
-                }
-                
-                retryDelay = Math.min(1000 * Math.pow(2, this.serverConnectionRetryCount - 1), 512000);
-                this.showServerConnectionScreen('Connecting...');
-                
-                // Schedule next retry
-                this.serverConnectionRetryTimeout = setTimeout(() => {
-                    attemptConnection();
-                }, retryDelay);
-                
-                return false;
+            } catch (e) {
+                // Continue retrying
             }
-        };
-        
-        return await attemptConnection();
+
+            const retryDelay = Math.min(1000 * Math.pow(2, attempt), 512000);
+            await new Promise(r => setTimeout(r, retryDelay));
+        }
+
+        this.showServerConnectionScreen('Backend Error');
+        return false;
     }
 
     /**
@@ -536,10 +508,6 @@ class AnnotationViewer {
                 screen.classList.add('hidden');
             }, 200);
         }
-        if (this.serverConnectionRetryTimeout) {
-            clearTimeout(this.serverConnectionRetryTimeout);
-            this.serverConnectionRetryTimeout = null;
-        }
     }
     
     /**
@@ -601,47 +569,6 @@ class AnnotationViewer {
         }
     }
 
-    /**
-     * Comprehensive connection check on app foreground.
-     * Called by native bridge (iOS) and visibilitychange/pageshow (fallback).
-     * Checks both local backend and remote server, clears stale overlays.
-     */
-    async handleAppForeground() {
-        console.log('[Foreground] App became active, checking connection state');
-
-        // Check LOCAL backend first
-        try {
-            const healthResp = await fetch('/healthz', {
-                method: 'GET',
-                signal: AbortSignal.timeout(3000)
-            });
-            if (!healthResp.ok) throw new Error('Backend not ready');
-        } catch (e) {
-            console.log('[Foreground] Local backend not ready, starting retry');
-            this.serverConnectionRetryCount = 0;
-            await this.connectToServerWithRetry(true);
-            return;
-        }
-
-        // Local is up — check REMOTE server
-        try {
-            const statusResp = await this.fetchToServer('api/status', {
-                signal: AbortSignal.timeout(5000)
-            });
-            if (!statusResp.ok) throw new Error('Remote server not ready');
-
-            // Both connections OK — clear all overlays
-            this.needsRemoteServerConnection = false;
-            this.hideServerConnectionScreen();
-            this.hideServerConnectionWarning();
-            console.log('[Foreground] All connections verified OK');
-        } catch (e) {
-            console.log('[Foreground] Remote server not available, starting retry');
-            if (!this.isRetrying) {
-                this.connectToRemoteServerWithRetry();
-            }
-        }
-    }
 
     async ensureUserEmail() {
         // User email comes from /api/settings (loaded in loadSettings())
@@ -888,7 +815,7 @@ class AnnotationViewer {
                 if (this.needsRemoteServerConnection) {
                     await this.connectToRemoteServerWithRetry();
                 } else {
-                    await this.connectToServerWithRetry(true);
+                    await this.connectToServerWithRetry();
                 }
             });
         }
@@ -1018,19 +945,6 @@ class AnnotationViewer {
             }
         });
 
-        // Reconnect on wake — comprehensive check via handleAppForeground
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) {
-                this.handleAppForeground();
-            }
-        });
-
-        // Backup for WKWebView where visibilitychange may not fire
-        window.addEventListener('pageshow', (event) => {
-            if (event.persisted) {
-                this.handleAppForeground();
-            }
-        });
     }
 
     initBrushPreview() {
