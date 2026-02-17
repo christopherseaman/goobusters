@@ -16,7 +16,7 @@
     /* Button sizing — set dynamically by JS from left bar constraint.
        Fallback uses vh for initial render before JS runs.
        JS sets --btn-size on :root based on available height / 4 buttons. */
-    --btn-size: clamp(36px, 8vh, 88px);
+    --btn-size: clamp(32px, 7.2vh, 79px);
     --btn-font: calc(var(--btn-size) * 0.5);
     --btn-radius: calc(var(--btn-size) * 0.18);
     --btn-gap: calc(var(--btn-size) * 0.1);

@@ -197,8 +197,8 @@ class AnnotationViewer {
         // Right bar (tallest): badge + 3 buttons + 3 gaps(0.1) + 2 paddings(0.1) = 4.5 * btn
         const computed = Math.floor(available / 4.5);
         // Phone/iPad mini (vh<800): smaller buttons; iPad Air+ (vh>=800): larger buttons
-        const minSize = vh < 800 ? 36 : 44;
-        const maxSize = vh < 800 ? 56 : 88;
+        const minSize = vh < 800 ? 32 : 40;
+        const maxSize = vh < 800 ? 50 : 79;
         const btnSize = Math.max(minSize, Math.min(maxSize, computed));
 
         document.documentElement.style.setProperty('--btn-size', `${btnSize}px`);
