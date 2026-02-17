@@ -121,13 +121,17 @@ struct WebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if isReady && needsReload {
-            logger.info("WebView reloading after backend recovery")
-            webView.reload()
+            logger.info("Backend recovered, notifying JS for wake recovery")
+            webView.evaluateJavaScript("if (window.viewer) viewer.handleWakeRecovery();") { _, error in
+                if let error = error {
+                    logger.error("Wake recovery JS call failed: \(error.localizedDescription)")
+                }
+            }
             DispatchQueue.main.async { onReloaded() }
             return
         }
 
-        // Reload when backend becomes ready OR if URL changes
+        // Load URL when backend becomes ready for the first time
         let currentURL = webView.url?.absoluteString ?? ""
         let targetURL = url.absoluteString
         let needsLoad = currentURL != targetURL || (isReady && currentURL.isEmpty)
@@ -227,13 +231,17 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         if isReady && needsReload {
-            logger.info("WebView reloading after backend recovery")
-            webView.reload()
+            logger.info("Backend recovered, notifying JS for wake recovery")
+            webView.evaluateJavaScript("if (window.viewer) viewer.handleWakeRecovery();") { _, error in
+                if let error = error {
+                    logger.error("Wake recovery JS call failed: \(error.localizedDescription)")
+                }
+            }
             DispatchQueue.main.async { onReloaded() }
             return
         }
 
-        // Reload when backend becomes ready OR if URL changes
+        // Load URL when backend becomes ready for the first time
         let currentURL = webView.url?.absoluteString ?? ""
         let targetURL = url.absoluteString
         let needsLoad = currentURL != targetURL || (isReady && currentURL.isEmpty)

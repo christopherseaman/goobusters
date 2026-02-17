@@ -569,6 +569,40 @@ class AnnotationViewer {
         }
     }
 
+    /**
+     * Lightweight recovery after iOS sleep/wake cycle.
+     * Called by native bridge when BackendManager confirms backend is healthy.
+     * Clears stale overlays and aborts stuck retries — does NOT re-sync or re-init.
+     */
+    handleWakeRecovery() {
+        console.log('[Wake] Backend confirmed healthy by native layer, clearing stale UI');
+
+        // Abort any stuck remote server retry loop
+        if (this.retryController) {
+            this.retryController.abort();
+        }
+
+        // Clear all connection/error overlays
+        this.stopServerReconnectPings();
+        this.hideServerConnectionScreen();
+        this.hideServerConnectionWarning();
+        this.hideSyncError();
+        this.needsRemoteServerConnection = false;
+
+        // Quick async check on remote server — non-blocking
+        this.fetchToServer('api/status', { signal: AbortSignal.timeout(5000) })
+            .then(resp => {
+                if (resp.ok) {
+                    console.log('[Wake] Remote server OK');
+                } else {
+                    throw new Error('Remote server not OK');
+                }
+            })
+            .catch(() => {
+                console.log('[Wake] Remote server not available, starting retry');
+                this.connectToRemoteServerWithRetry();
+            });
+    }
 
     async ensureUserEmail() {
         // User email comes from /api/settings (loaded in loadSettings())
