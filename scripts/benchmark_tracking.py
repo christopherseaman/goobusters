@@ -2,20 +2,24 @@
 """
 Benchmark script for tracking worker performance.
 
-Measures DIS optical flow presets, mask warping, per-frame tracking loop
-(video decode + flow + warp), and full pipeline including I/O.
+Runs end-to-end tracking loops with different optical flow backends,
+pre-loading all frames to isolate compute from video I/O.
 
 Usage:
     python scripts/benchmark_tracking.py [OPTIONS]
 
 Options:
-    --quick             3 iterations (micro), 1 run (pipeline)
-    --iterations N      Micro-benchmark iterations (default: 10)
-    --method METHOD     Comma-separated: dis-ultrafast,dis-fast,dis-medium,all (default: all)
+    --series LABEL      Which series: small,medium,large,all (default: medium)
+    --method METHOD     Comma-separated flow methods (default: all)
     --output FILE       Write JSON to file instead of stdout
-    --skip-pipeline     Skip end-to-end pipeline benchmarks
+
+Available methods:
+    dis-ultrafast, dis-fast, dis-medium     OpenCV DIS presets (CPU)
+    vision-low, vision-medium, vision-high  Apple Vision framework (GPU/ANE)
+    farneback                               OpenCV Farneback (CPU)
 
 Env vars:
+    DIS_SCALE=N         Resolution divisor for DIS (1=full, 2=half, 4=quarter)
     DISABLE_GPU=true    Force CPU for all methods
 """
 
@@ -35,7 +39,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# Path setup (same pattern as rebuild_mask_archives.py)
+# Path setup
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _lib_server = os.path.join(PROJECT_ROOT, "lib", "server")
 
@@ -49,9 +53,11 @@ if _lib_server not in sys.path:
 # Constants
 # ---------------------------------------------------------------------------
 
-ALL_METHODS = ["dis-ultrafast", "dis-fast", "dis-medium"]
+DIS_METHODS = ["dis-ultrafast", "dis-fast", "dis-medium"]
+VISION_METHODS = ["vision-low", "vision-medium", "vision-high"]
+OTHER_METHODS = ["farneback"]
+ALL_METHODS = DIS_METHODS + VISION_METHODS + OTHER_METHODS
 
-# Test series: {label: (study_uid, series_uid, expected_frames, expected_annotations)}
 TEST_SERIES = {
     "small": (
         "1.2.826.0.1.3680043.8.498.11903523154547667096601610925275921854",
@@ -72,29 +78,15 @@ TEST_SERIES = {
 
 
 def log(msg: str) -> None:
-    """Print progress to stderr so stdout stays clean for JSON."""
     print(msg, file=sys.stderr, flush=True)
 
 
-def timing_stats(times_ms: list[float], iterations: int) -> dict:
-    arr = np.array(times_ms)
-    return {
-        "mean_ms": round(float(arr.mean()), 2),
-        "median_ms": round(float(np.median(arr)), 2),
-        "min_ms": round(float(arr.min()), 2),
-        "max_ms": round(float(arr.max()), 2),
-        "std_ms": round(float(arr.std()), 2),
-        "iterations": iterations,
-    }
-
-
 # ---------------------------------------------------------------------------
-# Hardware detection
+# Hardware
 # ---------------------------------------------------------------------------
 
 def collect_hardware_info() -> dict:
     import psutil
-
     from lib.performance_config import get_optimizer
 
     optimizer = get_optimizer()
@@ -113,31 +105,104 @@ def collect_hardware_info() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Frame / video helpers
+# Flow backends
 # ---------------------------------------------------------------------------
 
-def load_frame_pair(series_label: str) -> tuple[np.ndarray, np.ndarray] | None:
-    """Load two consecutive frames from an existing series output directory."""
-    study_uid, series_uid = TEST_SERIES[series_label][:2]
-    frames_dir = Path(PROJECT_ROOT) / "output" / "dis" / f"{study_uid}_{series_uid}" / "frames"
+def make_dis_flow_fn(preset: str):
+    """Return a flow function using OpenCV DIS at the given preset."""
+    from lib.opticalflowprocessor import OpticalFlowProcessor
 
-    if not frames_dir.exists():
-        return None
+    os.environ["DIS_PRESET"] = preset
+    processor = OpticalFlowProcessor("dis")
 
-    frame_files = sorted(frames_dir.glob("frame_*.webp"))
-    if len(frame_files) < 2:
-        return None
+    def calc(prev_bgr, curr_bgr):
+        return processor.calculate_flow(prev_bgr, curr_bgr)
 
-    prev = cv2.imread(str(frame_files[0]), cv2.IMREAD_GRAYSCALE)
-    curr = cv2.imread(str(frame_files[1]), cv2.IMREAD_GRAYSCALE)
-    if prev is None or curr is None:
-        return None
-
-    return prev, curr
+    return calc, processor
 
 
-def find_video_path(series_label: str) -> str | None:
-    """Find the video file for a test series."""
+def make_farneback_flow_fn():
+    """Return a flow function using OpenCV Farneback."""
+    def calc(prev_bgr, curr_bgr):
+        prev = cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2GRAY) if len(prev_bgr.shape) == 3 else prev_bgr
+        curr = cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2GRAY) if len(curr_bgr.shape) == 3 else curr_bgr
+        return cv2.calcOpticalFlowFarneback(prev, curr, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+
+    return calc, None
+
+
+def make_vision_flow_fn(accuracy_name: str):
+    """Return a flow function using Apple Vision framework (GPU/ANE)."""
+    try:
+        import ctypes
+        import Quartz
+        import Vision
+    except ImportError:
+        return None, None
+
+    accuracy_map = {
+        "low": Vision.VNGenerateOpticalFlowRequestComputationAccuracyLow,
+        "medium": Vision.VNGenerateOpticalFlowRequestComputationAccuracyMedium,
+        "high": Vision.VNGenerateOpticalFlowRequestComputationAccuracyHigh,
+    }
+    accuracy = accuracy_map[accuracy_name]
+    cs = Quartz.CGColorSpaceCreateDeviceRGB()
+
+    def calc(prev_bgr, curr_bgr):
+        h, w = prev_bgr.shape[:2]
+
+        bgra_p = np.ascontiguousarray(cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2BGRA))
+        bgra_c = np.ascontiguousarray(cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2BGRA))
+
+        ci_p = Quartz.CIImage.imageWithBitmapData_bytesPerRow_size_format_colorSpace_(
+            Quartz.NSData.dataWithBytes_length_(bgra_p.tobytes(), bgra_p.nbytes),
+            w * 4, Quartz.CGSizeMake(w, h), Quartz.kCIFormatBGRA8, cs)
+        ci_c = Quartz.CIImage.imageWithBitmapData_bytesPerRow_size_format_colorSpace_(
+            Quartz.NSData.dataWithBytes_length_(bgra_c.tobytes(), bgra_c.nbytes),
+            w * 4, Quartz.CGSizeMake(w, h), Quartz.kCIFormatBGRA8, cs)
+
+        req = Vision.VNGenerateOpticalFlowRequest.alloc().initWithTargetedCIImage_options_(ci_c, {})
+        req.setComputationAccuracy_(accuracy)
+        hdl = Vision.VNSequenceRequestHandler.alloc().init()
+        ok, err = hdl.performRequests_onCIImage_error_([req], ci_p, None)
+        if not ok:
+            raise RuntimeError(f"Vision failed: {err}")
+
+        obs = req.results()[0]
+        buf = obs.pixelBuffer()
+        Quartz.CVPixelBufferLockBaseAddress(buf, 0)
+        bpr = Quartz.CVPixelBufferGetBytesPerRow(buf)
+        ph = Quartz.CVPixelBufferGetHeight(buf)
+        pw = Quartz.CVPixelBufferGetWidth(buf)
+        base = Quartz.CVPixelBufferGetBaseAddress(buf)
+        raw = bytes(base.as_buffer(bpr * ph))
+        flow = np.frombuffer(raw, dtype=np.float32).reshape(ph, -1)[:, :pw * 2].reshape(ph, pw, 2).copy()
+        Quartz.CVPixelBufferUnlockBaseAddress(buf, 0)
+        return flow
+
+    return calc, None
+
+
+def make_flow_fn(method: str):
+    """Factory: return (flow_fn, cleanup_obj_or_None) for a method name."""
+    if method.startswith("dis-"):
+        preset = method.split("-", 1)[1]
+        return make_dis_flow_fn(preset)
+    elif method == "farneback":
+        return make_farneback_flow_fn()
+    elif method.startswith("vision-"):
+        acc = method.split("-", 1)[1]
+        return make_vision_flow_fn(acc)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+
+# ---------------------------------------------------------------------------
+# Pre-load frames
+# ---------------------------------------------------------------------------
+
+def preload_frames(series_label: str) -> tuple[list[np.ndarray], int, int] | None:
+    """Read all video frames into memory. Returns (frames_bgr, width, height)."""
     from lib.config import load_config
     from track import find_images_dir
 
@@ -147,346 +212,92 @@ def find_video_path(series_label: str) -> str | None:
         images_dir = find_images_dir(
             str(config.data_dir), config.project_id, config.dataset_id
         )
-        path = os.path.join(images_dir, study_uid, f"{series_uid}.mp4")
-        return path if os.path.exists(path) else None
+        video_path = os.path.join(images_dir, study_uid, f"{series_uid}.mp4")
+        if not os.path.exists(video_path):
+            return None
     except Exception:
         return None
 
-
-# ---------------------------------------------------------------------------
-# Micro-benchmarks
-# ---------------------------------------------------------------------------
-
-def benchmark_optical_flow(
-    methods: list[str], iterations: int
-) -> tuple[dict, tuple[int, int] | None]:
-    """Benchmark optical flow calculation per frame pair for each DIS preset."""
-    from lib.opticalflowprocessor import OpticalFlowProcessor
-
-    pair = load_frame_pair("medium")
-    if pair is None:
-        log("  SKIP: no frames available for micro-benchmarks")
-        return {}, None
-
-    prev_frame, curr_frame = pair
-    resolution = (prev_frame.shape[0], prev_frame.shape[1])
-    results = {}
-
-    for method_label in methods:
-        preset = method_label.split("-", 1)[1]
-        os.environ["DIS_PRESET"] = preset
-
-        log(f"  {method_label}...")
-
-        try:
-            processor = OpticalFlowProcessor("dis")
-
-            # Warmup (untimed)
-            processor.calculate_flow(prev_frame, curr_frame)
-
-            times_ms = []
-            for _ in range(iterations):
-                t0 = time.perf_counter()
-                processor.calculate_flow(prev_frame, curr_frame)
-                elapsed = (time.perf_counter() - t0) * 1000
-                times_ms.append(elapsed)
-
-            results[method_label] = timing_stats(times_ms, iterations)
-            processor.cleanup_memory()
-
-        except Exception as exc:
-            log(f"  ERROR ({method_label}): {exc}")
-            results[method_label] = {"error": str(exc)}
-
-    return results, resolution
-
-
-def benchmark_mask_warp(iterations: int) -> dict | None:
-    """Benchmark mask warping with optical flow."""
-    from lib.multi_frame_tracker import MultiFrameTracker
-    from lib.opticalflowprocessor import OpticalFlowProcessor
-
-    pair = load_frame_pair("medium")
-    if pair is None:
-        log("  SKIP: no frames for mask warp benchmark")
-        return None
-
-    prev_frame, curr_frame = pair
-    h, w = prev_frame.shape
-
-    os.environ["DIS_PRESET"] = "fast"
-    processor = OpticalFlowProcessor("dis")
-    flow = processor.calculate_flow(prev_frame, curr_frame)
-
-    mask = np.zeros((h, w), dtype=np.uint8)
-    mask[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4] = 255
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tracker = MultiFrameTracker(processor, tmpdir)
-
-        # Warmup
-        tracker._warp_mask_with_flow(mask, flow)
-
-        times_ms = []
-        for _ in range(iterations):
-            t0 = time.perf_counter()
-            tracker._warp_mask_with_flow(mask, flow)
-            elapsed = (time.perf_counter() - t0) * 1000
-            times_ms.append(elapsed)
-
-    processor.cleanup_memory()
-    return timing_stats(times_ms, iterations)
-
-
-def benchmark_video_decode(iterations: int) -> dict | None:
-    """Benchmark raw video frame decode speed (cv2.VideoCapture.read)."""
-    video_path = find_video_path("medium")
-    if video_path is None:
-        log("  SKIP: no video for decode benchmark")
-        return None
-
-    # Warmup: read one frame
     cap = cv2.VideoCapture(video_path)
-    cap.read()
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(frame)
     cap.release()
-
-    times_ms = []
-    for _ in range(iterations):
-        cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-        t0 = time.perf_counter()
-        ret, _ = cap.read()
-        elapsed = (time.perf_counter() - t0) * 1000
-        cap.release()
-
-        if ret:
-            times_ms.append(elapsed)
-
-    if not times_ms:
-        return None
-    return timing_stats(times_ms, iterations)
+    return frames, w, h
 
 
-def benchmark_tracking_loop(series_label: str, preset: str = "fast") -> dict | None:
-    """Benchmark the core tracking inner loop on a real video.
+# ---------------------------------------------------------------------------
+# End-to-end tracking loop
+# ---------------------------------------------------------------------------
 
-    Simulates what _process_segment does: sequential video decode, optical flow,
-    mask warp for each frame — no file I/O. This is the compute-bound core that
-    determines real tracking speed.
-
-    Returns per-frame timing breakdown.
-    """
+def run_tracking_loop(
+    method: str,
+    frames: list[np.ndarray],
+    width: int,
+    height: int,
+) -> dict:
+    """Run flow+warp on pre-loaded frames. Returns timing results."""
     from lib.multi_frame_tracker import MultiFrameTracker
     from lib.opticalflowprocessor import OpticalFlowProcessor
 
-    video_path = find_video_path(series_label)
-    if video_path is None:
-        log(f"  SKIP tracking loop ({series_label}): no video")
-        return None
+    flow_fn, processor = make_flow_fn(method)
+    if flow_fn is None:
+        return {"skipped": True, "reason": f"{method} not available on this platform"}
 
-    study_uid, series_uid, expected_frames, _ = TEST_SERIES[series_label]
-
-    os.environ["DIS_PRESET"] = preset
-    processor = OpticalFlowProcessor("dis")
+    # Dummy processor for tracker (only used for warp grid cache)
+    if processor is None:
+        os.environ["DIS_PRESET"] = "fast"
+        processor = OpticalFlowProcessor("dis")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tracker = MultiFrameTracker(processor, tmpdir)
 
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        # Create a starter mask (center rectangle, like a real annotation)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         mask = np.zeros((height, width), dtype=np.uint8)
         mask[height // 4 : 3 * height // 4, width // 4 : 3 * width // 4] = 255
 
-        # Read first frame (warmup)
-        ret, prev_frame = cap.read()
-        if not ret:
-            cap.release()
-            return None
+        # Warmup: one flow + warp
+        if len(frames) >= 2:
+            wf = flow_fn(frames[0], frames[1])
+            tracker._warp_mask_with_flow(mask, wf)
 
-        decode_times = []
         flow_times = []
         warp_times = []
-        frames_processed = 0
 
-        for _ in range(total_frames - 1):
-            # Video decode
+        for i in range(len(frames) - 1):
             t0 = time.perf_counter()
-            ret, curr_frame = cap.read()
-            t_decode = time.perf_counter() - t0
+            flow = flow_fn(frames[i], frames[i + 1])
+            flow_times.append((time.perf_counter() - t0) * 1000)
 
-            if not ret:
-                break
-
-            # Optical flow
-            t0 = time.perf_counter()
-            flow = processor.calculate_flow(prev_frame, curr_frame)
-            t_flow = time.perf_counter() - t0
-
-            # Mask warp
             t0 = time.perf_counter()
             mask = tracker._warp_mask_with_flow(mask, flow)
-            t_warp = time.perf_counter() - t0
+            warp_times.append((time.perf_counter() - t0) * 1000)
 
-            decode_times.append(t_decode * 1000)
-            flow_times.append(t_flow * 1000)
-            warp_times.append(t_warp * 1000)
+    if processor and hasattr(processor, "cleanup_memory"):
+        processor.cleanup_memory()
 
-            prev_frame = curr_frame
-            frames_processed += 1
+    n = len(flow_times)
+    if n == 0:
+        return {"skipped": True, "reason": "no frames processed"}
 
-        cap.release()
-
-    processor.cleanup_memory()
-
-    if frames_processed == 0:
-        return None
-
-    total_ms = sum(decode_times) + sum(flow_times) + sum(warp_times)
+    total_ms = sum(flow_times) + sum(warp_times)
+    flow_arr = np.array(flow_times)
+    warp_arr = np.array(warp_times)
 
     return {
-        "frames": frames_processed,
+        "method": method,
+        "frames": n,
         "total_s": round(total_ms / 1000, 2),
-        "per_frame_ms": round(total_ms / frames_processed, 2),
-        "breakdown": {
-            "decode": timing_stats(decode_times, frames_processed),
-            "flow": timing_stats(flow_times, frames_processed),
-            "warp": timing_stats(warp_times, frames_processed),
-        },
-        "pct": {
-            "decode": round(sum(decode_times) / total_ms * 100, 1),
-            "flow": round(sum(flow_times) / total_ms * 100, 1),
-            "warp": round(sum(warp_times) / total_ms * 100, 1),
-        },
-        "dis_preset": preset,
+        "per_frame_ms": round(total_ms / n, 2),
+        "flow_ms": round(float(flow_arr.mean()), 2),
+        "warp_ms": round(float(warp_arr.mean()), 2),
+        "flow_pct": round(sum(flow_times) / total_ms * 100, 1),
+        "dis_scale": int(os.environ.get("DIS_SCALE", "1")),
     }
-
-
-# ---------------------------------------------------------------------------
-# Pipeline benchmarks
-# ---------------------------------------------------------------------------
-
-def benchmark_pipeline(quick: bool) -> dict:
-    """Run full end-to-end tracking pipeline (compute + all I/O) on test series."""
-    import pandas as pd
-
-    from lib.config import load_config
-    from lib.multi_frame_tracker import (
-        process_video_with_multi_frame_tracking,
-        set_label_ids,
-    )
-    from lib.opticalflowprocessor import OpticalFlowProcessor
-    from track import find_annotations_file, find_images_dir
-
-    try:
-        config = load_config("server")
-    except Exception as exc:
-        log(f"  SKIP pipeline: config load failed: {exc}")
-        return {k: {"skipped": True, "reason": str(exc)} for k in TEST_SERIES}
-
-    try:
-        annotations_path = find_annotations_file(
-            str(config.data_dir), config.project_id, config.dataset_id
-        )
-        import mdai
-
-        annotations_blob = mdai.common_utils.json_to_dataframe(annotations_path)
-        all_annotations_df = pd.DataFrame(annotations_blob["annotations"])
-    except Exception as exc:
-        log(f"  SKIP pipeline: annotations load failed: {exc}")
-        return {k: {"skipped": True, "reason": str(exc)} for k in TEST_SERIES}
-
-    try:
-        images_dir = find_images_dir(
-            str(config.data_dir), config.project_id, config.dataset_id
-        )
-    except Exception as exc:
-        log(f"  SKIP pipeline: images dir not found: {exc}")
-        return {k: {"skipped": True, "reason": str(exc)} for k in TEST_SERIES}
-
-    results = {}
-
-    for label, (study_uid, series_uid, expected_frames, _) in TEST_SERIES.items():
-        log(f"  pipeline: {label}...")
-
-        series_df = all_annotations_df[
-            (all_annotations_df["StudyInstanceUID"] == study_uid)
-            & (all_annotations_df["SeriesInstanceUID"] == series_uid)
-        ].copy()
-
-        series_df = series_df[
-            (series_df["labelId"] == config.label_id)
-            | (series_df["labelId"] == config.empty_id)
-        ].copy()
-
-        if series_df.empty:
-            results[label] = {"skipped": True, "reason": "no annotations"}
-            continue
-
-        video_path = os.path.join(images_dir, study_uid, f"{series_uid}.mp4")
-        if not os.path.exists(video_path):
-            results[label] = {"skipped": True, "reason": "video not found"}
-            continue
-
-        series_df["video_path"] = video_path
-
-        if "labelName" not in series_df.columns:
-            label_map = dict(
-                all_annotations_df[["labelId", "labelName"]]
-                .drop_duplicates()
-                .values
-            )
-            series_df["labelName"] = series_df["labelId"].map(label_map)
-
-        annotation_count = len(series_df)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            set_label_ids(config.label_id, config.empty_id)
-            flow_processor = OpticalFlowProcessor(config.flow_method)
-
-            t0 = time.perf_counter()
-            try:
-                process_video_with_multi_frame_tracking(
-                    video_path=video_path,
-                    annotations_df=series_df,
-                    study_uid=study_uid,
-                    series_uid=series_uid,
-                    flow_processor=flow_processor,
-                    output_dir=tmpdir,
-                )
-                elapsed = time.perf_counter() - t0
-
-                results[label] = {
-                    "frames": expected_frames,
-                    "annotations": annotation_count,
-                    "elapsed_s": round(elapsed, 2),
-                    "method": config.flow_method,
-                    "skipped": False,
-                }
-            except Exception as exc:
-                elapsed = time.perf_counter() - t0
-                results[label] = {
-                    "frames": expected_frames,
-                    "annotations": annotation_count,
-                    "elapsed_s": round(elapsed, 2),
-                    "method": config.flow_method,
-                    "skipped": False,
-                    "error": str(exc),
-                }
-            finally:
-                flow_processor.cleanup_memory()
-
-        if quick:
-            for remaining in TEST_SERIES:
-                if remaining not in results:
-                    results[remaining] = {"skipped": True, "reason": "quick mode"}
-            break
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -494,15 +305,19 @@ def benchmark_pipeline(quick: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark tracking worker performance")
-    parser.add_argument("--quick", action="store_true", help="Quick smoke test (3 iters, 1 pipeline)")
-    parser.add_argument("--iterations", type=int, default=10, help="Micro-benchmark iterations (default: 10)")
-    parser.add_argument("--method", default="all", help="Comma-separated: dis-ultrafast,dis-fast,dis-medium,all")
+    parser = argparse.ArgumentParser(
+        description="Benchmark tracking with different optical flow backends"
+    )
+    parser.add_argument(
+        "--series", default="medium",
+        help="Series to test: small,medium,large,all (default: medium)",
+    )
+    parser.add_argument(
+        "--method", default="all",
+        help=f"Comma-separated methods (default: all). Available: {','.join(ALL_METHODS)}",
+    )
     parser.add_argument("--output", help="Write JSON to file instead of stdout")
-    parser.add_argument("--skip-pipeline", action="store_true", help="Skip end-to-end pipeline benchmarks")
     args = parser.parse_args()
-
-    iterations = 3 if args.quick else args.iterations
 
     if args.method == "all":
         methods = ALL_METHODS
@@ -510,64 +325,91 @@ def main():
         methods = [m.strip() for m in args.method.split(",")]
         invalid = [m for m in methods if m not in ALL_METHODS]
         if invalid:
-            parser.error(f"Unknown methods: {', '.join(invalid)}. Valid: {', '.join(ALL_METHODS)}")
+            parser.error(
+                f"Unknown methods: {', '.join(invalid)}. Valid: {', '.join(ALL_METHODS)}"
+            )
 
-    # Change to project root so config loading works
+    if args.series == "all":
+        series_list = list(TEST_SERIES.keys())
+    else:
+        series_list = [s.strip() for s in args.series.split(",")]
+
     os.chdir(PROJECT_ROOT)
 
     log("Collecting hardware info...")
     hardware = collect_hardware_info()
-    log(f"  device: {hardware['device']}, cores: {hardware['cpu_cores']}, ram: {hardware['memory_gb']}GB")
+    log(f"  {hardware['platform']}, {hardware['cpu_cores']} cores, "
+        f"{hardware['memory_gb']}GB, device={hardware['device']}")
 
-    # --- Micro-benchmarks ---
-    log("Running optical flow benchmarks...")
-    flow_results, resolution = benchmark_optical_flow(methods, iterations)
+    # Pre-load all series frames
+    series_data = {}
+    for label in series_list:
+        log(f"Pre-loading {label} series...")
+        result = preload_frames(label)
+        if result is None:
+            log(f"  SKIP: frames not available for {label}")
+            continue
+        frames, w, h = result
+        series_data[label] = (frames, w, h)
+        log(f"  {len(frames)} frames, {w}x{h} ({w*h/1e6:.1f}MP)")
 
-    log("Running mask warp benchmark...")
-    warp_result = benchmark_mask_warp(iterations)
+    # Run tracking loop for each method x series
+    results = {}
+    for label in series_list:
+        if label not in series_data:
+            results[label] = {m: {"skipped": True, "reason": "no frames"} for m in methods}
+            continue
 
-    log("Running video decode benchmark...")
-    decode_result = benchmark_video_decode(iterations)
+        frames, w, h = series_data[label]
+        results[label] = {}
 
-    # --- Tracking loop (core compute, no I/O) ---
-    log("Running tracking loop benchmarks...")
-    tracking_loop_results = {}
-    series_to_bench = ["small"] if args.quick else ["small", "medium", "large"]
-    for label in series_to_bench:
-        log(f"  tracking loop: {label}...")
-        tracking_loop_results[label] = benchmark_tracking_loop(label)
-    for label in TEST_SERIES:
-        if label not in tracking_loop_results:
-            tracking_loop_results[label] = {"skipped": True, "reason": "quick mode"}
+        for method in methods:
+            log(f"  {label} x {method}...")
+            try:
+                results[label][method] = run_tracking_loop(method, frames, w, h)
+            except Exception as exc:
+                log(f"    ERROR: {exc}")
+                results[label][method] = {"skipped": True, "reason": str(exc)}
 
-    # --- Pipeline benchmarks (full I/O) ---
-    if args.skip_pipeline:
-        pipeline_results = {k: {"skipped": True, "reason": "--skip-pipeline"} for k in TEST_SERIES}
-    else:
-        log("Running pipeline benchmarks (full I/O)...")
-        pipeline_results = benchmark_pipeline(args.quick)
+    # Summary table to stderr
+    log("")
+    header_parts = [f"{'Method':<20s}"]
+    for label in series_list:
+        if label in series_data:
+            n = len(series_data[label][0])
+            header_parts.append(f"{label} ({n}f)")
+    log("  ".join(header_parts))
+    log("-" * (22 + 18 * len(series_list)))
 
-    # Assemble output
+    for method in methods:
+        parts = [f"{method:<20s}"]
+        for label in series_list:
+            if label in results and method in results[label]:
+                r = results[label][method]
+                if r.get("skipped"):
+                    parts.append(f"{'skip':>14s}")
+                else:
+                    parts.append(f"{r['total_s']:5.1f}s ({r['per_frame_ms']:5.1f}ms/f)")
+
+            else:
+                parts.append(f"{'--':>14s}")
+        log("  ".join(parts))
+
+    # JSON output
     output = {
-        "benchmark_version": "1.0",
+        "benchmark_version": "2.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "hostname": socket.gethostname(),
         "hardware": hardware,
-        "micro_benchmarks": {
-            "frame_resolution": list(resolution) if resolution else None,
-            "optical_flow": flow_results,
-            "mask_warp": warp_result,
-            "video_decode": decode_result,
-        },
-        "tracking_loop": tracking_loop_results,
-        "pipeline_benchmarks": pipeline_results,
+        "dis_scale": int(os.environ.get("DIS_SCALE", "1")),
+        "results": results,
     }
 
     json_str = json.dumps(output, indent=2)
 
     if args.output:
         Path(args.output).write_text(json_str + "\n")
-        log(f"Results written to {args.output}")
+        log(f"\nResults written to {args.output}")
     else:
         print(json_str)
 
