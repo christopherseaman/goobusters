@@ -601,16 +601,19 @@ class MultiFrameTracker:
         """Warp a mask using optical flow (backward warping with remap)."""
         h, w = mask.shape
 
-        # Create coordinate grid
-        y, x = np.mgrid[0:h, 0:w].astype(np.float32)
+        # Get or create cached coordinate grid for this resolution
+        if not hasattr(self, '_grid_cache') or self._grid_cache[0] != (h, w):
+            base_y, base_x = np.mgrid[0:h, 0:w].astype(np.float32)
+            self._grid_cache = ((h, w), base_x, base_y)
 
-        # For backward warping: find where each destination pixel came from
-        # Flow tells us where pixels GO, so we subtract to find where they CAME FROM
-        map_x = (x - flow[:, :, 0]).astype(np.float32)
-        map_y = (y - flow[:, :, 1]).astype(np.float32)
+        base_x = self._grid_cache[1]
+        base_y = self._grid_cache[2]
 
-        # Remap with linear interpolation to avoid holes
-        warped_mask = cv2.remap(
+        # Backward warping: find where each destination pixel came from
+        map_x = base_x - flow[:, :, 0]
+        map_y = base_y - flow[:, :, 1]
+
+        return cv2.remap(
             mask,
             map_x,
             map_y,
@@ -618,8 +621,6 @@ class MultiFrameTracker:
             borderMode=cv2.BORDER_CONSTANT,
             borderValue=0,
         )
-
-        return warped_mask
 
     def _find_nearest_fluid_annotation(self, target_frame, annotations):
         """Find the nearest fluid annotation to a target frame."""
