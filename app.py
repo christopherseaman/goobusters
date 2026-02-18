@@ -482,7 +482,7 @@ def api_retrack(study_uid, series_uid):
         JSON with status and task_id for polling progress
     """
     data = request.json or {}
-    method = data.get('method', 'farneback')  # Default to farneback if not specified
+    method = data.get('method', config.flow_method)
 
     # Generate task ID
     task_id = f"{study_uid}_{series_uid}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -584,7 +584,7 @@ def run_retrack(task_id, study_uid, series_uid, method, video_path, output_dir):
         retrack_status[task_id]['status'] = 'processing'
         retrack_status[task_id]['message'] = f'Creating {method} optical flow processor...'
 
-        flow_processor = OpticalFlowProcessor(method)
+        flow_processor = OpticalFlowProcessor(method, preset=config.flow_preset)
 
         retrack_status[task_id]['progress'] = 20
         retrack_status[task_id]['message'] = 'Running optical flow tracking...'

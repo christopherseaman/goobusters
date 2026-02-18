@@ -264,7 +264,7 @@ def main():
                 )
 
                 # Initialize optical flow processor
-                flow_processor = OpticalFlowProcessor(method)
+                flow_processor = OpticalFlowProcessor(method, preset=config.flow_preset)
 
                 # Process the video with multi-frame tracking
                 result = process_video_with_multi_frame_tracking(

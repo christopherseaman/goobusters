@@ -205,7 +205,7 @@ def run_tracking_pipeline(
 
     # Initialize optical flow processor
     set_label_ids(config.label_id, config.empty_id)
-    flow_processor = OpticalFlowProcessor(config.flow_method)
+    flow_processor = OpticalFlowProcessor(config.flow_method, preset=config.flow_preset)
 
     # Process the video with multi-frame tracking (same as track.py)
     # For retrack, don't pass label_id_machine (TRACK_ID) - only use label_id and empty_id

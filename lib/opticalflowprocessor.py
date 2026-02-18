@@ -11,14 +11,14 @@ except ImportError:
     try:
         from lib.performance_config import get_optimizer
     except ImportError:
-        # Fallback: create a simple optimizer function
         def get_optimizer():
             return None
 
 class OpticalFlowProcessor:
-    def __init__(self, method):
+    def __init__(self, method, preset=None):
         self.method = method
         self.raft_model = None
+        self._vision_objects = None
 
         # Use optimized device detection (GPU if available, CPU fallback)
         import torch
@@ -26,23 +26,82 @@ class OpticalFlowProcessor:
         if optimizer and hasattr(optimizer, 'device'):
             self.device = optimizer.device
         else:
-            self.device = torch.device('cpu')  # Fallback to CPU
+            self.device = torch.device('cpu')
 
-        # Load DIS preset from environment
-        dis_preset_name = os.getenv('DIS_PRESET', 'fast').lower()
+        # Preset: used by DIS (ultrafast/fast/medium) and Vision (low/medium/high)
+        self.preset = (preset or os.getenv('DIS_PRESET', 'medium')).lower()
+
         self.dis_preset = {
             'ultrafast': cv2.DISOPTICAL_FLOW_PRESET_ULTRAFAST,
             'fast': cv2.DISOPTICAL_FLOW_PRESET_FAST,
             'medium': cv2.DISOPTICAL_FLOW_PRESET_MEDIUM
-        }.get(dis_preset_name, cv2.DISOPTICAL_FLOW_PRESET_FAST)
+        }.get(self.preset, cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
 
         # DIS resolution scale: compute flow at reduced resolution, upscale result.
-        # 1 = full res, 2 = half, 4 = quarter. Quarter-res DIS fast is ~7x faster
-        # than full with <0.1px MAE.
         self.dis_scale = int(os.getenv('DIS_SCALE', '1'))
 
         if self.method == 'raft':
             self.load_raft_model()
+        elif self.method == 'vision':
+            self._init_vision()
+
+    def _init_vision(self):
+        """Initialize Apple Vision framework optical flow objects."""
+        import Vision
+        import Quartz
+
+        accuracy_map = {
+            'low': Vision.VNGenerateOpticalFlowRequestComputationAccuracyLow,
+            'medium': Vision.VNGenerateOpticalFlowRequestComputationAccuracyMedium,
+            'high': Vision.VNGenerateOpticalFlowRequestComputationAccuracyHigh,
+        }
+        accuracy = accuracy_map.get(self.preset)
+        if accuracy is None:
+            raise ValueError(
+                f"Unknown Vision preset: {self.preset}. Use low, medium, or high."
+            )
+        self._vision_objects = {
+            'accuracy': accuracy,
+            'colorspace': Quartz.CGColorSpaceCreateDeviceRGB(),
+            'Vision': Vision,
+            'Quartz': Quartz,
+        }
+
+    def vision_optical_flow(self, prev_bgr, curr_bgr):
+        """Compute optical flow using Apple Vision framework (GPU/ANE)."""
+        vo = self._vision_objects
+        Vision = vo['Vision']
+        Quartz = vo['Quartz']
+
+        h, w = prev_bgr.shape[:2]
+        bgra_p = np.ascontiguousarray(cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2BGRA))
+        bgra_c = np.ascontiguousarray(cv2.cvtColor(curr_bgr, cv2.COLOR_BGR2BGRA))
+
+        ci_p = Quartz.CIImage.imageWithBitmapData_bytesPerRow_size_format_colorSpace_(
+            Quartz.NSData.dataWithBytes_length_(bgra_p.tobytes(), bgra_p.nbytes),
+            w * 4, Quartz.CGSizeMake(w, h), Quartz.kCIFormatBGRA8, vo['colorspace'])
+        ci_c = Quartz.CIImage.imageWithBitmapData_bytesPerRow_size_format_colorSpace_(
+            Quartz.NSData.dataWithBytes_length_(bgra_c.tobytes(), bgra_c.nbytes),
+            w * 4, Quartz.CGSizeMake(w, h), Quartz.kCIFormatBGRA8, vo['colorspace'])
+
+        req = Vision.VNGenerateOpticalFlowRequest.alloc().initWithTargetedCIImage_options_(ci_c, {})
+        req.setComputationAccuracy_(vo['accuracy'])
+        hdl = Vision.VNSequenceRequestHandler.alloc().init()
+        ok, err = hdl.performRequests_onCIImage_error_([req], ci_p, None)
+        if not ok:
+            raise RuntimeError(f"Vision optical flow failed: {err}")
+
+        obs = req.results()[0]
+        buf = obs.pixelBuffer()
+        Quartz.CVPixelBufferLockBaseAddress(buf, 0)
+        bpr = Quartz.CVPixelBufferGetBytesPerRow(buf)
+        ph = Quartz.CVPixelBufferGetHeight(buf)
+        pw = Quartz.CVPixelBufferGetWidth(buf)
+        base = Quartz.CVPixelBufferGetBaseAddress(buf)
+        raw = bytes(base.as_buffer(bpr * ph))
+        flow = np.frombuffer(raw, dtype=np.float32).reshape(ph, -1)[:, :pw * 2].reshape(ph, pw, 2).copy()
+        Quartz.CVPixelBufferUnlockBaseAddress(buf, 0)
+        return flow
 
     def load_raft_model(self):
         # print(f"Using device: {self.device} for RAFT")
@@ -99,20 +158,26 @@ class OpticalFlowProcessor:
 
     def calculate_flow(self, prev_frame, curr_frame, method=None):
         """
-        Calculate optical flow between two frames with temporal smoothing.
+        Calculate optical flow between two frames.
 
         Args:
-            prev_frame: Previous frame (grayscale)
-            curr_frame: Current frame (grayscale)
+            prev_frame: Previous frame (BGR or grayscale)
+            curr_frame: Current frame (BGR or grayscale)
             method: Optional method override
 
         Returns:
-            Optical flow field as numpy array
+            Optical flow field as numpy array (H, W, 2)
         """
-        # Use provided method or fall back to instance method
         flow_method = method or self.method
 
-        # Ensure input frames are grayscale
+        # Vision needs BGR color input; all others need grayscale
+        if flow_method == 'vision':
+            if len(prev_frame.shape) == 2:
+                prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_GRAY2BGR)
+                curr_frame = cv2.cvtColor(curr_frame, cv2.COLOR_GRAY2BGR)
+            return self.vision_optical_flow(prev_frame, curr_frame)
+
+        # Convert to grayscale for CPU-based methods
         if len(prev_frame.shape) == 3:
             prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
         if len(curr_frame.shape) == 3:

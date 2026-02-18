@@ -28,6 +28,7 @@ class SharedConfig:
     label_id: str
     empty_id: str
     flow_method: str
+    flow_preset: str = "medium"
     test_study_uid: Optional[str] = None
     test_series_uid: Optional[str] = None
 
@@ -134,6 +135,7 @@ def load_config(
         label_id=label_id,
         empty_id=empty_id,
         flow_method=get("optical_flow.method", "FLOW_METHOD", "dis"),
+        flow_preset=get("optical_flow.preset", "FLOW_PRESET", "medium"),
         test_study_uid=get("test.study_uid", "TEST_STUDY_UID"),
         test_series_uid=get("test.series_uid", "TEST_SERIES_UID"),
     )
