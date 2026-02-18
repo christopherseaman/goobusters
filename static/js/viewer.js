@@ -182,6 +182,13 @@ class AnnotationViewer {
 
         this.updateButtonSize();
 
+        // Reset image margins when no image loaded
+        if (!this.frameImage) {
+            const root = document.documentElement.style;
+            root.setProperty('--image-left', '0px');
+            root.setProperty('--image-right', '0px');
+        }
+
         // Overlay canvas will be sized to image dimensions in goToFrame()
         if (this.frameImage) {
             this.render();
@@ -567,41 +574,6 @@ class AnnotationViewer {
             clearInterval(this.reconnectPingInterval);
             this.reconnectPingInterval = null;
         }
-    }
-
-    /**
-     * Lightweight recovery after iOS sleep/wake cycle.
-     * Called by native bridge when BackendManager confirms backend is healthy.
-     * Clears stale overlays and aborts stuck retries — does NOT re-sync or re-init.
-     */
-    handleWakeRecovery() {
-        console.log('[Wake] Backend confirmed healthy by native layer, clearing stale UI');
-
-        // Abort any stuck remote server retry loop
-        if (this.retryController) {
-            this.retryController.abort();
-        }
-
-        // Clear all connection/error overlays
-        this.stopServerReconnectPings();
-        this.hideServerConnectionScreen();
-        this.hideServerConnectionWarning();
-        this.hideSyncError();
-        this.needsRemoteServerConnection = false;
-
-        // Quick async check on remote server — non-blocking
-        this.fetchToServer('api/status', { signal: AbortSignal.timeout(5000) })
-            .then(resp => {
-                if (resp.ok) {
-                    console.log('[Wake] Remote server OK');
-                } else {
-                    throw new Error('Remote server not OK');
-                }
-            })
-            .catch(() => {
-                console.log('[Wake] Remote server not available, starting retry');
-                this.connectToRemoteServerWithRetry();
-            });
     }
 
     async ensureUserEmail() {
@@ -1000,6 +972,7 @@ class AnnotationViewer {
         }
 
         document.addEventListener('pointermove', (e) => {
+            if (e.pointerType === 'touch') { preview.style.display = 'none'; return; }
             const d = getDisplayDiameter();
             const offset = isSliderActive ? getDisplayDiameter(50) * 1.5 : 0;
             preview.style.left = `${e.clientX - d / 2 + offset}px`;
@@ -1350,22 +1323,37 @@ class AnnotationViewer {
         const viewportWidth = window.innerWidth;
         const viewportHeight = window.innerHeight;
         const imageAspect = this.frameImage.width / this.frameImage.height;
-        const viewportAspect = viewportWidth / viewportHeight;
+
+        // On phones, fit image within usable area (excluding safe area insets / island)
+        const isPhone = viewportHeight < 800;
+        let saiLeft = 0, saiRight = 0;
+        if (isPhone) {
+            const cs = getComputedStyle(document.documentElement);
+            saiLeft = parseFloat(cs.getPropertyValue('--sai-left')) || 0;
+            saiRight = parseFloat(cs.getPropertyValue('--sai-right')) || 0;
+        }
+        const usableWidth = viewportWidth - saiLeft - saiRight;
+        const viewportAspect = usableWidth / viewportHeight;
 
         let displayWidth, displayHeight;
         if (imageAspect > viewportAspect) {
-            displayWidth = viewportWidth;
-            displayHeight = viewportWidth / imageAspect;
+            displayWidth = usableWidth;
+            displayHeight = usableWidth / imageAspect;
         } else {
             displayHeight = viewportHeight;
             displayWidth = viewportHeight * imageAspect;
         }
 
-        const displayX = (viewportWidth - displayWidth) / 2;
+        const displayX = saiLeft + (usableWidth - displayWidth) / 2;
         const displayY = (viewportHeight - displayHeight) / 2;
 
         // Store dimensions for coordinate conversion
         this.renderRect = { x: displayX, y: displayY, width: displayWidth, height: displayHeight };
+
+        // Publish image margins for CSS side panels (phone layout)
+        const root = document.documentElement.style;
+        root.setProperty('--image-left', `${Math.ceil(displayX)}px`);
+        root.setProperty('--image-right', `${Math.ceil(viewportWidth - displayX - displayWidth)}px`);
 
         // Check if current frame is empty_id for visual indicator
         // Check both stored frameData and current maskType (for in-progress edits)

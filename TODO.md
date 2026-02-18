@@ -5,9 +5,11 @@
 ### High Priority Bugfixes
 
 - [x] Timeout on ipad (lock screen) has "Reconnecting" screen on resume but does not reconnect. Force close and reopen works to reconnect. Maybe stuck awaiting previous connection attempt and does not start another?
-- [ ] Brush size preview not showing since we moved the slider (see BRUSHSIZE_FIX.md for working solution)
-- [ ] Frame image/mask canvas inside toolbars instead of having toolbars on top of image/mask (do after smaller emoji fix)
-- [ ] ipad buttons/scrubber too big now, iphone size is good. possibly related, thumb on scrubber does not track to width of scrubline, frame zero on thumb is not all the way left on the bar; similarly first/last frames on scrubline are cut off
+- [x] Brush size preview not showing since we moved the slider (see BRUSHSIZE_FIX.md for working solution)
+- [ ] Possible to have brush preview only show for cursor or apple pencil hover and not with finger?
+- [ ] Possible to have multitouch pinch/zoom for image/mask canvas without affecting toolbar buttons?
+- [?] Frame image/mask canvas inside toolbars instead of having toolbars on top of image/mask (do after smaller emoji fix)
+- [x] ipad buttons/scrubber too big now, iphone size is good. possibly related, thumb on scrubber does not track to width of scrubline, frame zero on thumb is not all the way left on the bar; similarly first/last frames on scrubline are cut off
 - [x] Version mismatch error root cause? Client shows version unknown. Was able to reproduce by edit + save/retrack on one client, then attempt edit + save on second client for a different series. Series updates should not conflict. Are we updating a global version instead of per-series version?
 - [x] Disable mark as complete when changes have not been saved/retracked
 - [x] Incorrect error message when sync completes (can pull from md.ai) but server unresponsive. Currently shows "load failed" when sync works but server can't be reached.

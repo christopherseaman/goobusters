@@ -118,7 +118,7 @@ html, body {
     border: 1px solid rgba(76, 175, 80, 0.8);
     border-radius: 50%;
     pointer-events: none;
-    z-index: 150;
+    z-index: 98;
     display: none;
     background: rgba(76, 175, 80, 0.1);
     box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
@@ -1150,3 +1150,38 @@ kbd {
 }
 
 /* Completion modal buttons reuse existing modal styles */
+
+/* Phone layout: extend side toolbars to fill black bars beside image */
+@media (max-height: 799px) {
+    .toolbar-left {
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: max(calc(var(--btn-size) + var(--btn-gap) * 2 + var(--sai-left)), var(--image-left, 0px));
+        padding-left: var(--sai-left);
+        padding-top: calc(var(--sidebar-top-offset) + var(--sai-top));
+        padding-bottom: calc(var(--btn-size) + var(--sai-bottom) + var(--btn-gap) * 2);
+        border-radius: 0;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(10px);
+    }
+
+    .toolbar-right {
+        right: 0;
+        top: 0;
+        bottom: 0;
+        width: max(calc(var(--btn-size) + var(--btn-gap) * 2 + var(--sai-right)), var(--image-right, 0px));
+        padding-right: var(--sai-right);
+        padding-top: calc(var(--sidebar-top-offset) + var(--sai-top));
+        padding-bottom: calc(var(--btn-size) + var(--sai-bottom) + var(--btn-gap) * 2);
+        border-radius: 0;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(10px);
+    }
+
+    .brush-slider-top {
+        left: max(calc(var(--btn-size) + var(--btn-gap) * 3 + var(--sai-left)), calc(var(--image-left, 0px) + var(--btn-gap)));
+    }
+}

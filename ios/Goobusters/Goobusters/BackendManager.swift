@@ -30,6 +30,9 @@ class BackendManager: ObservableObject {
     }
 
     func start() {
+        // Python cannot be re-initialized after Py_FinalizeEx — only start once
+        guard pythonRunner == nil else { return }
+
         let path = resourcePath
         guard !path.isEmpty else {
             errorMessage = "Bundle resource path not found"

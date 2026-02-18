@@ -60,9 +60,6 @@ struct GoobustersView: View {
         .onAppear {
             backendManager.start()
         }
-        .onDisappear {
-            backendManager.stop()
-        }
     }
 }
 
@@ -121,12 +118,8 @@ struct WebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if isReady && needsReload {
-            logger.info("Backend recovered, notifying JS for wake recovery")
-            webView.evaluateJavaScript("if (window.viewer) viewer.handleWakeRecovery();") { _, error in
-                if let error = error {
-                    logger.error("Wake recovery JS call failed: \(error.localizedDescription)")
-                }
-            }
+            logger.info("Backend recovered after sleep, reloading page")
+            webView.reload()
             DispatchQueue.main.async { onReloaded() }
             return
         }
@@ -231,12 +224,8 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ webView: WKWebView, context: Context) {
         if isReady && needsReload {
-            logger.info("Backend recovered, notifying JS for wake recovery")
-            webView.evaluateJavaScript("if (window.viewer) viewer.handleWakeRecovery();") { _, error in
-                if let error = error {
-                    logger.error("Wake recovery JS call failed: \(error.localizedDescription)")
-                }
-            }
+            logger.info("Backend recovered after sleep, reloading page")
+            webView.reload()
             DispatchQueue.main.async { onReloaded() }
             return
         }
