@@ -157,6 +157,24 @@ def _run_retrack_worker_process(config: ServerConfig) -> None:
     worker_loop(config, series_manager)
 
 
+def _kill_old_retrack_worker(config: ServerConfig) -> None:
+    """Kill any existing retrack worker from a previous server instance."""
+    import signal
+
+    pid_file = config.server_state_path / "retrack_worker.pid"
+    if not pid_file.exists():
+        return
+
+    try:
+        old_pid = int(pid_file.read_text().strip())
+        os.kill(old_pid, signal.SIGTERM)
+        logger.info(f"Killed old retrack worker (PID {old_pid})")
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass  # Already dead or invalid PID
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+
 def start_retrack_worker(
     config: ServerConfig, series_manager: SeriesManager
 ) -> None:
@@ -164,6 +182,8 @@ def start_retrack_worker(
     Start retrack worker in a separate process using spawn to isolate OpenCV crashes.
     """
     import multiprocessing
+
+    _kill_old_retrack_worker(config)
 
     ctx = multiprocessing.get_context("spawn")
     worker_process = ctx.Process(
@@ -173,7 +193,12 @@ def start_retrack_worker(
         name="retrack-worker",
     )
     worker_process.start()
-    logger.info("Retrack worker process started (spawn)")
+
+    # Write worker PID so we can kill it on next server startup
+    pid_file = config.server_state_path / "retrack_worker.pid"
+    pid_file.write_text(str(worker_process.pid))
+
+    logger.info("Retrack worker process started (spawn, PID %d)", worker_process.pid)
 
 
 def create_app(

@@ -194,7 +194,7 @@ class MultiFrameTracker:
         os.makedirs(self.debug_dir, exist_ok=True)
 
     def process_annotations(
-        self, annotations_df, video_path, study_uid, series_uid
+        self, annotations_df, video_path, study_uid, series_uid, masks_only=False
     ):
         """
         Process annotations for a video and generate predictions using multi-frame tracking.
@@ -227,6 +227,15 @@ class MultiFrameTracker:
 
         # Store total frames for use in other methods
         self.total_frames = total_frames
+
+        # Pre-load ALL video frames once (avoids re-opening video per segment)
+        with video_capture(video_path) as cap:
+            all_frames = {}
+            for frame_idx in range(total_frames):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                all_frames[frame_idx] = frame
 
         # Classify annotations as 'fluid' or 'clear' (based on md.ai labels)
         annotations = self._classify_annotations(
@@ -286,7 +295,7 @@ class MultiFrameTracker:
                         None,
                         current["mask"],
                         all_masks,
-                        video_path,
+                        all_frames,
                     )
 
             # Process segment between consecutive annotations
@@ -299,7 +308,7 @@ class MultiFrameTracker:
                         current["mask"],
                         next_ann["mask"],
                         all_masks,
-                        video_path,
+                        all_frames,
                     )
 
             # Process segment from last annotation to end of video
@@ -314,12 +323,12 @@ class MultiFrameTracker:
                         current["mask"],
                         None,
                         all_masks,
-                        video_path,
+                        all_frames,
                     )
 
         # Save results (version_id will be set by caller if retracking)
         version_id = getattr(self, 'version_id', None)
-        self._save_results(all_masks, video_path, study_uid, series_uid, version_id=version_id)
+        self._save_results(all_masks, video_path, study_uid, series_uid, version_id=version_id, masks_only=masks_only)
 
         if os.getenv("DEBUG", "False").lower() in ("true", "1", "yes"):
             pass  # print(f"Multi-frame processing completed: {len(all_masks)} frames processed")
@@ -424,7 +433,7 @@ class MultiFrameTracker:
         start_mask,
         end_mask,
         all_masks,
-        video_path,
+        all_frames,
     ):
         """
         Process a segment between two frames using bidirectional tracking with distance weighting.
@@ -435,79 +444,66 @@ class MultiFrameTracker:
             start_mask: Mask at start frame (None if tracking from beginning)
             end_mask: Mask at end frame (None if tracking to end)
             all_masks: Dictionary to store results
-            video_path: Path to video file
+            all_frames: Pre-loaded video frames dict {frame_idx: np.ndarray}
         """
         if end_frame < start_frame:
             return  # Invalid range
         if end_frame == start_frame:
             return  # No frames to interpolate (only one frame)
 
-        # Use context manager to ensure video capture is always released
-        with video_capture(video_path) as cap:
-            # Track forward from start if we have a start mask
-            forward_masks = {}
-            if start_mask is not None:
-                # Forward from {start_frame}
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                current_mask = start_mask.copy()
+        # Slice pre-loaded frames for this segment
+        segment_frames = {
+            i: all_frames[i] for i in range(start_frame, end_frame + 1) if i in all_frames
+        }
 
-                # Read start frame
-                ret, prev_frame = cap.read()
-                if ret:
-                    for frame_idx in range(start_frame, end_frame + 1):
-                        if frame_idx == start_frame:
-                            # This is the initial frame, just store the mask
-                            forward_masks[frame_idx] = current_mask
-                            continue
+        # Track forward from start if we have a start mask
+        forward_masks = {}
+        if start_mask is not None and start_frame in segment_frames:
+            current_mask = start_mask.copy()
+            prev_frame = segment_frames[start_frame]
 
-                        ret, curr_frame = cap.read()
-                        if not ret:
-                            break
+            for frame_idx in range(start_frame, end_frame + 1):
+                if frame_idx == start_frame:
+                    forward_masks[frame_idx] = current_mask
+                    continue
 
-                        # Calculate optical flow
-                        flow = self.flow_processor.calculate_flow(
-                            prev_frame, curr_frame
-                        )
-                        current_mask = self._warp_mask_with_flow(
-                            current_mask, flow
-                        )
-                        forward_masks[frame_idx] = current_mask
-                        prev_frame = curr_frame
+                if frame_idx not in segment_frames:
+                    break
 
-            # Track backward from end if we have an end mask
-            backward_masks = {}
-            if end_mask is not None:
-                # Backward from {end_frame}
-                cap.set(cv2.CAP_PROP_POS_FRAMES, end_frame)
-                current_mask = end_mask.copy()
+                curr_frame = segment_frames[frame_idx]
+                flow = self.flow_processor.calculate_flow(
+                    prev_frame, curr_frame
+                )
+                current_mask = self._warp_mask_with_flow(
+                    current_mask, flow
+                )
+                forward_masks[frame_idx] = current_mask
+                prev_frame = curr_frame
 
-                # Read end frame
-                ret, prev_frame = cap.read()
-                if ret:
-                    for frame_idx in range(end_frame, start_frame - 1, -1):
-                        if frame_idx == end_frame:
-                            # This is the initial frame, just store the mask
-                            backward_masks[frame_idx] = current_mask
-                            continue
+        # Track backward from end if we have an end mask
+        backward_masks = {}
+        if end_mask is not None and end_frame in segment_frames:
+            current_mask = end_mask.copy()
+            prev_frame = segment_frames[end_frame]
 
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                        ret, curr_frame = cap.read()
-                        if not ret:
-                            break
+            for frame_idx in range(end_frame, start_frame - 1, -1):
+                if frame_idx == end_frame:
+                    backward_masks[frame_idx] = current_mask
+                    continue
 
-                        # Calculate optical flow: prev_frame (later in time) → curr_frame (earlier in time)
-                        # Since we're tracking backward in time, prev_frame is actually the LATER frame
-                        # and curr_frame is the EARLIER frame
-                        flow = self.flow_processor.calculate_flow(
-                            prev_frame, curr_frame
-                        )
-                        # _warp_mask_with_flow does backward warping (x - flow), which is correct here
-                        # because we're warping from prev (later) to curr (earlier)
-                        current_mask = self._warp_mask_with_flow(
-                            current_mask, flow
-                        )
-                        backward_masks[frame_idx] = current_mask
-                        prev_frame = curr_frame
+                if frame_idx not in segment_frames:
+                    break
+
+                curr_frame = segment_frames[frame_idx]
+                # prev_frame is the LATER frame, curr_frame is EARLIER
+                flow = self.flow_processor.calculate_flow(
+                    prev_frame, curr_frame
+                )
+                current_mask = self._warp_mask_with_flow(
+                    current_mask, flow
+                )
+                backward_masks[frame_idx] = current_mask
+                prev_frame = curr_frame
 
         # Combine masks with distance-based weighting
         for frame_idx in range(start_frame, end_frame + 1):
@@ -634,8 +630,13 @@ class MultiFrameTracker:
         )
         return nearest
 
-    def _save_results(self, all_masks, video_path, study_uid, series_uid, version_id=None):
-        """Save the tracking results with individual frame masks and comprehensive data."""
+    def _save_results(self, all_masks, video_path, study_uid, series_uid, version_id=None, masks_only=False):
+        """Save the tracking results with individual frame masks and comprehensive data.
+
+        If masks_only=True, only saves frametype.json, masks.json, and mask WebP files.
+        Skips frame extraction, video creation, and tar archives (used for retrack where
+        frames already exist from initial tracking).
+        """
         try:
             # Save enhanced mask data with track_id and label_id
             frametype_path = os.path.join(self.output_dir, "frametype.json")
@@ -718,6 +719,9 @@ class MultiFrameTracker:
                     masks_dir, f"frame_{frame_num:06d}_mask.webp"
                 )
                 cv2.imwrite(mask_path, mask, [cv2.IMWRITE_WEBP_QUALITY, 99])
+
+        if masks_only:
+            return
 
         # Create frames directory and extract frames as webp
         frames_dir = os.path.join(self.output_dir, "frames")
@@ -829,6 +833,7 @@ def process_video_with_multi_frame_tracking(
     project_id: str = None,
     dataset_id: str = None,
     version_id: Optional[str] = None,
+    masks_only: bool = False,
 ):
     """
     Main function to process a video with multi-frame tracking.
@@ -858,7 +863,7 @@ def process_video_with_multi_frame_tracking(
 
     # Process annotations
     all_masks = tracker.process_annotations(
-        annotations_df, video_path, study_uid, series_uid
+        annotations_df, video_path, study_uid, series_uid, masks_only=masks_only
     )
     if os.getenv("DEBUG", "False").lower() in ("true", "1", "yes"):
         pass  # print(f"Received {len(all_masks)} masks from process_annotations")

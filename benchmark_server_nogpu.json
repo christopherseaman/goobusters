@@ -1,0 +1,197 @@
+{
+  "benchmark_version": "1.0",
+  "timestamp": "2026-02-18T17:48:19.971946+00:00",
+  "hostname": "hivemind",
+  "hardware": {
+    "platform": "Linux-6.18.0-9-generic-x86_64-with-glibc2.42",
+    "cpu_cores": 8,
+    "memory_gb": 27.8,
+    "device": "cpu",
+    "is_apple_silicon": false,
+    "mps_available": false
+  },
+  "micro_benchmarks": {
+    "frame_resolution": [
+      1374,
+      1918
+    ],
+    "optical_flow": {
+      "dis-ultrafast": {
+        "mean_ms": 12.23,
+        "median_ms": 12.15,
+        "min_ms": 11.89,
+        "max_ms": 13.29,
+        "std_ms": 0.37,
+        "iterations": 10
+      },
+      "dis-fast": {
+        "mean_ms": 21.56,
+        "median_ms": 21.67,
+        "min_ms": 21.18,
+        "max_ms": 21.91,
+        "std_ms": 0.23,
+        "iterations": 10
+      },
+      "dis-medium": {
+        "mean_ms": 115.86,
+        "median_ms": 115.85,
+        "min_ms": 115.22,
+        "max_ms": 116.59,
+        "std_ms": 0.48,
+        "iterations": 10
+      }
+    },
+    "mask_warp": {
+      "mean_ms": 29.1,
+      "median_ms": 29.14,
+      "min_ms": 28.02,
+      "max_ms": 30.32,
+      "std_ms": 0.74,
+      "iterations": 10
+    },
+    "video_decode": {
+      "mean_ms": 13.74,
+      "median_ms": 13.7,
+      "min_ms": 12.91,
+      "max_ms": 14.83,
+      "std_ms": 0.53,
+      "iterations": 10
+    }
+  },
+  "tracking_loop": {
+    "small": {
+      "frames": 59,
+      "total_s": 0.53,
+      "per_frame_ms": 9.02,
+      "breakdown": {
+        "decode": {
+          "mean_ms": 0.4,
+          "median_ms": 0.39,
+          "min_ms": 0.34,
+          "max_ms": 0.49,
+          "std_ms": 0.04,
+          "iterations": 59
+        },
+        "flow": {
+          "mean_ms": 4.58,
+          "median_ms": 4.54,
+          "min_ms": 4.27,
+          "max_ms": 5.6,
+          "std_ms": 0.22,
+          "iterations": 59
+        },
+        "warp": {
+          "mean_ms": 4.04,
+          "median_ms": 3.99,
+          "min_ms": 3.76,
+          "max_ms": 4.79,
+          "std_ms": 0.19,
+          "iterations": 59
+        }
+      },
+      "pct": {
+        "decode": 4.4,
+        "flow": 50.7,
+        "warp": 44.8
+      },
+      "dis_preset": "fast"
+    },
+    "medium": {
+      "frames": 108,
+      "total_s": 6.21,
+      "per_frame_ms": 57.52,
+      "breakdown": {
+        "decode": {
+          "mean_ms": 1.65,
+          "median_ms": 1.62,
+          "min_ms": 1.43,
+          "max_ms": 3.2,
+          "std_ms": 0.2,
+          "iterations": 108
+        },
+        "flow": {
+          "mean_ms": 27.23,
+          "median_ms": 27.7,
+          "min_ms": 22.24,
+          "max_ms": 35.15,
+          "std_ms": 3.31,
+          "iterations": 108
+        },
+        "warp": {
+          "mean_ms": 28.64,
+          "median_ms": 28.34,
+          "min_ms": 24.45,
+          "max_ms": 32.1,
+          "std_ms": 1.32,
+          "iterations": 108
+        }
+      },
+      "pct": {
+        "decode": 2.9,
+        "flow": 47.3,
+        "warp": 49.8
+      },
+      "dis_preset": "fast"
+    },
+    "large": {
+      "frames": 194,
+      "total_s": 10.37,
+      "per_frame_ms": 53.47,
+      "breakdown": {
+        "decode": {
+          "mean_ms": 1.68,
+          "median_ms": 1.65,
+          "min_ms": 1.42,
+          "max_ms": 2.58,
+          "std_ms": 0.15,
+          "iterations": 194
+        },
+        "flow": {
+          "mean_ms": 25.7,
+          "median_ms": 26.58,
+          "min_ms": 21.28,
+          "max_ms": 33.95,
+          "std_ms": 2.84,
+          "iterations": 194
+        },
+        "warp": {
+          "mean_ms": 26.1,
+          "median_ms": 26.31,
+          "min_ms": 23.24,
+          "max_ms": 30.04,
+          "std_ms": 1.67,
+          "iterations": 194
+        }
+      },
+      "pct": {
+        "decode": 3.1,
+        "flow": 48.1,
+        "warp": 48.8
+      },
+      "dis_preset": "fast"
+    }
+  },
+  "pipeline_benchmarks": {
+    "small": {
+      "frames": 60,
+      "annotations": 2,
+      "elapsed_s": 3.69,
+      "method": "dis",
+      "skipped": false
+    },
+    "medium": {
+      "frames": 109,
+      "annotations": 3,
+      "elapsed_s": 34.91,
+      "method": "dis",
+      "skipped": false
+    },
+    "large": {
+      "frames": 195,
+      "annotations": 18,
+      "elapsed_s": 69.8,
+      "method": "dis",
+      "skipped": false
+    }
+  }
+}

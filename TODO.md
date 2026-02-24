@@ -6,7 +6,7 @@
 
 - [x] Timeout on ipad (lock screen) has "Reconnecting" screen on resume but does not reconnect. Force close and reopen works to reconnect. Maybe stuck awaiting previous connection attempt and does not start another?
 - [x] Brush size preview not showing since we moved the slider (see BRUSHSIZE_FIX.md for working solution)
-- [ ] Possible to have brush preview only show for cursor or apple pencil hover and not with finger?
+- [x] Possible to have brush preview only show for cursor or apple pencil hover and not with finger?
 - [ ] Possible to have multitouch pinch/zoom for image/mask canvas without affecting toolbar buttons?
 - [?] Frame image/mask canvas inside toolbars instead of having toolbars on top of image/mask (do after smaller emoji fix)
 - [x] ipad buttons/scrubber too big now, iphone size is good. possibly related, thumb on scrubber does not track to width of scrubline, frame zero on thumb is not all the way left on the bar; similarly first/last frames on scrubline are cut off

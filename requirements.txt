@@ -3,9 +3,8 @@ matplotlib
 # mdai 0.16.0 with compatibility fix for current pydicom versions
 mdai>=0.16.0
 numpy>=1.21.0,<3.0.0  # Support both NumPy 1.x and 2.x
-# IMPORTANT: Only install opencv-contrib-python, NOT opencv-python
-# Having both causes conflicts and breaks optical flow methods
-opencv-contrib-python  # Latest version with all contrib modules
+# Use headless variants to avoid duplicate FFmpeg dylib conflicts with PyAV
+opencv-contrib-python-headless
 pandas
 pillow
 # Use current pydicom with compatibility bridge in lib/optical.py

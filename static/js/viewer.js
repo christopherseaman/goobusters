@@ -79,6 +79,7 @@ class AnnotationViewer {
         this.serverConnectionWarningVisible = false;
         this.reconnectPingInterval = null;
         this.needsRemoteServerConnection = false;
+        this.flowMethod = 'dis'; // Default, updated from server api/status
 
         this.init();
     }
@@ -436,6 +437,10 @@ class AnnotationViewer {
                 try {
                     const resp = await this.fetchToServer('api/status');
                     if (resp.ok) {
+                        const statusData = await resp.json().catch(() => null);
+                        if (statusData?.flow_method) {
+                            this.flowMethod = statusData.flow_method;
+                        }
                         this.needsRemoteServerConnection = false;
                         await this.loadNextSeries();
                         this.hideServerConnectionScreen();
@@ -1219,6 +1224,12 @@ class AnnotationViewer {
         const targetFrame = Math.max(0, Math.min(frameNum, this.totalFrames - 1));
         if (targetFrame === this.currentFrame && this.frameImage) return;
 
+        // Bail if frames archive isn't loaded
+        if (!this.framesArchive) {
+            console.error('goToFrame: framesArchive is null — archives not loaded');
+            return;
+        }
+
         // Preserve unsaved changes when leaving current frame
         if (this.hasUnsavedChanges && this.maskImageData && this.currentFrame !== targetFrame) {
             const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
@@ -1961,6 +1972,15 @@ class AnnotationViewer {
                         this.masksArchive = {};
                         await this.loadVideoData();
                         await this.loadFramesArchive();
+
+                        // Retry once if frames archive didn't load (network hiccup)
+                        if (!this.framesArchive || Object.keys(this.framesArchive).length === 0) {
+                            console.warn('Frames archive empty after retrack reload, retrying...');
+                            await new Promise(r => setTimeout(r, 1000));
+                            this.framesArchive = null;
+                            await this.loadFramesArchive();
+                        }
+
                         // Force reload current frame to ensure fresh masks are displayed
                         const currentFrameNum = this.currentFrame;
                         this.currentFrame = -1; // Force reload
@@ -2196,7 +2216,7 @@ class AnnotationViewer {
             // Populate dropdown with correct indicators
             for (const series of sortedSeries) {
                 const option = document.createElement('option');
-                const method = series.method || 'dis';
+                const method = series.method || this.flowMethod;
                 option.value = `${method}|${series.study_uid}|${series.series_uid}`;
                 const indicator = getIndicator(series.status || 'pending', series.activity || {});
                 option.text = `${indicator} Exam ${series.exam_number || '-'}`;
@@ -2395,9 +2415,11 @@ class AnnotationViewer {
             // Keep loading visible during reload
             this.showRetrackLoading('Reloading reset masks...');
 
-            // Clear all local edits for this video (atomic operation - edits only persist on retrack success)
-            const videoKey = `${studyUid}__${seriesUid}`;
+            // Clear all local edits and version for this video
+            const cv = this.currentVideo;
+            const videoKey = this.getVideoKey(cv.method, cv.studyUid, cv.seriesUid);
             this.modifiedFrames.delete(videoKey);
+            this.versionIds.delete(videoKey);
             this.hasUnsavedChanges = false;
             this.updateSaveButtonState();
             
@@ -2633,11 +2655,7 @@ class AnnotationViewer {
                 return;
             }
             
-            // Server returns SeriesMetadata with study_uid, series_uid, exam_number, etc.
-            // We need to determine the method - for now, use flow_method from config or default
-            // The server doesn't return method, so we'll need to infer it or use a default
-            // For now, assume method is 'dis' (the flow method)
-            const method = 'dis'; // TODO: Get from server response or config
+            const method = this.flowMethod;
             
             // Mark activity IMMEDIATELY when server selects a series (before any local checks)
             // This ensures other clients see activity right away
@@ -2986,8 +3004,8 @@ class AnnotationViewer {
             }
 
             // Load frames archive (.tar format, no gzip)
-            // Use fetchToServer to add headers (handles both paths and full URLs)
-            const framesArchiveResponse = await this.fetchToServer(framesUrl);
+            // Use fetchToServer with no-store to avoid stale cached archives after retrack
+            const framesArchiveResponse = await this.fetchToServer(framesUrl, { cache: 'no-store' });
             const framesArrayBuffer = await framesArchiveResponse.arrayBuffer();
             const framesTarData = new Uint8Array(framesArrayBuffer);
 
@@ -3016,8 +3034,8 @@ class AnnotationViewer {
             // Load masks archive (.tar format, no gzip) - get version ID from headers
             this.masksArchive = {};
             if (masksUrl) {
-                // Use fetchToServer to add headers (handles both paths and full URLs)
-                const masksArchiveResponse = await this.fetchToServer(masksUrl);
+                // Use fetchToServer with no-store to avoid stale cached masks after retrack
+                const masksArchiveResponse = await this.fetchToServer(masksUrl, { cache: 'no-store' });
                 
                 if (!masksArchiveResponse.ok) {
                     console.warn(`Failed to load masks archive: ${masksArchiveResponse.status} ${masksArchiveResponse.statusText}`);
@@ -3095,6 +3113,8 @@ class AnnotationViewer {
             }
         } catch (error) {
             console.error('Error loading frames/masks archive:', error);
+            // Ensure framesArchive is at least empty (never null) so goToFrame doesn't crash
+            if (!this.framesArchive) this.framesArchive = {};
             // Don't throw - allow viewer to continue with frames only if masks fail
             if (error.message && !error.message.includes('not tracked yet') && !error.message.includes('TRACK_')) {
                 alert(`Warning: ${error.message}. Viewer will continue without masks.`);

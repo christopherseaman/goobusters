@@ -203,9 +203,15 @@ def run_tracking_pipeline(
     # Use version_id (renamed from new_version_id for consistency)
     resolved_version_id = version_id
 
+    import time as _time
+    _tp0 = _time.perf_counter()
+
     # Initialize optical flow processor
     set_label_ids(config.label_id, config.empty_id)
+    logger.info(f"Optical flow: method={config.flow_method}, preset={config.flow_preset}")
     flow_processor = OpticalFlowProcessor(config.flow_method, preset=config.flow_preset)
+    _tp1 = _time.perf_counter()
+    logger.info(f"  flow processor init: {_tp1 - _tp0:.2f}s")
 
     # Process the video with multi-frame tracking (same as track.py)
     # For retrack, don't pass label_id_machine (TRACK_ID) - only use label_id and empty_id
@@ -225,7 +231,11 @@ def run_tracking_pipeline(
         project_id=config.project_id,
         dataset_id=config.dataset_id,
         version_id=resolved_version_id,
+        masks_only=is_retrack,
     )
+
+    _tp2 = _time.perf_counter()
+    logger.info(f"  process_video_with_multi_frame_tracking: {_tp2 - _tp1:.2f}s")
 
     # Clean up GPU memory after processing
     flow_processor.cleanup_memory()

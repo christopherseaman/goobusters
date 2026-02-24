@@ -7,6 +7,7 @@ and output to retrack/ subdirectory.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -35,6 +36,8 @@ from server.storage.retrack_queue import RetrackQueue
 from server.storage.series_manager import SeriesManager
 from server.tracking_worker import run_tracking_pipeline
 from track import find_annotations_file, find_images_dir
+
+logger = logging.getLogger(__name__)
 
 
 def _merge_annotations(uploaded_df, study_uid, series_uid):
@@ -122,6 +125,9 @@ def process_retrack_job(
 ) -> None:
     """Process a single retrack job using the same pipeline as track.py."""
     try:
+        import time as _time
+        _t0 = _time.perf_counter()
+
         # Load original annotations
         annotations_path = find_annotations_file(
             str(config.data_dir), config.project_id, config.dataset_id
@@ -180,6 +186,9 @@ def process_retrack_job(
             "labels": original_data.get("labels", []),
         }
 
+        _t_prep = _time.perf_counter()
+        logger.info(f"Retrack prep (annotations+masks load): {_t_prep - _t0:.2f}s")
+
         # Pass version_id to tracking pipeline so it's written to frametype.json
         # This is the newly generated version_id (different from job.previous_version_id)
         output_dir = run_tracking_pipeline(
@@ -193,26 +202,29 @@ def process_retrack_job(
             version_id=job.new_version_id,
         )
 
+        _t_track = _time.perf_counter()
+        logger.info(f"Retrack tracking pipeline: {_t_track - _t_prep:.2f}s")
+
         # Build mask archive (version_id is also written to masks.tar metadata.json for client)
         masks_dir = output_dir / "masks"
         mask_count = len(list(masks_dir.glob("*.webp")))
         series = series_manager.get_series(job.study_uid, job.series_uid)
+        logger.info(
+            f"Retrack produced {mask_count} masks in {masks_dir}"
+        )
 
-        try:
-            # build_mask_metadata reads version_id from frametype.json
-            metadata = build_mask_metadata(
-                series, masks_dir, config.flow_method, config
-            )
-            archive_path = output_dir.parent / "masks.tar"
-            archive_bytes = build_mask_archive(masks_dir, metadata)
-            with archive_path.open("wb") as f:
-                f.write(archive_bytes)
-        except (MaskArchiveError, Exception) as exc:
-            print(
-                f"[RETRACK] Warning: Failed to build mask archive: {exc}",
-                flush=True,
-            )
-        # Tracking status is computed from filesystem (checks for masks.tar)
+        # build_mask_metadata reads version_id from frametype.json
+        metadata = build_mask_metadata(
+            series, masks_dir, config.flow_method, config
+        )
+        archive_path = output_dir.parent / "masks.tar"
+        archive_bytes = build_mask_archive(masks_dir, metadata)
+        with archive_path.open("wb") as f:
+            f.write(archive_bytes)
+        _t_archive = _time.perf_counter()
+        logger.info(
+            f"Wrote masks.tar ({len(archive_bytes)} bytes) to {archive_path} (archive: {_t_archive - _t_track:.2f}s)"
+        )
 
         # Mark job as completed
         queue_file = config.server_state_path / "retrack_queue.json"
@@ -260,13 +272,20 @@ def process_retrack_job(
 def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
     """Main worker loop that processes retrack jobs from the queue."""
     import time
-    import logging
 
-    logger = logging.getLogger(__name__)
+    # Track parent PID so we can exit if parent server dies (prevents orphaned workers)
+    parent_pid = os.getppid()
+
     queue_file = config.server_state_path / "retrack_queue.json"
     retrack_queue = RetrackQueue(queue_file)
 
-    logger.info("Retrack worker loop started, waiting for jobs...")
+    logger.info("Retrack worker loop started, waiting for jobs... (parent PID: %d)", parent_pid)
+
+    try:
+        import objc
+        _has_objc = True
+    except ImportError:
+        _has_objc = False
 
     reset_count = retrack_queue.reset_stale_processing_jobs()
     if reset_count > 0:
@@ -277,6 +296,10 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
         logger.info(f"Reset {reset_count} stale processing job(s) on startup")
 
     while True:
+        # Exit if parent server process died (prevents orphaned workers racing on queue)
+        if os.getppid() != parent_pid:
+            logger.info("Parent process changed (server restarted?), exiting worker.")
+            return
         try:
             job = retrack_queue.dequeue()
             if job:
@@ -288,7 +311,12 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
                     f"Processing retrack job: {job.study_uid}/{job.series_uid} (version: {job.new_version_id})"
                 )
                 try:
-                    process_retrack_job(job, config, series_manager)
+                    # Wrap in autorelease pool to drain Vision framework GPU memory
+                    if _has_objc:
+                        with objc.autorelease_pool():
+                            process_retrack_job(job, config, series_manager)
+                    else:
+                        process_retrack_job(job, config, series_manager)
                     print(
                         f"[RETRACK WORKER] Completed retrack job: {job.study_uid}/{job.series_uid} (version: {job.new_version_id})",
                         flush=True,

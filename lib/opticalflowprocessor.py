@@ -66,9 +66,49 @@ class OpticalFlowProcessor:
             'Vision': Vision,
             'Quartz': Quartz,
         }
+        self._vision_scale_cache = {}
 
-    def vision_optical_flow(self, prev_bgr, curr_bgr):
-        """Compute optical flow using Apple Vision framework (GPU/ANE)."""
+    def _get_vision_scale(self, h, w):
+        """Calibrate Vision flow scale factor for given image dimensions.
+
+        VNGenerateOpticalFlowRequest returns flow vectors with magnitudes
+        systematically smaller than actual pixel displacements. The scale
+        factor depends on image resolution. We measure it once per resolution
+        using a synthetic test pair with known displacement.
+        """
+        key = (h, w)
+        if key in self._vision_scale_cache:
+            return self._vision_scale_cache[key]
+
+        known_shift = 10
+        rng = np.random.RandomState(42)
+        cal1 = cv2.GaussianBlur(
+            rng.randint(0, 256, (h, w, 3), dtype=np.uint8),
+            (15, 15), 5,
+        )
+        M = np.float32([[1, 0, known_shift], [0, 1, 0]])
+        cal2 = cv2.warpAffine(cal1, M, (w, h))
+
+        flow = self._vision_optical_flow_raw(cal1, cal2)
+
+        cy, cx = h // 2, w // 3
+        r = min(30, h // 6, w // 6)
+        measured = flow[cy - r:cy + r, cx - r:cx + r, 0].mean()
+
+        if abs(measured) > 0.01:
+            scale = known_shift / measured
+        else:
+            scale = 1.0
+
+        self._vision_scale_cache[key] = scale
+        import logging
+        logging.getLogger(__name__).info(
+            f"Vision flow calibrated for {w}x{h}: scale={scale:.3f}"
+        )
+        return scale
+
+    def _vision_optical_flow_raw(self, prev_bgr, curr_bgr):
+        """Compute raw (uncorrected) optical flow using Apple Vision framework."""
         vo = self._vision_objects
         Vision = vo['Vision']
         Quartz = vo['Quartz']
@@ -101,6 +141,14 @@ class OpticalFlowProcessor:
         raw = bytes(base.as_buffer(bpr * ph))
         flow = np.frombuffer(raw, dtype=np.float32).reshape(ph, -1)[:, :pw * 2].reshape(ph, pw, 2).copy()
         Quartz.CVPixelBufferUnlockBaseAddress(buf, 0)
+        return flow
+
+    def vision_optical_flow(self, prev_bgr, curr_bgr):
+        """Compute optical flow using Apple Vision framework (GPU/ANE) with scale correction."""
+        h, w = prev_bgr.shape[:2]
+        scale = self._get_vision_scale(h, w)
+        flow = self._vision_optical_flow_raw(prev_bgr, curr_bgr)
+        flow *= scale
         return flow
 
     def load_raft_model(self):

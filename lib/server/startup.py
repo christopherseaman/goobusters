@@ -138,20 +138,36 @@ def generate_masks_for_all_series(
 
     logger.info(f"Generating masks for {len(untracked)} untracked series...")
 
-    # Process series sequentially (can be parallelized later if needed)
-    # For now, sequential is safer and easier to debug
+    # Wrap each series in an ObjC autorelease pool to drain Vision framework GPU memory
+    # (VNGenerateOpticalFlowRequest creates CVPixelBuffers that accumulate without this)
+    try:
+        import objc
+        _has_objc = True
+    except ImportError:
+        _has_objc = False
+
+    # Process series sequentially
     for idx, series in enumerate(untracked, 1):
         logger.info(
             f"[{idx}/{len(untracked)}] Starting tracking for {series.study_uid}/{series.series_uid}"
         )
 
         try:
-            run_tracking_for_series(
-                series.study_uid,
-                series.series_uid,
-                config,
-                series_manager,
-            )
+            if _has_objc:
+                with objc.autorelease_pool():
+                    run_tracking_for_series(
+                        series.study_uid,
+                        series.series_uid,
+                        config,
+                        series_manager,
+                    )
+            else:
+                run_tracking_for_series(
+                    series.study_uid,
+                    series.series_uid,
+                    config,
+                    series_manager,
+                )
             logger.info(
                 f"[{idx}/{len(untracked)}] ✓ Completed tracking for {series.study_uid}/{series.series_uid}"
             )

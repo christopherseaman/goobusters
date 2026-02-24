@@ -122,6 +122,7 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             "series_completed": completed,
             "series_failed": failed,
             "series_pending": pending,
+            "flow_method": flow_method,
         })
 
     @bp.get("/api/series")
@@ -719,7 +720,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
             previous_version_id if previous_version_id else None
         )
         current_normalized = current_version if current_version else None
-        if previous_normalized != current_normalized:
+        # If server version is None (reset or initial state), accept any client version
+        # This allows saves after reset without requiring client to clear its version
+        if current_normalized is not None and previous_normalized != current_normalized:
             return (
                 jsonify({
                     "error_code": "VERSION_MISMATCH",
