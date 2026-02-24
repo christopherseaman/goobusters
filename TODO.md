@@ -7,11 +7,6 @@
 - [ ] Possible to have multitouch pinch/zoom for image/mask canvas without affecting toolbar buttons?
 - [?] Frame image/mask canvas inside toolbars instead of having toolbars on top of image/mask
 
-### iPad App
-
-- [ ] Test end-to-end iPad workflow: download → extract → view → edit → save → retrack
-- [ ] Test that cloudflare tunnel hasn't broken the front-end
-
 ### UI/UX Improvements
 
 - [ ] (lower priority) improved series navigation modal
