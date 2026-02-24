@@ -1,0 +1,232 @@
+{
+  "benchmark_version": "2.0",
+  "timestamp": "2026-02-24T01:37:25.953260+00:00",
+  "hostname": "DEB-Y7RGC54-DT",
+  "hardware": {
+    "platform": "macOS-26.2-arm64-arm-64bit",
+    "cpu_cores": 28,
+    "memory_gb": 96.0,
+    "device": "mps",
+    "is_apple_silicon": true,
+    "mps_available": true
+  },
+  "dis_scale": 1,
+  "results": {
+    "small": {
+      "dis-ultrafast": {
+        "method": "dis-ultrafast",
+        "frames": 59,
+        "total_s": 0.16,
+        "per_frame_ms": 2.67,
+        "flow_ms": 2.01,
+        "warp_ms": 0.66,
+        "flow_pct": 75.4,
+        "dis_scale": 1
+      },
+      "dis-fast": {
+        "method": "dis-fast",
+        "frames": 59,
+        "total_s": 0.44,
+        "per_frame_ms": 7.51,
+        "flow_ms": 6.87,
+        "warp_ms": 0.64,
+        "flow_pct": 91.4,
+        "dis_scale": 1
+      },
+      "dis-medium": {
+        "method": "dis-medium",
+        "frames": 59,
+        "total_s": 1.29,
+        "per_frame_ms": 21.94,
+        "flow_ms": 21.33,
+        "warp_ms": 0.61,
+        "flow_pct": 97.2,
+        "dis_scale": 1
+      },
+      "vision-low": {
+        "method": "vision-low",
+        "frames": 59,
+        "total_s": 1.2,
+        "per_frame_ms": 20.28,
+        "flow_ms": 19.76,
+        "warp_ms": 0.53,
+        "flow_pct": 97.4,
+        "dis_scale": 1
+      },
+      "vision-medium": {
+        "method": "vision-medium",
+        "frames": 59,
+        "total_s": 1.4,
+        "per_frame_ms": 23.8,
+        "flow_ms": 23.27,
+        "warp_ms": 0.53,
+        "flow_pct": 97.8,
+        "dis_scale": 1
+      },
+      "vision-high": {
+        "method": "vision-high",
+        "frames": 59,
+        "total_s": 1.88,
+        "per_frame_ms": 31.79,
+        "flow_ms": 31.27,
+        "warp_ms": 0.53,
+        "flow_pct": 98.3,
+        "dis_scale": 1
+      },
+      "farneback": {
+        "method": "farneback",
+        "frames": 59,
+        "total_s": 2.25,
+        "per_frame_ms": 38.13,
+        "flow_ms": 37.62,
+        "warp_ms": 0.51,
+        "flow_pct": 98.7,
+        "dis_scale": 1
+      }
+    },
+    "medium": {
+      "dis-ultrafast": {
+        "method": "dis-ultrafast",
+        "frames": 108,
+        "total_s": 1.67,
+        "per_frame_ms": 15.45,
+        "flow_ms": 13.65,
+        "warp_ms": 1.8,
+        "flow_pct": 88.3,
+        "dis_scale": 1
+      },
+      "dis-fast": {
+        "method": "dis-fast",
+        "frames": 108,
+        "total_s": 3.63,
+        "per_frame_ms": 33.58,
+        "flow_ms": 31.8,
+        "warp_ms": 1.78,
+        "flow_pct": 94.7,
+        "dis_scale": 1
+      },
+      "dis-medium": {
+        "method": "dis-medium",
+        "frames": 108,
+        "total_s": 6.79,
+        "per_frame_ms": 62.85,
+        "flow_ms": 61.06,
+        "warp_ms": 1.79,
+        "flow_pct": 97.2,
+        "dis_scale": 1
+      },
+      "vision-low": {
+        "method": "vision-low",
+        "frames": 108,
+        "total_s": 3.66,
+        "per_frame_ms": 33.9,
+        "flow_ms": 32.03,
+        "warp_ms": 1.87,
+        "flow_pct": 94.5,
+        "dis_scale": 1
+      },
+      "vision-medium": {
+        "method": "vision-medium",
+        "frames": 108,
+        "total_s": 3.64,
+        "per_frame_ms": 33.67,
+        "flow_ms": 31.88,
+        "warp_ms": 1.79,
+        "flow_pct": 94.7,
+        "dis_scale": 1
+      },
+      "vision-high": {
+        "method": "vision-high",
+        "frames": 108,
+        "total_s": 4.75,
+        "per_frame_ms": 43.96,
+        "flow_ms": 42.12,
+        "warp_ms": 1.84,
+        "flow_pct": 95.8,
+        "dis_scale": 1
+      },
+      "farneback": {
+        "method": "farneback",
+        "frames": 108,
+        "total_s": 18.36,
+        "per_frame_ms": 170.01,
+        "flow_ms": 168.18,
+        "warp_ms": 1.83,
+        "flow_pct": 98.9,
+        "dis_scale": 1
+      }
+    },
+    "large": {
+      "dis-ultrafast": {
+        "method": "dis-ultrafast",
+        "frames": 194,
+        "total_s": 3.22,
+        "per_frame_ms": 16.6,
+        "flow_ms": 14.86,
+        "warp_ms": 1.74,
+        "flow_pct": 89.5,
+        "dis_scale": 1
+      },
+      "dis-fast": {
+        "method": "dis-fast",
+        "frames": 194,
+        "total_s": 6.48,
+        "per_frame_ms": 33.4,
+        "flow_ms": 31.68,
+        "warp_ms": 1.72,
+        "flow_pct": 94.9,
+        "dis_scale": 1
+      },
+      "dis-medium": {
+        "method": "dis-medium",
+        "frames": 194,
+        "total_s": 11.79,
+        "per_frame_ms": 60.78,
+        "flow_ms": 59.05,
+        "warp_ms": 1.73,
+        "flow_pct": 97.2,
+        "dis_scale": 1
+      },
+      "vision-low": {
+        "method": "vision-low",
+        "frames": 194,
+        "total_s": 5.64,
+        "per_frame_ms": 29.06,
+        "flow_ms": 27.3,
+        "warp_ms": 1.76,
+        "flow_pct": 93.9,
+        "dis_scale": 1
+      },
+      "vision-medium": {
+        "method": "vision-medium",
+        "frames": 194,
+        "total_s": 6.55,
+        "per_frame_ms": 33.74,
+        "flow_ms": 31.98,
+        "warp_ms": 1.76,
+        "flow_pct": 94.8,
+        "dis_scale": 1
+      },
+      "vision-high": {
+        "method": "vision-high",
+        "frames": 194,
+        "total_s": 8.49,
+        "per_frame_ms": 43.78,
+        "flow_ms": 42.01,
+        "warp_ms": 1.77,
+        "flow_pct": 96.0,
+        "dis_scale": 1
+      },
+      "farneback": {
+        "method": "farneback",
+        "frames": 194,
+        "total_s": 31.39,
+        "per_frame_ms": 161.8,
+        "flow_ms": 160.07,
+        "warp_ms": 1.73,
+        "flow_pct": 98.9,
+        "dis_scale": 1
+      }
+    }
+  }
+}
