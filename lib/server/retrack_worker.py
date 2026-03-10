@@ -29,7 +29,6 @@ from lib.config import ServerConfig, load_config
 from lib.mask_archive import (
     build_mask_archive,
     build_mask_metadata,
-    MaskArchiveError,
 )
 from lib.uploaded_masks import convert_uploaded_masks_to_annotations_df
 from server.storage.retrack_queue import RetrackQueue
@@ -120,31 +119,167 @@ def _add_video_paths(annotations_df, images_dir):
     )
 
 
+def _check_masks_already_exist(output_dir: Path) -> bool:
+    """Check if masks already exist for all frames (skip-if-exists optimization)."""
+    import json
+
+    masks_dir = output_dir / "masks"
+    frametype_path = output_dir / "frametype.json"
+
+    if not masks_dir.exists() or not frametype_path.exists():
+        return False
+
+    try:
+        with frametype_path.open() as f:
+            frametype_data = json.load(f)
+
+        expected_frames = set()
+        for key, info in frametype_data.items():
+            if key == "_version_id":
+                continue
+            try:
+                frame_num = int(key)
+                if isinstance(info, dict) and info.get("has_mask", False):
+                    expected_frames.add(frame_num)
+            except (ValueError, TypeError):
+                continue
+
+        if not expected_frames:
+            return False
+
+        existing_masks = {
+            int(f.stem.split("_")[1])
+            for f in masks_dir.glob("frame_*_mask.webp")
+            if len(f.stem.split("_")) >= 2
+            and f.stem.split("_")[1].isdigit()
+        }
+
+        return expected_frames.issubset(existing_masks)
+    except (OSError, json.JSONDecodeError, KeyError, ValueError):
+        return False
+
+
 def process_initial_job(
     job, config: ServerConfig, series_manager: SeriesManager
 ) -> None:
-    """Process an initial tracking job using the same pipeline as track.py."""
-    from server.tracking_worker import run_tracking_for_series
+    """Process an initial tracking job using MD.ai annotations as source.
+
+    Mirrors process_retrack_job() but loads annotations from MD.ai dataset
+    instead of uploaded masks.
+    """
+    from lib.trackable_series import is_series_trackable
+    from server.tracking_worker import build_mask_archive_from_directory
 
     try:
-        run_tracking_for_series(
-            job.study_uid,
-            job.series_uid,
-            config,
-            series_manager,
-        )
+        import time as _time
+        _t0 = _time.perf_counter()
+
         queue_file = config.server_state_path / "retrack_queue.json"
         retrack_queue = RetrackQueue(queue_file)
-        retrack_queue.mark_completed(
-            job.study_uid, job.series_uid, job.new_version_id
+
+        if not is_series_trackable(job.study_uid, job.series_uid, config):
+            logger.info(f"Series {job.study_uid}/{job.series_uid} is not trackable, skipping")
+            retrack_queue.mark_completed(job.study_uid, job.series_uid, job.new_version_id)
+            return
+
+        # Check if masks already exist (e.g. from track.py or previous run)
+        from lib.mask_archive import mask_series_dir
+        output_dir = mask_series_dir(
+            Path(config.mask_storage_path), config.flow_method,
+            job.study_uid, job.series_uid,
         )
+        if _check_masks_already_exist(output_dir):
+            logger.info(
+                f"Masks already exist for {job.study_uid}/{job.series_uid}. "
+                f"Building archive only."
+            )
+            build_mask_archive_from_directory(
+                job.study_uid, job.series_uid,
+                output_dir / "masks", output_dir,
+                config, series_manager,
+            )
+            retrack_queue.mark_completed(job.study_uid, job.series_uid, job.new_version_id)
+            return
+
+        # Load MD.ai annotations
+        annotations_path = find_annotations_file(
+            str(config.data_dir), config.project_id, config.dataset_id
+        )
+        original_data = mdai.common_utils.json_to_dataframe(annotations_path)
+        annotations_df = pd.DataFrame(original_data["annotations"])
+        studies_df = pd.DataFrame(original_data.get("studies", []))
+
+        # Filter for this series
+        series_annotations = annotations_df[
+            (annotations_df["StudyInstanceUID"] == job.study_uid)
+            & (annotations_df["SeriesInstanceUID"] == job.series_uid)
+        ].copy()
+
+        if series_annotations.empty:
+            raise ValueError(f"No annotations found for series {job.study_uid}/{job.series_uid}")
+
+        # Filter for label_id + empty_id only
+        filtered = series_annotations[
+            (series_annotations["labelId"] == config.label_id)
+            | (series_annotations["labelId"] == config.empty_id)
+        ].copy()
+
+        if filtered.empty:
+            raise ValueError(
+                f"No free fluid annotations for series {job.study_uid}/{job.series_uid}"
+            )
+
+        # Ensure labelName is populated
+        _add_label_names(filtered, config)
+
+        _t_prep = _time.perf_counter()
+        logger.info(f"Initial tracking prep (annotations load): {_t_prep - _t0:.2f}s")
+
+        # Run tracking pipeline (is_retrack=False writes to base dir)
+        annotations_blob = {
+            "annotations": original_data["annotations"],
+            "studies": original_data.get("studies", []),
+            "labels": original_data.get("labels", []),
+        }
+
+        output_dir = run_tracking_pipeline(
+            job.study_uid, job.series_uid,
+            filtered, studies_df, annotations_blob,
+            config, is_retrack=False,
+        )
+
+        _t_track = _time.perf_counter()
+        logger.info(f"Initial tracking pipeline: {_t_track - _t_prep:.2f}s")
+
+        # Build mask archive
+        masks_dir = output_dir / "masks"
+        mask_count = len(list(masks_dir.glob("*.webp")))
+        series = series_manager.get_series(job.study_uid, job.series_uid)
+        logger.info(f"Initial tracking produced {mask_count} masks in {masks_dir}")
+
+        metadata = build_mask_metadata(series, masks_dir, config.flow_method, config)
+        archive_path = output_dir / "masks.tar"
+        archive_bytes = build_mask_archive(masks_dir, metadata)
+        with archive_path.open("wb") as f:
+            f.write(archive_bytes)
+
+        _t_archive = _time.perf_counter()
+        logger.info(
+            f"Wrote masks.tar ({len(archive_bytes)} bytes) to {archive_path} "
+            f"(archive: {_t_archive - _t_track:.2f}s)"
+        )
+
+        retrack_queue.mark_completed(job.study_uid, job.series_uid, job.new_version_id)
+
     except Exception as exc:
         queue_file = config.server_state_path / "retrack_queue.json"
         retrack_queue = RetrackQueue(queue_file)
         retrack_queue.mark_failed(
             job.study_uid, job.series_uid, job.new_version_id, str(exc)
         )
-        raise
+        logger.error(f"Initial tracking failed for {job.study_uid}/{job.series_uid}: {exc}")
+        import traceback
+        traceback.print_exc()
 
 
 def process_retrack_job(

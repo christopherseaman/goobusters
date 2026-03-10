@@ -44,7 +44,6 @@ from lib.mask_archive import (
 from lib.uploaded_masks import convert_uploaded_masks_to_annotations_df
 from server.storage.retrack_queue import RetrackQueue
 from server.storage.series_manager import SeriesManager, SeriesMetadata
-from server.tracking_worker import trigger_lazy_tracking
 
 
 def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
@@ -385,11 +384,9 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 study_uid, series_uid
             )
             if tracking_status == "never_run":
-                # Trigger lazy tracking in background
-                # Note: Worker will mark as "failed" if tracking fails, preventing retries
-                trigger_lazy_tracking(
-                    study_uid, series_uid, config, series_manager
-                )
+                queue_file = config.server_state_path / "retrack_queue.json"
+                retrack_queue = RetrackQueue(queue_file)
+                retrack_queue.enqueue_initial(study_uid, series_uid)
                 return (
                     jsonify({
                         "status": "pending",
