@@ -306,7 +306,7 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
     queue_file = config.server_state_path / "retrack_queue.json"
     retrack_queue = RetrackQueue(queue_file)
 
-    logger.info("Retrack worker loop started, waiting for jobs... (parent PID: %d)", parent_pid)
+    logger.info("Tracking worker started, waiting for jobs... (parent PID: %d)", parent_pid)
 
     try:
         import objc
@@ -314,13 +314,8 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
     except ImportError:
         _has_objc = False
 
-    reset_count = retrack_queue.reset_stale_processing_jobs()
-    if reset_count > 0:
-        print(
-            f"[RETRACK WORKER] Reset {reset_count} stale processing job(s) on startup",
-            flush=True,
-        )
-        logger.info(f"Reset {reset_count} stale processing job(s) on startup")
+    # Stale job recovery is handled by cleanup_retrack_queue() in main()
+    # before workers start — don't reset here (would clobber jobs other workers dequeued)
 
     while True:
         # Exit if parent server process died (prevents orphaned workers racing on queue)
