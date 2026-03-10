@@ -28,7 +28,6 @@ if _lib_server not in sys.path:
 from lib.config import ServerConfig
 from lib.mask_archive import mask_series_dir
 from server.storage.series_manager import SeriesManager
-from server.tracking_worker import run_tracking_for_series
 from track import find_annotations_file, find_images_dir
 
 logger = logging.getLogger(__name__)
@@ -192,62 +191,53 @@ def generate_masks_for_all_series(
 def initialize_server(
     config: ServerConfig,
     series_manager: SeriesManager,
-    skip_download: bool = False,
-    skip_mask_generation: bool = False,
 ) -> None:
     """
-    Initialize server: download dataset and generate masks for all series.
+    Initialize server: verify dataset, start workers, generate masks.
 
-    This implements the core server operation as specified in DISTRIBUTED_ARCHITECTURE.md.
-    The server must complete this initialization before serving clients.
+    Dataset must already be downloaded by the caller. This function:
+    1. Verifies dataset exists on disk
+    2. Initializes status.json files for all series
+    3. Starts tracking workers
+    4. Enqueues initial tracking jobs for untracked series
+    5. Blocks until all initial jobs complete
 
     Args:
         config: Server configuration
         series_manager: SeriesManager instance
-        skip_download: If True, skip MD.ai dataset download (use existing data)
-        skip_mask_generation: If True, skip mask generation (use existing masks)
     """
-    # Step 1: Download MD.ai dataset
-    if not skip_download:
-        try:
-            download_mdai_dataset(config)
-        except Exception as exc:
-            logger.error(f"Dataset download failed: {exc}", exc_info=True)
-            raise
-    else:
-        logger.info("Skipping MD.ai dataset download (using existing data)")
-        # Verify data exists
-        try:
-            find_annotations_file(
-                str(config.data_dir),
-                config.project_id,
-                config.dataset_id,
-            )
-            find_images_dir(
-                str(config.data_dir),
-                config.project_id,
-                config.dataset_id,
-            )
-            logger.info("Existing dataset verified")
-        except FileNotFoundError as exc:
-            raise RuntimeError(
-                "Dataset download skipped but data not found. "
-                "Run with skip_download=False or ensure data exists."
-            ) from exc
+    import time
 
-    # Step 2: Verify series index is built (built in SeriesManager.__init__)
+    from server.storage.retrack_queue import RetrackQueue
+
+    # Verify dataset exists
+    try:
+        find_annotations_file(
+            str(config.data_dir),
+            config.project_id,
+            config.dataset_id,
+        )
+        find_images_dir(
+            str(config.data_dir),
+            config.project_id,
+            config.dataset_id,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"Dataset not found on disk. Download must complete before initialization: {exc}"
+        ) from exc
+
+    # Verify series index
     series_count = len(series_manager.list_series())
     logger.info(f"Series index ready. Found {series_count} series.")
-    
-    # Step 2.5: Initialize status.json files for all series (if not exist)
-    logger.info("Initializing status.json files for all series...")
+
+    # Initialize status.json files for all series
     initialized_count = 0
     error_count = 0
     for series in series_manager.list_series():
         try:
             status_path = series_manager._status_path(series.study_uid, series.series_uid)
             if not status_path.exists():
-                # Create default status.json
                 series_manager._write_status(series.study_uid, series.series_uid)
                 initialized_count += 1
         except Exception as exc:
@@ -258,14 +248,52 @@ def initialize_server(
     if error_count > 0:
         logger.warning(f"Failed to initialize {error_count} status.json files.")
 
-    # Step 3: Generate masks for all series
-    if not skip_mask_generation:
-        try:
-            generate_masks_for_all_series(config, series_manager)
-        except Exception as exc:
-            logger.error(f"Mask generation failed: {exc}", exc_info=True)
-            raise
-    else:
-        logger.info("Skipping mask generation (using existing masks)")
+    # Find untracked series that need initial mask generation
+    from lib.trackable_series import get_trackable_series
+
+    all_series = series_manager.list_series()
+    trackable_set = get_trackable_series(config)
+    mask_root = Path(config.mask_storage_path)
+    flow_method = config.flow_method
+
+    untracked = []
+    for series in all_series:
+        if (series.study_uid, series.series_uid) not in trackable_set:
+            continue
+        tracking_status = series_manager.get_tracking_status(series.study_uid, series.series_uid)
+        if tracking_status == "failed":
+            continue
+        output_dir = mask_series_dir(mask_root, flow_method, series.study_uid, series.series_uid)
+        if not (output_dir / "masks.tar").exists() and not (output_dir / "masks.tar.gz").exists():
+            untracked.append(series)
+
+    if not untracked:
+        logger.info("All series already have masks. Starting workers for retrack jobs.")
+        from server.start import start_tracking_workers
+        start_tracking_workers(config)
+        logger.info("Server initialization complete.")
+        return
+
+    logger.info(f"Found {len(untracked)} untracked series. Enqueueing initial tracking jobs...")
+
+    # Start workers before enqueueing so they can begin processing immediately
+    from server.start import start_tracking_workers
+    start_tracking_workers(config)
+
+    # Enqueue initial tracking jobs
+    queue_file = config.server_state_path / "retrack_queue.json"
+    retrack_queue = RetrackQueue(queue_file)
+    for series in untracked:
+        retrack_queue.enqueue_initial(series.study_uid, series.series_uid)
+
+    logger.info(f"Enqueued {len(untracked)} initial tracking jobs. Waiting for completion...")
+
+    # Block until all jobs complete (workers process in parallel)
+    while True:
+        active = retrack_queue.count_active()
+        if active == 0:
+            break
+        logger.info(f"Waiting for {active} tracking job(s) to complete...")
+        time.sleep(5)
 
     logger.info("Server initialization complete. Ready to serve clients.")

@@ -120,6 +120,33 @@ def _add_video_paths(annotations_df, images_dir):
     )
 
 
+def process_initial_job(
+    job, config: ServerConfig, series_manager: SeriesManager
+) -> None:
+    """Process an initial tracking job using the same pipeline as track.py."""
+    from server.tracking_worker import run_tracking_for_series
+
+    try:
+        run_tracking_for_series(
+            job.study_uid,
+            job.series_uid,
+            config,
+            series_manager,
+        )
+        queue_file = config.server_state_path / "retrack_queue.json"
+        retrack_queue = RetrackQueue(queue_file)
+        retrack_queue.mark_completed(
+            job.study_uid, job.series_uid, job.new_version_id
+        )
+    except Exception as exc:
+        queue_file = config.server_state_path / "retrack_queue.json"
+        retrack_queue = RetrackQueue(queue_file)
+        retrack_queue.mark_failed(
+            job.study_uid, job.series_uid, job.new_version_id, str(exc)
+        )
+        raise
+
+
 def process_retrack_job(
     job, config: ServerConfig, series_manager: SeriesManager
 ) -> None:
@@ -303,39 +330,29 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
         try:
             job = retrack_queue.dequeue()
             if job:
-                print(
-                    f"[RETRACK WORKER] Processing retrack job: {job.study_uid}/{job.series_uid} (version: {job.new_version_id})",
-                    flush=True,
-                )
-                logger.info(
-                    f"Processing retrack job: {job.study_uid}/{job.series_uid} (version: {job.new_version_id})"
-                )
+                job_label = f"{job.job_type}:{job.study_uid}/{job.series_uid}"
+                print(f"[TRACKING WORKER] Processing {job_label}", flush=True)
+                logger.info(f"Processing {job_label}")
                 try:
+                    if job.job_type == "initial":
+                        _process_job = lambda: process_initial_job(job, config, series_manager)
+                    else:
+                        _process_job = lambda: process_retrack_job(job, config, series_manager)
+
                     # Wrap in autorelease pool to drain Vision framework GPU memory
                     if _has_objc:
                         with objc.autorelease_pool():
-                            process_retrack_job(job, config, series_manager)
+                            _process_job()
                     else:
-                        process_retrack_job(job, config, series_manager)
-                    print(
-                        f"[RETRACK WORKER] Completed retrack job: {job.study_uid}/{job.series_uid} (version: {job.new_version_id})",
-                        flush=True,
-                    )
-                    logger.info(
-                        f"Completed retrack job: {job.study_uid}/{job.series_uid} (version: {job.new_version_id})"
-                    )
+                        _process_job()
+                    print(f"[TRACKING WORKER] Completed {job_label}", flush=True)
+                    logger.info(f"Completed {job_label}")
                 except Exception as exc:
-                    print(
-                        f"[RETRACK WORKER] Unexpected error: {exc}",
-                        flush=True,
-                    )
+                    print(f"[TRACKING WORKER] Failed {job_label}: {exc}", flush=True)
                     import traceback
 
                     traceback.print_exc()
-                    logger.error(
-                        f"Unexpected error processing retrack job {job.study_uid}/{job.series_uid}: {exc}",
-                        exc_info=True,
-                    )
+                    logger.error(f"Failed {job_label}: {exc}", exc_info=True)
                     retrack_queue.mark_failed(
                         job.study_uid,
                         job.series_uid,
@@ -345,7 +362,7 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
             else:
                 time.sleep(1)
         except Exception as exc:
-            print(f"[RETRACK WORKER] Error in worker loop: {exc}", flush=True)
+            print(f"[TRACKING WORKER] Error in worker loop: {exc}", flush=True)
             import traceback
 
             traceback.print_exc()

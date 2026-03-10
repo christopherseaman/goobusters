@@ -44,11 +44,17 @@ class ServerContext:
 
 def cleanup_retrack_queue(
     config: ServerConfig,
-    series_manager: SeriesManager,
     clear_queue: bool = False,
 ) -> None:
-    """Clean up retrack queue on server startup."""
+    """Clean up retrack queue and workers on server startup.
+
+    Operates as cache cleanup — no dataset or SeriesManager required.
+    Kills stale workers and clears/resets the queue file.
+    """
     from server.storage.retrack_queue import RetrackQueue
+
+    # Kill any stale retrack workers first
+    _kill_old_retrack_workers(config)
 
     queue_file = config.server_state_path / "retrack_queue.json"
     if not queue_file.exists():
@@ -57,46 +63,32 @@ def cleanup_retrack_queue(
     retrack_queue = RetrackQueue(queue_file)
 
     if clear_queue:
-        # Before clearing, revert any version IDs that were written by incomplete retrack jobs
-        # If a retrack job was processing, it may have written new_version_id to frametype.json
-        # We need to revert it back to the version that existed before the retrack started
+        # Revert version IDs written by incomplete retrack jobs and clean up output dirs
         jobs = retrack_queue._load_queue()
         for job in jobs:
-            # Only revert if job was processing (may have written version_id)
-            # For pending jobs, frametype.json hasn't been updated yet
             if job.status == "processing":
                 try:
-                    from lib.mask_archive import mask_series_dir
-
                     output_dir = mask_series_dir(
                         Path(config.mask_storage_path),
                         config.flow_method,
                         job.study_uid,
                         job.series_uid,
                     )
-                    # Check retrack frametype.json (where new_version_id would have been written)
-                    retrack_frametype_path = (
-                        output_dir / "retrack" / "frametype.json"
-                    )
-                    if retrack_frametype_path.exists():
-                        # Remove retrack directory entirely (cleanup)
-                        retrack_dir = output_dir / "retrack"
-                        if retrack_dir.exists():
-                            shutil.rmtree(retrack_dir)
-                    # Revert main frametype.json to previous_version_id (the version before retrack started)
-                    # This only matters if retrack completed and overwrote the main frametype.json
+                    # Remove incomplete retrack output directory
+                    retrack_dir = output_dir / "retrack"
+                    if retrack_dir.exists():
+                        shutil.rmtree(retrack_dir)
+                    # Revert main frametype.json if it was overwritten by this job
                     frametype_path = output_dir / "frametype.json"
                     if (
                         frametype_path.exists()
                         and job.previous_version_id is not None
                     ):
                         try:
-                            with frametype_path.open("r+") as f:
-                                import json
+                            import json
 
+                            with frametype_path.open("r+") as f:
                                 data = json.load(f)
-                                # Only revert if current version matches the new_version_id from the failed job
-                                # This means the retrack completed but we're clearing it
                                 if (
                                     data.get("_version_id")
                                     == job.new_version_id
@@ -110,10 +102,9 @@ def cleanup_retrack_queue(
                         except (json.JSONDecodeError, OSError):
                             pass
                 except FileNotFoundError:
-                    pass  # Series doesn't exist, skip
+                    pass  # Series output doesn't exist, skip
 
-        # Cleanup: Remove old server_state/series/ directory (no longer used)
-        # Version ID is now stored in output/{flow_method}/{study_uid}_{series_uid}/version.json
+        # Clean up legacy server_state/series/ directory
         series_root_old = config.server_state_path / "series"
         if series_root_old.exists():
             shutil.rmtree(series_root_old)
@@ -157,48 +148,53 @@ def _run_retrack_worker_process(config: ServerConfig) -> None:
     worker_loop(config, series_manager)
 
 
-def _kill_old_retrack_worker(config: ServerConfig) -> None:
-    """Kill any existing retrack worker from a previous server instance."""
-    import signal
+def _kill_old_retrack_workers(config: ServerConfig) -> None:
+    """Kill any existing retrack workers from a previous server instance."""
+    import signal as sig
 
-    pid_file = config.server_state_path / "retrack_worker.pid"
-    if not pid_file.exists():
+    state_dir = config.server_state_path
+    if not state_dir.exists():
         return
 
-    try:
-        old_pid = int(pid_file.read_text().strip())
-        os.kill(old_pid, signal.SIGTERM)
-        logger.info(f"Killed old retrack worker (PID {old_pid})")
-    except (ValueError, ProcessLookupError, PermissionError):
-        pass  # Already dead or invalid PID
-    finally:
-        pid_file.unlink(missing_ok=True)
+    # Match both legacy single-worker PID file and new multi-worker PID files
+    pid_files = list(state_dir.glob("retrack_worker*.pid"))
+    for pid_file in pid_files:
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, sig.SIGTERM)
+            logger.info(f"Killed old retrack worker (PID {old_pid})")
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass  # Already dead or invalid PID
+        finally:
+            pid_file.unlink(missing_ok=True)
 
 
-def start_retrack_worker(
-    config: ServerConfig, series_manager: SeriesManager
-) -> None:
-    """
-    Start retrack worker in a separate process using spawn to isolate OpenCV crashes.
+def start_tracking_workers(config: ServerConfig) -> None:
+    """Start N tracking worker processes (config.retrack_workers) using spawn.
+
+    Workers process both initial tracking and retrack jobs from the shared queue.
+    Uses spawn context to isolate OpenCV/Vision framework crashes from the main server.
     """
     import multiprocessing
 
-    _kill_old_retrack_worker(config)
+    _kill_old_retrack_workers(config)
 
+    num_workers = config.retrack_workers
     ctx = multiprocessing.get_context("spawn")
-    worker_process = ctx.Process(
-        target=_run_retrack_worker_process,
-        args=(config,),
-        daemon=True,
-        name="retrack-worker",
-    )
-    worker_process.start()
 
-    # Write worker PID so we can kill it on next server startup
-    pid_file = config.server_state_path / "retrack_worker.pid"
-    pid_file.write_text(str(worker_process.pid))
+    for i in range(num_workers):
+        worker_process = ctx.Process(
+            target=_run_retrack_worker_process,
+            args=(config,),
+            daemon=True,
+            name=f"tracking-worker-{i}",
+        )
+        worker_process.start()
 
-    logger.info("Retrack worker process started (spawn, PID %d)", worker_process.pid)
+        pid_file = config.server_state_path / f"retrack_worker_{i}.pid"
+        pid_file.write_text(str(worker_process.pid))
+
+    logger.info("Started %d tracking worker(s) (spawn)", num_workers)
 
 
 def create_app(
@@ -213,10 +209,16 @@ def create_app(
         skip_startup: If True, skip startup initialization (for testing)
     """
     config = config or load_config("server")
+
+    # Download dataset before creating SeriesManager (needs annotations on disk)
+    if not skip_startup:
+        from server.startup import download_mdai_dataset
+
+        download_mdai_dataset(config)
+
     context = ServerContext(config)
 
-    # Initialize server: download dataset and generate masks
-    # This must complete before serving clients (per DISTRIBUTED_ARCHITECTURE.md)
+    # Initialize server: verify data, generate masks via workers (blocking)
     if not skip_startup:
         initialize_server(config, context.series_manager)
 
@@ -267,9 +269,7 @@ def create_app(
         """Return server version."""
         return {"version": "1.0.0"}
 
-    # Start retrack worker in background thread
-    if not skip_startup:
-        start_retrack_worker(config, context.series_manager)
+    # Workers already started by initialize_server() — they continue for retrack jobs
 
     return app
 
@@ -471,12 +471,9 @@ def main() -> None:
             print("Killed existing server process")
         else:
             print("No existing server process found")
-        # Clear retrack queue when killing (stale jobs shouldn't be retried)
-        # Need series_manager to revert version IDs
-        from server.storage.series_manager import SeriesManager
 
-        series_manager = SeriesManager(config)
-        cleanup_retrack_queue(config, series_manager, clear_queue=True)
+    # Clean up retrack queue and workers (no data dependency)
+    cleanup_retrack_queue(config, clear_queue=args.kill)
 
     # Check if server is already running
     existing_pid = read_pid(pid_file)
@@ -519,13 +516,6 @@ def main() -> None:
 
     # Write PID file
     write_pid(pid_file)
-
-    # Clean up stale retrack queue jobs on startup (if not already done with -k)
-    if not args.kill:
-        from server.storage.series_manager import SeriesManager
-
-        series_manager = SeriesManager(config)
-        cleanup_retrack_queue(config, series_manager, clear_queue=False)
 
     # Log startup message with log file location
     logger.info("=" * 60)

@@ -28,20 +28,21 @@ def isoformat(dt: datetime) -> str:
 
 @dataclass
 class RetrackJob:
-    """A single retrack job in the queue."""
+    """A single tracking job in the queue (initial or retrack)."""
 
     study_uid: str
     series_uid: str
     editor: str
     previous_version_id: Optional[str]
     new_version_id: str
-    uploaded_masks_path: Path  # Temporary directory containing extracted masks
+    uploaded_masks_path: Path  # Temporary directory containing extracted masks (retrack only)
     queued_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     failed_at: Optional[str] = None
     error_message: Optional[str] = None
     status: str = "pending"  # pending | processing | completed | failed
+    job_type: str = "retrack"  # "initial" | "retrack"
 
     def to_dict(self) -> dict:
         """Serialize to dict, converting Path to string."""
@@ -54,6 +55,8 @@ class RetrackJob:
         """Deserialize from dict, converting string to Path."""
         data = data.copy()
         data["uploaded_masks_path"] = Path(data["uploaded_masks_path"])
+        # Backwards compat: old queue entries lack job_type
+        data.setdefault("job_type", "retrack")
         return cls(**data)
 
 
@@ -126,6 +129,31 @@ class RetrackQueue:
             jobs.append(job)
             self._save_queue(jobs)
 
+            return job
+
+    def enqueue_initial(
+        self,
+        study_uid: str,
+        series_uid: str,
+    ) -> RetrackJob:
+        """Add an initial tracking job to the queue (no uploaded masks)."""
+        with self._lock:
+            jobs = self._load_queue()
+            timestamp = utc_now()
+
+            job = RetrackJob(
+                study_uid=study_uid,
+                series_uid=series_uid,
+                editor="server",
+                previous_version_id=None,
+                new_version_id="",
+                uploaded_masks_path=Path("/dev/null"),
+                queued_at=isoformat(timestamp),
+                job_type="initial",
+            )
+
+            jobs.append(job)
+            self._save_queue(jobs)
             return job
 
     def dequeue(self) -> Optional[RetrackJob]:
@@ -250,6 +278,11 @@ class RetrackQueue:
                 self._save_queue(jobs)
             
             return reset_count
+
+    def count_active(self) -> int:
+        """Count jobs that are pending or processing."""
+        jobs = self._load_queue()
+        return sum(1 for j in jobs if j.status in {"pending", "processing"})
 
     def clear_queue(self) -> None:
         """Clear all jobs from the queue."""
