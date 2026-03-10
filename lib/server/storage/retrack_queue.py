@@ -7,12 +7,12 @@ as JSON files for durability and observability.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Optional
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -60,16 +60,39 @@ class RetrackJob:
         return cls(**data)
 
 
+class _FileLock:
+    """Cross-process file lock using fcntl."""
+
+    def __init__(self, lock_path: Path):
+        self._lock_path = lock_path
+
+    def __enter__(self):
+        self._fd = self._lock_path.open("w")
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *args):
+        fcntl.flock(self._fd, fcntl.LOCK_UN)
+        self._fd.close()
+
+
 class RetrackQueue:
-    """FIFO queue for retrack jobs with filesystem persistence."""
+    """FIFO queue for retrack jobs with filesystem persistence.
+
+    Uses file-level locking (fcntl) for cross-process safety when
+    multiple worker processes access the queue concurrently.
+    """
 
     def __init__(self, queue_file: Path):
         self.queue_file = queue_file
         self.queue_file.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = Lock()
+        self._lock_file = queue_file.with_suffix(".lock")
+
+    def _lock(self) -> _FileLock:
+        return _FileLock(self._lock_file)
 
     def _load_queue(self) -> list[RetrackJob]:
-        """Load queue from filesystem."""
+        """Load queue from filesystem. Caller must hold _lock()."""
         if not self.queue_file.exists():
             return []
 
@@ -77,21 +100,22 @@ class RetrackQueue:
             with self.queue_file.open() as f:
                 content = f.read().strip()
                 if not content:
-                    # Empty file - return empty list
                     return []
                 data = json.loads(content)
         except (json.JSONDecodeError, ValueError) as e:
-            # Corrupted or invalid JSON - log and return empty list
             print(f"[RETRACK QUEUE] Warning: Failed to load queue file {self.queue_file}: {e}. Returning empty queue.")
             return []
 
         return [RetrackJob.from_dict(item) for item in data]
 
     def _save_queue(self, jobs: list[RetrackJob]) -> None:
-        """Save queue to filesystem."""
+        """Save queue to filesystem. Caller must hold _lock()."""
         data = [job.to_dict() for job in jobs]
-        with self.queue_file.open("w") as f:
+        # Write to temp file then rename for atomicity
+        tmp = self.queue_file.with_suffix(".tmp")
+        with tmp.open("w") as f:
             json.dump(data, f, indent=2)
+        tmp.rename(self.queue_file)
 
     def enqueue(
         self,
@@ -106,7 +130,7 @@ class RetrackQueue:
 
         Returns the created job with generated version_id.
         """
-        with self._lock:
+        with self._lock():
             jobs = self._load_queue()
 
             # Generate new version ID: hash(timestamp + editor email)
@@ -137,7 +161,7 @@ class RetrackQueue:
         series_uid: str,
     ) -> RetrackJob:
         """Add an initial tracking job to the queue (no uploaded masks)."""
-        with self._lock:
+        with self._lock():
             jobs = self._load_queue()
             timestamp = utc_now()
 
@@ -162,7 +186,7 @@ class RetrackQueue:
 
         Returns None if no pending jobs available.
         """
-        with self._lock:
+        with self._lock():
             jobs = self._load_queue()
 
             # Find first pending job
@@ -179,7 +203,7 @@ class RetrackQueue:
         self, study_uid: str, series_uid: str, new_version_id: str
     ) -> None:
         """Mark a job as completed."""
-        with self._lock:
+        with self._lock():
             jobs = self._load_queue()
 
             for job in jobs:
@@ -202,7 +226,7 @@ class RetrackQueue:
         error_message: str,
     ) -> None:
         """Mark a job as failed."""
-        with self._lock:
+        with self._lock():
             jobs = self._load_queue()
 
             for job in jobs:
@@ -264,7 +288,7 @@ class RetrackQueue:
         
         Returns the number of jobs reset.
         """
-        with self._lock:
+        with self._lock():
             jobs = self._load_queue()
             reset_count = 0
             
@@ -286,7 +310,7 @@ class RetrackQueue:
 
     def clear_queue(self) -> None:
         """Clear all jobs from the queue."""
-        with self._lock:
+        with self._lock():
             self._save_queue([])
 
     def get_queue_position(
