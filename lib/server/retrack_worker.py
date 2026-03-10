@@ -314,9 +314,6 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
     except ImportError:
         _has_objc = False
 
-    # Stale job recovery is handled by cleanup_retrack_queue() in main()
-    # before workers start — don't reset here (would clobber jobs other workers dequeued)
-
     while True:
         # Exit if parent server process died (prevents orphaned workers racing on queue)
         if os.getppid() != parent_pid:
