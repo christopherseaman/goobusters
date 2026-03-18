@@ -982,6 +982,37 @@ kbd {
     margin-top: 1rem;
 }
 
+.sync-progress-container {
+    width: 80%;
+    max-width: 300px;
+    margin: 1rem auto;
+}
+
+.sync-progress-container.hidden {
+    display: none;
+}
+
+.sync-progress-track {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.sync-progress-bar {
+    height: 100%;
+    width: 0%;
+    background: #4CAF50;
+    border-radius: 3px;
+    transition: width 0.1s linear;
+}
+
+.sync-progress-label {
+    font-size: 0.85rem;
+    color: #999;
+    margin-top: 0.5rem;
+}
+
 .manual-connect-btn,
 .reconnect-btn {
     margin-top: 1.5rem;

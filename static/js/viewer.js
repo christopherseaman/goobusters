@@ -77,6 +77,7 @@ class AnnotationViewer {
         this.hasConnectedToServer = false; // Track if we've ever successfully connected
         this.serverConnectionRetryCount = 0;
         this.serverConnectionWarningVisible = false;
+        this._syncProgressInterval = null;
         this.reconnectPingInterval = null;
         this.needsRemoteServerConnection = false;
         this.flowMethod = 'dis'; // Default, updated from server api/status
@@ -251,6 +252,7 @@ class AnnotationViewer {
             
             // Credentials present - try sync
             this.showServerConnectionScreen('Syncing dataset...');
+            this._startSyncProgressPolling();
             const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
             
             if (!syncResp.ok) {
@@ -342,6 +344,7 @@ class AnnotationViewer {
         
         try {
             this.showServerConnectionScreen('Syncing dataset...');
+            this._startSyncProgressPolling();
             const syncResp = await fetch('/api/dataset/sync', { method: 'POST' });
             
             if (!syncResp.ok) {
@@ -512,6 +515,7 @@ class AnnotationViewer {
      * Hide blocking server connection screen.
      */
     hideServerConnectionScreen() {
+        this._stopSyncProgressPolling();
         const screen = document.getElementById('serverConnectionScreen');
         if (screen) {
             screen.style.opacity = '0';
@@ -521,7 +525,45 @@ class AnnotationViewer {
             }, 200);
         }
     }
-    
+
+    _startSyncProgressPolling() {
+        this._stopSyncProgressPolling();
+        const container = document.getElementById('syncProgressContainer');
+        const bar = document.getElementById('syncProgressBar');
+        const label = document.getElementById('syncProgressLabel');
+        if (container) container.classList.remove('hidden');
+
+        const phaseLabels = {
+            export: 'Preparing data on server',
+            download: 'Downloading',
+            extract: 'Extracting',
+            done: 'Done',
+            error: 'Error',
+        };
+
+        this._syncProgressInterval = setInterval(async () => {
+            try {
+                const resp = await fetch('/api/dataset/sync/progress');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (bar) bar.style.width = `${data.percent}%`;
+                if (label) label.textContent = phaseLabels[data.phase] || data.phase || '';
+                if (!data.active) this._stopSyncProgressPolling();
+            } catch { /* backend not ready yet */ }
+        }, 100);
+    }
+
+    _stopSyncProgressPolling() {
+        if (this._syncProgressInterval) {
+            clearInterval(this._syncProgressInterval);
+            this._syncProgressInterval = null;
+        }
+        const container = document.getElementById('syncProgressContainer');
+        if (container) container.classList.add('hidden');
+        const bar = document.getElementById('syncProgressBar');
+        if (bar) bar.style.width = '0%';
+    }
+
     /**
      * Show non-blocking server connection warning (after initial connection).
      */

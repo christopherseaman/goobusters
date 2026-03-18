@@ -23,10 +23,13 @@ if _lib_client not in sys.path:
 
 import argparse
 import atexit
+import io
 import json
 import logging
 import os
+import re
 import signal
+import threading
 
 from flask import Flask, Response, jsonify, request, render_template
 
@@ -37,6 +40,97 @@ from client.mdai_client import DatasetNotReady, MDaiDatasetManager
 PROJECT_ROOT = Path(_project_root)
 TEMPLATE_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
+
+
+class SyncProgress:
+    """Captures mdai SDK stdout to extract sync progress without modifying the SDK."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.phase = None       # "export", "download", "extract", "done", "error"
+        self.percent = 0        # 0-100
+        self.message = ""
+        self.active = False
+
+    def reset(self):
+        with self._lock:
+            self.phase = "export"
+            self.percent = 0
+            self.message = "Preparing export..."
+            self.active = True
+
+    def finish(self, error=False):
+        with self._lock:
+            self.phase = "error" if error else "done"
+            self.percent = 100 if not error else self.percent
+            self.active = False
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "phase": self.phase,
+                "percent": self.percent,
+                "message": self.message,
+                "active": self.active,
+            }
+
+    def parse_line(self, line: str):
+        """Parse a stdout line from the mdai SDK and update progress."""
+        with self._lock:
+            # Export progress: "Exporting images...42% (time remaining: 15 seconds)."
+            m = re.search(r"Exporting (\w+).*?(\d+)%", line)
+            if m:
+                self.phase = "export"
+                self.percent = int(m.group(2))
+                self.message = line.strip()
+                return
+
+            if "Downloading file:" in line:
+                self.phase = "download"
+                self.percent = 0
+                self.message = line.strip()
+                return
+
+            if "Extracting archive:" in line:
+                self.phase = "extract"
+                self.percent = 90
+                self.message = "Extracting archive..."
+                return
+
+            if "Success:" in line:
+                self.phase = "done"
+                self.percent = 100
+                self.message = line.strip()
+                return
+
+            if "Using cached" in line:
+                self.phase = "done"
+                self.percent = 100
+                self.message = line.strip()
+                return
+
+
+class _ProgressWriter:
+    """File-like object that intercepts writes and feeds them to SyncProgress."""
+
+    def __init__(self, progress: SyncProgress, original_stdout):
+        self._progress = progress
+        self._original = original_stdout
+
+    def write(self, s):
+        if s and s.strip():
+            self._progress.parse_line(s)
+        return self._original.write(s)
+
+    def flush(self):
+        return self._original.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
+
+
+# Module-level instance so the polling endpoint can access it
+_sync_progress = SyncProgress()
 
 
 def _get_credentials_path() -> Path:
@@ -405,11 +499,13 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             except DatasetNotReady:
                 has_data = False
 
-        return jsonify({
+        result = {
             "has_data": has_data,
             "series_count": series_count,
             "server_url": config.server_url,
-        })
+        }
+        result["sync"] = _sync_progress.snapshot()
+        return jsonify(result)
 
     @app.get("/api/debug/paths")
     def debug_paths():
@@ -438,6 +534,11 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             "img_matches": img_matches,
         })
 
+    @app.get("/api/dataset/sync/progress")
+    def sync_progress():
+        """Poll for sync progress."""
+        return jsonify(_sync_progress.snapshot())
+
     @app.post("/api/dataset/sync")
     def sync_dataset():
         """
@@ -450,7 +551,14 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         - "other": Other errors
         """
         try:
-            images_dir = context.dataset.sync_dataset()
+            _sync_progress.reset()
+            old_stdout = sys.stdout
+            sys.stdout = _ProgressWriter(_sync_progress, old_stdout)
+            try:
+                images_dir = context.dataset.sync_dataset()
+            finally:
+                sys.stdout = old_stdout
+            _sync_progress.finish()
             series = context.dataset.list_local_series()
 
             # Save credentials after successful sync
@@ -468,12 +576,14 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
                 "frames_extracted_for": [],  # no local extraction
             })
         except DatasetNotReady as e:
+            _sync_progress.finish(error=True)
             return jsonify({
                 "error": str(e),
                 "error_message": str(e),
                 "error_type": "other",
             }), 503
         except Exception as e:
+            _sync_progress.finish(error=True)
             logger = logging.getLogger(__name__)
             logger.error(f"Dataset sync failed: {e}", exc_info=True)
 
