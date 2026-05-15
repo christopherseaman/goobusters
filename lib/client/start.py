@@ -31,6 +31,7 @@ import re
 import signal
 import threading
 
+import yaml
 from flask import Flask, Response, jsonify, request, render_template
 
 from lib.mask_archive import build_mask_archive, iso_now
@@ -40,6 +41,16 @@ from client.mdai_client import DatasetNotReady, MDaiDatasetManager
 PROJECT_ROOT = Path(_project_root)
 TEMPLATE_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
+USERS_FILE = PROJECT_ROOT / "users.yaml"
+
+
+def _load_annotators() -> list[str]:
+    """Read the annotator list from users.yaml (single source of truth for both templates)."""
+    if not USERS_FILE.exists():
+        return []
+    with open(USERS_FILE) as f:
+        data = yaml.safe_load(f) or {}
+    return list(data.get("annotators") or [])
 
 
 class SyncProgress:
@@ -226,6 +237,10 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
         static_folder=str(STATIC_DIR),
     )
     app.config["CLIENT_CONTEXT"] = context
+
+    @app.context_processor
+    def inject_annotators():
+        return {"annotators": _load_annotators()}
 
     # Initialize client: don't sync on startup - frontend will handle it
     logger = logging.getLogger(__name__)

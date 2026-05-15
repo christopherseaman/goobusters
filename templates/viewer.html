@@ -128,11 +128,9 @@
                 <label for="settingsEmail">Your Name</label>
                 <select id="settingsEmail">
                     <option value="" disabled>Select your name...</option>
-                    <option value="Aaron">Aaron</option>
-                    <option value="Christopher">Christopher</option>
-                    <option value="Faezeh">Faezeh</option>
-                    <option value="Kush">Kush</option>
-                    <option value="Newton">Newton</option>
+                    {% for name in annotators %}
+                    <option value="{{ name }}">{{ name }}</option>
+                    {% endfor %}
                 </select>
                 <label for="settingsToken">MD.ai API Token</label>
                 <input type="password" id="settingsToken" placeholder="Set or update token">
