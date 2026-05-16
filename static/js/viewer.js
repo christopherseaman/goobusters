@@ -80,6 +80,7 @@ class AnnotationViewer {
         this._syncProgressInterval = null;
         this.reconnectPingInterval = null;
         this.needsRemoteServerConnection = false;
+        this.allSeriesComplete = false;
         this.flowMethod = 'dis'; // Default, updated from server api/status
 
         this.init();
@@ -494,6 +495,8 @@ class AnnotationViewer {
                     spinnerEl.textContent = '🔌';
                 } else if (message === 'Syncing dataset...' || message.startsWith('Syncing')) {
                     spinnerEl.textContent = '📥';
+                } else if (message.startsWith('All series complete')) {
+                    spinnerEl.textContent = '✅';
                 } else {
                     spinnerEl.textContent = '🔌';
                 }
@@ -516,6 +519,9 @@ class AnnotationViewer {
      */
     hideServerConnectionScreen() {
         this._stopSyncProgressPolling();
+        if (this.allSeriesComplete) {
+            return;
+        }
         const screen = document.getElementById('serverConnectionScreen');
         if (screen) {
             screen.style.opacity = '0';
@@ -865,7 +871,16 @@ class AnnotationViewer {
         const serverConnectionSpinner = document.getElementById('serverConnectionSpinner');
         if (serverConnectionSpinner) {
             serverConnectionSpinner.addEventListener('click', async () => {
-                if (this.needsRemoteServerConnection) {
+                if (this.allSeriesComplete) {
+                    this.allSeriesComplete = false;
+                    this.showServerConnectionScreen('Connecting to server...');
+                    try {
+                        await this.loadNextSeries();
+                        this.hideServerConnectionScreen();
+                    } catch (e) {
+                        await this.connectToRemoteServerWithRetry();
+                    }
+                } else if (this.needsRemoteServerConnection) {
                     await this.connectToRemoteServerWithRetry();
                 } else {
                     await this.connectToServerWithRetry();
@@ -2693,9 +2708,11 @@ class AnnotationViewer {
             }
             
             if (data.no_available_series) {
-                alert('No available series to work on. All series may be completed or in progress.');
+                this.allSeriesComplete = true;
+                this.showServerConnectionScreen('All series complete');
                 return;
             }
+            this.allSeriesComplete = false;
             
             const method = this.flowMethod;
             
