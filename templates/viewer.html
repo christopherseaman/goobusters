@@ -62,6 +62,8 @@
 
     <!-- Left toolbar -->
     <div class="toolbar-left" id="toolbarLeft">
+        <button class="tool-btn" id="helpBtn" title="Help">❓</button>
+        <div class="toolbar-spacer"></div>
         <button class="tool-btn warning" id="markEmpty" title="Mark Empty">🚫</button>
         <button class="tool-btn" id="eraseMode" title="Erase">🧽</button>
         <button class="tool-btn active" id="drawMode" title="Draw">🖌️</button>
@@ -99,6 +101,33 @@
                 <input type="range" id="frameSlider" min="0" max="100" value="0">
                 <span class="slider-label" id="sliderMax">0</span>
             </div>
+        </div>
+    </div>
+
+    <!-- Help Modal (tap anywhere to close) -->
+    <div class="modal help-modal" id="helpModal">
+        <div class="modal-content">
+            <h2>What does each button do?</h2>
+            <h3>Left toolbar</h3>
+            <ul class="help-list">
+                <li><span class="help-emoji">❓</span> <span>Help — open this guide</span></li>
+                <li><span class="help-emoji">🚫</span> <span>Mark Empty — flag the current frame as having no fluid</span></li>
+                <li><span class="help-emoji">🧽</span> <span>Erase mode — paint over the mask to remove it</span></li>
+                <li><span class="help-emoji">🖌️</span> <span>Draw mode — paint to add to the mask</span></li>
+                <li><span class="help-emoji">🥸</span> <span>Toggle Mask — show or hide the mask overlay</span></li>
+            </ul>
+            <h3>Right toolbar</h3>
+            <ul class="help-list">
+                <li><span class="help-emoji">💾</span> <span>Save — saves your changes and triggers retrack</span></li>
+                <li><span class="help-emoji">✅</span> <span>Mark Complete — mark series done and load the next one</span></li>
+                <li><span class="help-emoji">⚙️</span> <span>Settings — name, MD.ai token, dataset resync</span></li>
+                <li><span class="help-emoji">↺</span> <span>Reset — discard unsaved edits on the current frame</span></li>
+            </ul>
+            <h3>Bottom</h3>
+            <ul class="help-list">
+                <li><span class="help-emoji">▶️</span> <span>Play / Pause — playback through frames</span></li>
+            </ul>
+            <p class="help-dismiss-hint">Tap anywhere to close</p>
         </div>
     </div>
 

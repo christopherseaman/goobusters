@@ -686,6 +686,7 @@ class AnnotationViewer {
                     );
                     emailSelect.value = matchingOption ? data.user_email : '';
                 }
+                document.body.classList.toggle('is-christopher', data.user_email === 'Christopher');
             }
             const tokenStatus = document.getElementById('tokenStatus');
             if (tokenStatus) {
@@ -723,6 +724,7 @@ class AnnotationViewer {
             const data = await resp.json();
             if (data.user_email) {
                 this.userEmail = data.user_email;
+                document.body.classList.toggle('is-christopher', data.user_email === 'Christopher');
             }
             if (tokenStatus) {
                 tokenStatus.textContent = data.mdai_token_present ? 'Token: set' : 'Token: not set';
@@ -970,6 +972,28 @@ class AnnotationViewer {
         this.canvas.addEventListener('pointerleave', () => {
             this.stopDrawing();
         });
+
+        // Help button + tap-anywhere-to-close on the help modal.
+        const helpBtn = document.getElementById('helpBtn');
+        if (helpBtn) {
+            helpBtn.addEventListener('click', () => this.showModal('helpModal'));
+        }
+        const helpModal = document.getElementById('helpModal');
+        if (helpModal) {
+            helpModal.addEventListener('click', () => this.hideModal('helpModal'));
+        }
+
+        // Track option/alt key so destructive buttons can be revealed only while it's held.
+        const setOptionHeld = (held) => {
+            document.body.classList.toggle('option-held', held);
+        };
+        document.addEventListener('keydown', (e) => {
+            if (e.altKey) setOptionHeld(true);
+        });
+        document.addEventListener('keyup', (e) => {
+            if (!e.altKey) setOptionHeld(false);
+        });
+        window.addEventListener('blur', () => setOptionHeld(false));
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
