@@ -6,8 +6,16 @@ Prerequisites:
     - dot.yaml configured with app_store.key_id and app_store.issuer_id
 
 Usage:
-    uv run python3 testflight_push.py           # Full build + upload
-    uv run python3 testflight_push.py --upload  # Upload existing archive (skip build)
+    uv run python3 testflight_push.py               # Full build + upload + notes
+    uv run python3 testflight_push.py --upload      # Skip build, use existing archive
+    uv run python3 testflight_push.py --notes-only              # Set notes for the build
+                                                                #   currently in Info.plist
+    uv run python3 testflight_push.py --notes-only 1779214717   # ...or for a specific build
+                                                                #   (use after main run's
+                                                                #   notes step times out)
+
+Set the "What to Test" copy via the WHATS_NEW env var; falls back to the last commit
+message subject if unset.
 """
 
 import os
@@ -118,23 +126,31 @@ def set_test_notes(
     resp.raise_for_status()
     app_id = resp.json()["data"][0]["id"]
 
-    # Wait for build to be processed
+    # Wait for build to be processed. Query /builds with filter[app]+filter[version]
+    # so we land on the target build directly — the prior approach polled
+    # /apps/{id}/builds?limit=10 which returns a non-deterministic 10-row slice that
+    # often excluded fresh uploads, producing spurious "not ready" timeouts.
     print(
         f"Waiting for build {build_number} to be processed", end="", flush=True
     )
     build_id = None
     for _ in range(30):  # 10 min max (30 * 20s)
         resp = requests.get(
-            f"{api}/apps/{app_id}/builds?limit=10", headers=headers
+            f"{api}/builds?filter[app]={app_id}&filter[version]={build_number}",
+            headers=headers,
         )
         resp.raise_for_status()
-        for build in resp.json().get("data", []):
-            if build["attributes"].get("version") == build_number:
-                if build["attributes"].get("processingState") == "VALID":
-                    build_id = build["id"]
-                    break
-        if build_id:
-            break
+        data = resp.json().get("data", [])
+        if data:
+            attrs = data[0]["attributes"]
+            state = attrs.get("processingState")
+            if state == "VALID":
+                build_id = data[0]["id"]
+                break
+            if state in {"FAILED", "INVALID"}:
+                raise RuntimeError(
+                    f"Build {build_number} processing failed: {state}"
+                )
         print(".", end="", flush=True)
         time.sleep(20)
     print()
@@ -186,12 +202,23 @@ def set_test_notes(
         resp = requests.post(
             f"{api}/betaBuildLocalizations", headers=headers, json=payload
         )
+    if not resp.ok:
+        # Surface Apple's specific validation message (e.g. invalid emoji in
+        # whatsNew) rather than a bare HTTPError stack trace.
+        try:
+            errors = resp.json().get("errors") or []
+            for err in errors:
+                detail = err.get("detail") or err.get("title")
+                print(f"App Store Connect {resp.status_code}: {detail}")
+        except ValueError:
+            print(f"App Store Connect {resp.status_code}: {resp.text[:300]}")
     resp.raise_for_status()
     print("Test notes set successfully")
 
 
 def main():
     skip_build = "--upload" in sys.argv
+    notes_only = "--notes-only" in sys.argv
 
     # Load config
     config = load_config()
@@ -214,6 +241,19 @@ def main():
         print(f"Error: API key not found at {key_path}")
         print("Download from App Store Connect → Users and Access → Keys")
         sys.exit(1)
+
+    # Notes-only retry: skip every build/upload step and just set the notes for an
+    # already-uploaded build. Target build number comes from the positional arg if
+    # given (e.g. `--notes-only 1779214717`); otherwise defaults to Info.plist's
+    # current value (the build the most recent full run uploaded).
+    if notes_only:
+        idx = sys.argv.index("--notes-only")
+        explicit = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else None
+        build_number = explicit if explicit and not explicit.startswith("--") else get_build_number()
+        print("=== Setting Test Notes (notes-only mode) ===")
+        print(f"Build: {build_number}")
+        set_test_notes(key_id, issuer_id, key_path, bundle_id, build_number)
+        return
 
     print("=== TestFlight Push ===")
     print(f"  Key ID: {key_id}")
@@ -339,9 +379,12 @@ def main():
         set_test_notes(key_id, issuer_id, key_path, bundle_id, build_number)
     except Exception as e:
         print(f"Warning: Failed to set test notes: {e}")
-        print(
-            "Build uploaded but test notes not set. Set manually in App Store Connect."
-        )
+        print("Build uploaded; test notes not set yet.")
+        whats_new_env = os.environ.get("WHATS_NEW", "").strip()
+        retry_cmd = "uv run python3 testflight_push.py --notes-only"
+        if whats_new_env:
+            retry_cmd = f"WHATS_NEW={whats_new_env!r} {retry_cmd}"
+        print(f"Retry once Apple finishes processing: {retry_cmd}")
 
     print()
     print("=== Done ===")
