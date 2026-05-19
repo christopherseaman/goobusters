@@ -67,7 +67,15 @@ def get_build_number() -> str:
 
 
 def get_last_commit_message() -> str:
-    """Get the last git commit message."""
+    """Return TestFlight "What to Test" copy.
+
+    Prefers the WHATS_NEW env var if set so a release can have user-facing
+    notes that differ from the last commit message. Falls back to the last
+    git commit message subject otherwise.
+    """
+    override = os.environ.get("WHATS_NEW", "").strip()
+    if override:
+        return override
     result = subprocess.run(
         ["git", "log", "-1", "--pretty=%B"],
         capture_output=True,
