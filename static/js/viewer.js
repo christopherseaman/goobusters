@@ -755,7 +755,6 @@ class AnnotationViewer {
         // Modal controls
         document.getElementById('examBadge').addEventListener('click', () => this.showModal('seriesSelectModal'));
         document.getElementById('closeSeriesSelect').addEventListener('click', () => this.hideModal('seriesSelectModal'));
-        document.getElementById('closeKeyboardShortcuts').addEventListener('click', () => this.hideModal('keyboardShortcutsModal'));
         document.getElementById('settingsBtn').addEventListener('click', () => this.openSettings());
         document.getElementById('closeSettings').addEventListener('click', () => this.hideModal('settingsModal'));
         const saveSettingsBtn = document.getElementById('saveSettings');
@@ -1002,7 +1001,7 @@ class AnnotationViewer {
             switch(e.key) {
                 case '?':
                     e.preventDefault();
-                    this.showModal('keyboardShortcutsModal');
+                    this.showModal('helpModal');
                     break;
                 case ' ':
                     e.preventDefault();

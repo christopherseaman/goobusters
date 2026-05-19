@@ -107,7 +107,7 @@
     <!-- Help Modal (tap anywhere to close) -->
     <div class="modal help-modal" id="helpModal">
         <div class="modal-content">
-            <h2>What does each button do?</h2>
+            <h2>What does each control do?</h2>
             <h3>Left toolbar</h3>
             <ul class="help-list">
                 <li><span class="help-emoji">❓</span> <span>Help — open this guide</span></li>
@@ -115,6 +115,7 @@
                 <li><span class="help-emoji">🧽</span> <span>Erase mode — paint over the mask to remove it</span></li>
                 <li><span class="help-emoji">🖌️</span> <span>Draw mode — paint to add to the mask</span></li>
                 <li><span class="help-emoji">🥸</span> <span>Toggle Mask — show or hide the mask overlay</span></li>
+                <li><span class="help-emoji">◐</span> <span>Brush size — vertical slider beside the left toolbar; bigger dot = bigger brush</span></li>
             </ul>
             <h3>Right toolbar</h3>
             <ul class="help-list">
@@ -126,25 +127,18 @@
             <h3>Bottom</h3>
             <ul class="help-list">
                 <li><span class="help-emoji">▶️</span> <span>Play / Pause — playback through frames</span></li>
+                <li><span class="help-emoji">⇆</span> <span>Frame scrubline — drag along the bottom bar to seek; the strip behind it colors frames by status</span></li>
             </ul>
-            <p class="help-dismiss-hint">Tap anywhere to close</p>
-        </div>
-    </div>
-
-    <!-- Keyboard Shortcuts Modal -->
-    <div class="modal" id="keyboardShortcutsModal">
-        <div class="modal-content">
-            <button class="modal-close" id="closeKeyboardShortcuts">✕</button>
-            <h2>Keyboard Shortcuts</h2>
-            <div class="info-section">
-                <div class="shortcuts">
-                    <div><kbd>Space</kbd> Play/Pause</div>
-                    <div><kbd>←</kbd> <kbd>→</kbd> Navigate frames</div>
-                    <div><kbd>D</kbd> Draw mode</div>
-                    <div><kbd>E</kbd> Erase mode</div>
-                    <div><kbd>⌘S</kbd> Save changes</div>
-                </div>
+            <h3>Keyboard shortcuts</h3>
+            <div class="shortcuts">
+                <div><kbd>Space</kbd> Play / Pause</div>
+                <div><kbd>←</kbd> <kbd>→</kbd> Navigate frames</div>
+                <div><kbd>D</kbd> Draw mode</div>
+                <div><kbd>E</kbd> Erase mode</div>
+                <div><kbd>⌘S</kbd> Save changes</div>
+                <div><kbd>?</kbd> Open this help</div>
             </div>
+            <p class="help-dismiss-hint">Tap anywhere to close</p>
         </div>
     </div>
 
