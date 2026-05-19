@@ -92,6 +92,14 @@ if [ -d "$REPO_ROOT/templates" ]; then
     fi
 fi
 
+# Copy users.yaml (annotator list — loaded by Flask context_processor)
+if [ -f "$REPO_ROOT/users.yaml" ]; then
+    echo "Copying users.yaml..."
+    cp "$REPO_ROOT/users.yaml" "$OUTPUT_DIR/users.yaml"
+else
+    echo "WARNING: users.yaml not found at $REPO_ROOT/users.yaml"
+fi
+
 # Copy dot.yaml config (stripping mdai.token unless --debug)
 echo "Copying dot.yaml config..."
 if [ -f "$REPO_ROOT/dot.yaml" ]; then

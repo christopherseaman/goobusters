@@ -47,6 +47,9 @@ USERS_FILE = PROJECT_ROOT / "users.yaml"
 def _load_annotators() -> list[str]:
     """Read the annotator list from users.yaml (single source of truth for both templates)."""
     if not USERS_FILE.exists():
+        logging.getLogger(__name__).warning(
+            f"users.yaml not found at {USERS_FILE} — name dropdown will be empty"
+        )
         return []
     with open(USERS_FILE) as f:
         data = yaml.safe_load(f) or {}
