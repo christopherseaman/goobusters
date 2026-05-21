@@ -33,3 +33,4 @@ ios_build/
 # Temp diagnostic scripts
 .temp/
 plan.md
+nvim.log
