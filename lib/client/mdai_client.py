@@ -180,9 +180,54 @@ class MDaiDatasetManager:
             path=str(self.video_cache_path),
         )
         self._images_dir = Path(project.images_dir)
+        self._prune_stale_exports(
+            keep_images_dir=self._images_dir,
+            keep_annotations=Path(project.annotations_fp),
+        )
         self._annotations_df = None  # force reload
         self._studies_lookup = None
         return self._images_dir
+
+    def _prune_stale_exports(
+        self, keep_images_dir: Path, keep_annotations: Path
+    ) -> None:
+        """
+        Delete superseded MD.ai exports for this project/dataset.
+
+        Each sync downloads a new timestamped images directory and annotations
+        file; only the newest is ever used (find_images_dir picks sorted[-1]).
+        Without pruning the cache grows unboundedly and eventually fills the
+        device. Best-effort: cleanup failures must not fail the sync.
+        """
+        import shutil
+
+        cache = self.video_cache_path
+        pid = self.config.project_id
+        did = self.config.dataset_id
+
+        # Superseded extracted image directories
+        for path in cache.glob(f"mdai_*_project_{pid}_images_dataset_{did}_*"):
+            if path.is_dir() and path.name != keep_images_dir.name:
+                shutil.rmtree(path, ignore_errors=True)
+
+        # Superseded annotations files
+        for path in cache.glob(
+            f"mdai_*_project_{pid}_annotations_dataset_{did}_*.json"
+        ):
+            if path.name != keep_annotations.name:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+        # Leftover export zips: intermediate artifacts, never read once
+        # extracted. New builds delete these on extraction; this also clears
+        # ones left behind by pre-fix builds.
+        for path in cache.glob("mdai_*.zip"):
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     # ------------------------------------------------------------ Local discovery
     def _ensure_images_dir(self) -> Path:

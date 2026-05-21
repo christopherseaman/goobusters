@@ -419,10 +419,13 @@ class ProjectDataManager:
                     raise IOError(f"Error downloading file {file_key}.")
 
                 if self.data_type == "images" and self.extract_images:
-                    # unzip archive
+                    # unzip archive, then drop the zip: it is only an
+                    # intermediate artifact and otherwise accumulates on disk
+                    # every sync (~one dataset's worth per call).
                     print(f"Extracting archive: {file_key}")
                     with zipfile.ZipFile(filepath, "r") as f:
                         f.extractall(self.path)
+                    os.remove(filepath)
 
             self.data_path = self._get_data_path(file_keys)
 
