@@ -162,6 +162,8 @@ class ProjectDataManager:
 
         # path for downloaded data
         self.data_path = None
+        # error captured on a worker thread, re-raised by wait_until_ready()
+        self._error = None
         # ready threading event
         self._ready = threading.Event()
 
@@ -181,10 +183,27 @@ class ProjectDataManager:
                     + " does not exist or you do not have sufficient permissions for access."
                 )
                 print(msg)
+                self._error = PermissionError(
+                    f"MD.ai rejected the {self.data_type} export (HTTP 401) for "
+                    f"project {self.project_id} / dataset {self.dataset_id}. The "
+                    f"access token lacks permission for this dataset, or the "
+                    f"project/dataset ID is wrong."
+                )
+            else:
+                self._error = RuntimeError(
+                    f"MD.ai {self.data_type} export request failed "
+                    f"(HTTP {r.status_code}) for project {self.project_id} / "
+                    f"dataset {self.dataset_id}."
+                )
             self._on_data_export_job_error()
 
     def wait_until_ready(self):
         self._ready.wait()
+        # Export/download work runs on worker threads; their failures can't
+        # propagate on their own. Re-raise here, on the calling thread, so the
+        # real cause reaches the caller instead of leaving data_path as None.
+        if self._error is not None:
+            raise self._error
 
     def _get_data_export_params(self):
         if self.data_type == "images":
@@ -214,6 +233,18 @@ class ProjectDataManager:
                 "exportFormat": self.format,
             }
         return params
+
+    def _poll_progress_guarded(self):
+        """Run one polling tick on the Timer thread, capturing a fatal error
+        instead of letting the thread die silently and hang wait_until_ready()."""
+        try:
+            self._check_data_export_job_progress()
+        except Exception as exc:
+            self._error = RuntimeError(
+                f"MD.ai {self.data_type} export polling failed for project "
+                f"{self.project_id}: {exc}"
+            )
+            self._ready.set()
 
     @retry(
         retry_on_exception=retry_on_http_error,
@@ -267,7 +298,7 @@ class ProjectDataManager:
             print(msg.ljust(100), end=end_char, flush=True)
 
             # run progress check at 1s intervals so long as status == 'running'
-            t = threading.Timer(1.0, self._check_data_export_job_progress)
+            t = threading.Timer(1.0, self._poll_progress_guarded)
             t.start()
 
     @retry(
@@ -298,6 +329,14 @@ class ProjectDataManager:
                     print(f"Using cached {self.data_type} data for project {self.project_id}.")
                     # fire ready threading.Event
                     self._ready.set()
+            else:
+                # "done" status but no files — surface it instead of hanging
+                # wait_until_ready() forever on an event that never fires.
+                self._error = RuntimeError(
+                    f"MD.ai {self.data_type} export for project "
+                    f"{self.project_id} / dataset {self.dataset_id} returned no files."
+                )
+                self._ready.set()
         except (TypeError, KeyError):
             self._on_data_export_job_error()
 
@@ -314,6 +353,14 @@ class ProjectDataManager:
         if r.status_code != 200:
             r.raise_for_status()
         print(f"Error exporting {self.data_type} for project {self.project_id}.")
+        # Surface a real error rather than silently leaving data_path as None.
+        # Keep an error already captured by the caller (e.g. the 401 case)
+        # instead of overwriting it with this generic message.
+        if self._error is None:
+            self._error = RuntimeError(
+                f"MD.ai reported an error exporting {self.data_type} for "
+                f"project {self.project_id} / dataset {self.dataset_id}."
+            )
         # fire ready threading.Event
         self._ready.set()
 
@@ -380,8 +427,12 @@ class ProjectDataManager:
             self.data_path = self._get_data_path(file_keys)
 
             print(f"Success: {self.data_type} data for project {self.project_id} ready.")
-        except Exception:
+        except Exception as exc:
             print(f"Error downloading {self.data_type} data for project {self.project_id}.")
+            self._error = RuntimeError(
+                f"Failed to download {self.data_type} data for project "
+                f"{self.project_id}: {exc}"
+            )
 
         # fire ready threading.Event
         self._ready.set()

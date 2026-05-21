@@ -29,3 +29,7 @@ credentials.json
 build/
 ios/Goobusters/Goobusters.xcodeproj/project.xcworkspace/xcuserdata/christopher.xcuserdatad/UserInterfaceState.xcuserstate
 ios_build/
+
+# Temp diagnostic scripts
+.temp/
+plan.md
