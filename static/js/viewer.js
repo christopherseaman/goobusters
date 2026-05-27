@@ -1053,6 +1053,14 @@ class AnnotationViewer {
             if (e.target.tagName === 'INPUT') return;
 
             switch(e.key) {
+                case 'Escape': {
+                    const openModal = document.querySelector('.modal.active:not(#retrackLoadingModal)');
+                    if (openModal) {
+                        e.preventDefault();
+                        this.hideModal(openModal.id);
+                    }
+                    break;
+                }
                 case '?':
                     e.preventDefault();
                     this.showModal('helpModal');
