@@ -641,6 +641,24 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
                 "error_type": error_type,
             }), 500
 
+    @app.post("/api/dataset/clear")
+    def clear_dataset_cache():
+        """
+        Wipe locally cached md.ai exports. Token + user_email are preserved;
+        only the on-disk dataset is removed. Next /api/dataset/sync will
+        re-download against the current credentials.
+        """
+        try:
+            context.dataset.wipe_cache()
+            return jsonify({"cleared": True})
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.error(f"Cache clear failed: {e}", exc_info=True)
+            return jsonify({
+                "error": "Failed to clear cache.",
+                "error_message": str(e),
+            }), 500
+
     @app.get("/api/local/series")
     def local_series():
         try:

@@ -697,6 +697,25 @@ class AnnotationViewer {
         }
     }
 
+    async clearCache() {
+        const tokenStatus = document.getElementById('tokenStatus');
+        const prevText = tokenStatus ? tokenStatus.textContent : '';
+        if (tokenStatus) tokenStatus.textContent = 'Clearing cache...';
+        try {
+            const resp = await fetch('/api/dataset/clear', { method: 'POST' });
+            if (!resp.ok) {
+                const errorData = await resp.json().catch(() => ({}));
+                if (tokenStatus) tokenStatus.textContent = prevText;
+                alert(`Failed to clear cache: ${errorData.error || resp.statusText}`);
+                return;
+            }
+            if (tokenStatus) tokenStatus.textContent = 'Cache cleared — sync to refresh';
+        } catch (err) {
+            if (tokenStatus) tokenStatus.textContent = prevText;
+            alert(`Failed to clear cache: ${err.message}`);
+        }
+    }
+
     async saveSettings() {
         const emailInput = document.getElementById('settingsEmail');
         const tokenInput = document.getElementById('settingsToken');
@@ -761,6 +780,8 @@ class AnnotationViewer {
         if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', () => this.saveSettings());
         const resyncBtn = document.getElementById('resyncDataset');
         if (resyncBtn) resyncBtn.addEventListener('click', () => this.resyncDataset());
+        const clearCacheBtn = document.getElementById('clearCache');
+        if (clearCacheBtn) clearCacheBtn.addEventListener('click', () => this.clearCache());
 
         // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {

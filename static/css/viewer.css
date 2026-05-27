@@ -638,7 +638,12 @@ html, body {
 
 .settings-actions {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.settings-actions-right {
+    display: flex;
 }
 
 .token-status {
