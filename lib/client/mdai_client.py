@@ -126,6 +126,10 @@ class DatasetNotReady(RuntimeError):
     """Raised when the MD.ai dataset is not present locally."""
 
 
+class InvalidToken(ValueError):
+    """Raised when an MD.ai token fails the /api/test auth probe."""
+
+
 @dataclass
 class SeriesInfo:
     study_uid: str
@@ -168,6 +172,44 @@ class MDaiDatasetManager:
         with self._client_lock:
             self._token_override = token.strip() if token else None
             self._client = None
+
+    def current_token(self) -> Optional[str]:
+        """The token in effect for SDK calls (override if set, else config)."""
+        return self._token_override or self.config.mdai_token or None
+
+    def validate_token(self, token: str) -> None:
+        """
+        Confirm a token authenticates against the configured md.ai domain.
+
+        Builds a throwaway client; mdai.Client.__init__ calls /api/test and
+        raises on non-200. Translates any failure to InvalidToken so callers
+        do not have to depend on the vendored client's exception types.
+        """
+        try:
+            mdai.Client(domain=self.config.domain, access_token=token)
+        except Exception as exc:
+            raise InvalidToken(str(exc)) from exc
+
+    def wipe_cache(self) -> None:
+        """
+        Delete every md.ai export under video_cache_path and forget the
+        in-memory pointers. Used when the identity behind the token changes:
+        prior exports may belong to a different access scope and should not
+        leak across credentials.
+        """
+        import shutil
+
+        for path in self.video_cache_path.glob("mdai_*"):
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        self._images_dir = None
+        self._annotations_df = None
+        self._studies_lookup = None
 
     def sync_dataset(self) -> Path:
         """

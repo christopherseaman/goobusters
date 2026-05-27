@@ -36,7 +36,7 @@ from flask import Flask, Response, jsonify, request, render_template
 
 from lib.mask_archive import build_mask_archive, iso_now
 from lib.config import ClientConfig, load_config
-from client.mdai_client import DatasetNotReady, MDaiDatasetManager
+from client.mdai_client import DatasetNotReady, InvalidToken, MDaiDatasetManager
 
 PROJECT_ROOT = Path(_project_root)
 TEMPLATE_DIR = PROJECT_ROOT / "templates"
@@ -768,8 +768,22 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
 
         if mdai_token is not None:
             token_clean = mdai_token.strip()
-            context.dataset.set_token(token_clean or None)
-            _save_credentials(mdai_token=token_clean or "")
+            if token_clean and token_clean != context.dataset.current_token():
+                # New, non-empty token: validate against md.ai before
+                # replacing the active one. Wipe cached exports only after
+                # the new token is confirmed, so a typo cannot strand the
+                # device without a working dataset.
+                try:
+                    context.dataset.validate_token(token_clean)
+                except InvalidToken as exc:
+                    return jsonify({
+                        "error": "Invalid MD.ai token.",
+                        "error_message": str(exc),
+                        "error_type": "invalid_token",
+                    }), 400
+                context.dataset.wipe_cache()
+                context.dataset.set_token(token_clean)
+                _save_credentials(mdai_token=token_clean)
 
         return jsonify({
             "user_email": _current_user_email(),
