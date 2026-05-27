@@ -757,6 +757,25 @@ class AnnotationViewer {
         }
     }
 
+    async copyToClipboard(btn) {
+        const selector = btn.getAttribute('data-copy-target');
+        const target = selector ? document.querySelector(selector) : null;
+        if (!target) return;
+        const text = target.textContent.trim();
+        try {
+            await navigator.clipboard.writeText(text);
+            const original = btn.textContent;
+            btn.textContent = '✓';
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.textContent = original;
+                btn.classList.remove('copied');
+            }, 1200);
+        } catch (err) {
+            console.error('Copy failed:', err);
+        }
+    }
+
     openSettings() {
         const emailSelect = document.getElementById('settingsEmail');
         if (emailSelect) {
@@ -782,6 +801,20 @@ class AnnotationViewer {
         if (resyncBtn) resyncBtn.addEventListener('click', () => this.resyncDataset());
         const clearCacheBtn = document.getElementById('clearCache');
         if (clearCacheBtn) clearCacheBtn.addEventListener('click', () => this.clearCache());
+
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.copyToClipboard(btn));
+        });
+
+        // Block stray text selection outside of inputs. Backstops the
+        // CSS user-select: none rule for Catalyst, where pointer-driven
+        // selection sometimes bypasses CSS but still dispatches selectstart.
+        document.addEventListener('selectstart', (e) => {
+            if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) {
+                return;
+            }
+            e.preventDefault();
+        });
 
         // Close modals on background click (except retrack loading modal which is blocking)
         document.querySelectorAll('.modal').forEach(modal => {

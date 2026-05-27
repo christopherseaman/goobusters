@@ -5,6 +5,17 @@
     -webkit-tap-highlight-color: transparent;
 }
 
+html, body {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+}
+
+input, textarea, [contenteditable="true"] {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
 :root {
     /* Scaling anchor: viewport height (vh) — the constraining dimension in landscape
        iPhone SE:        320px → 1vh = 3.2px
@@ -550,6 +561,34 @@ html, body {
     margin-bottom: 12px;
     font-size: 16px;
     line-height: 1.5;
+}
+
+.info-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.copy-btn {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 4px;
+    font-size: 14px;
+    line-height: 1.5;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+}
+
+.copy-btn:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.copy-btn.copied {
+    color: #66ff88;
 }
 
 .monospace {

@@ -170,10 +170,22 @@
 
             <h3>Series Info</h3>
             <div class="info-section">
-                <p><strong>Method:</strong> <span id="infoMethod">{{ selected_video.method }}</span></p>
-                <p><strong>Exam:</strong> <span id="infoExam">{{ selected_video.exam_number }}</span></p>
-                <p><strong>Study:</strong> <span id="infoStudy" class="monospace">{{ selected_video.study_uid }}</span></p>
-                <p><strong>Series:</strong> <span id="infoSeries" class="monospace">{{ selected_video.series_uid }}</span></p>
+                <p class="info-row">
+                    <button class="copy-btn" data-copy-target="#infoMethod" title="Copy Method">📋</button>
+                    <span><strong>Method:</strong> <span id="infoMethod">{{ selected_video.method }}</span></span>
+                </p>
+                <p class="info-row">
+                    <button class="copy-btn" data-copy-target="#infoExam" title="Copy Exam">📋</button>
+                    <span><strong>Exam:</strong> <span id="infoExam">{{ selected_video.exam_number }}</span></span>
+                </p>
+                <p class="info-row">
+                    <button class="copy-btn" data-copy-target="#infoStudy" title="Copy Study UID">📋</button>
+                    <span><strong>Study:</strong> <span id="infoStudy" class="monospace">{{ selected_video.study_uid }}</span></span>
+                </p>
+                <p class="info-row">
+                    <button class="copy-btn" data-copy-target="#infoSeries" title="Copy Series UID">📋</button>
+                    <span><strong>Series:</strong> <span id="infoSeries" class="monospace">{{ selected_video.series_uid }}</span></span>
+                </p>
             </div>
 
             <div class="nav-section">
