@@ -995,7 +995,7 @@ class AnnotationViewer {
         document.getElementById('eraseMode').addEventListener('click', () => this.setDrawMode('erase'));
         document.getElementById('markEmpty').addEventListener('click', () => this.markEmpty());
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
-        document.getElementById('resetMask').addEventListener('click', () => this.discardCurrentFrameEdit());
+        document.getElementById('resetMask').addEventListener('click', () => this.handleResetAndReload());
 
         // Brush size slider (inline only - modal slider removed)
         const brushSizeInline = document.getElementById('brushSizeInline');
@@ -2678,20 +2678,6 @@ class AnnotationViewer {
         document.getElementById('conflictMessage').textContent = message;
         document.getElementById('conflictDetails').textContent = details || '';
         this.showModal('conflictModal');
-    }
-
-    async discardCurrentFrameEdit() {
-        if (!this.currentVideo) return;
-        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
-        if (!videoModifiedFrames.has(this.currentFrame)) return;
-        videoModifiedFrames.delete(this.currentFrame);
-        this.maskImageData = null;
-        this.hasUnsavedChanges = false;
-        const frame = this.currentFrame;
-        this.currentFrame = -1;
-        await this.goToFrame(frame);
-        this.updateSaveButtonState();
-        this.updateSliderTypeBar();
     }
 
     async handleResetAndReload() {
