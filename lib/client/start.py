@@ -641,21 +641,24 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
                 "error_type": error_type,
             }), 500
 
-    @app.post("/api/dataset/clear")
-    def clear_dataset_cache():
+    @app.post("/api/app/reset")
+    def reset_app():
         """
-        Wipe locally cached md.ai exports. Token + user_email are preserved;
-        only the on-disk dataset is removed. Next /api/dataset/sync will
-        re-download against the current credentials.
+        Restore the app to a fresh-install state: wipe cached md.ai exports,
+        clear the saved MD.ai token, clear the saved user_email. After this,
+        the user must re-enter their name + token and trigger a sync.
         """
         try:
             context.dataset.wipe_cache()
-            return jsonify({"cleared": True})
+            context.dataset.set_token(None)
+            context.user_email_override = None
+            _save_credentials(user_email="", mdai_token="")
+            return jsonify({"reset": True})
         except Exception as e:
             logger = logging.getLogger(__name__)
-            logger.error(f"Cache clear failed: {e}", exc_info=True)
+            logger.error(f"App reset failed: {e}", exc_info=True)
             return jsonify({
-                "error": "Failed to clear cache.",
+                "error": "Failed to reset app.",
                 "error_message": str(e),
             }), 500
 

@@ -160,7 +160,7 @@
                 <p class="muted">Leave token blank to keep the current token. Token is saved persistently.</p>
                 <div class="token-status" id="tokenStatus">Token: unknown</div>
                 <div class="settings-actions">
-                    <button class="control-btn" id="clearCache" title="Clear Local Cache">🗑️</button>
+                    <button class="control-btn" id="clearCache" title="Reset App">🗑️</button>
                     <div class="settings-actions-right">
                         <button class="control-btn" id="saveSettings" title="Save Settings">💾</button>
                         <button class="control-btn" id="resyncDataset" title="Resync Dataset">🔄</button>
@@ -196,6 +196,19 @@
                 <button class="modal-btn warning" id="resetRetrackAllBtn" style="width: 100%; margin-top: 10px;">
                     🔄 Reset Retrack Data (All Series)
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Reset Confirmation Modal -->
+    <div class="modal" id="resetConfirmModal">
+        <div class="modal-content reset-confirm">
+            <div class="reset-icon">🔥</div>
+            <h2>Reset App?</h2>
+            <p>This will delete all cached datasets, your MD.ai token, and your name. You'll need to re-enter your details and re-sync.</p>
+            <div class="reset-actions">
+                <button class="modal-btn" id="resetCancel">Cancel</button>
+                <button class="modal-btn modal-btn-danger" id="resetConfirm">Reset</button>
             </div>
         </div>
     </div>

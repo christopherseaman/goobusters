@@ -697,22 +697,33 @@ class AnnotationViewer {
         }
     }
 
-    async clearCache() {
+    confirmAppReset() {
+        this.showModal('resetConfirmModal');
+    }
+
+    async performAppReset() {
         const tokenStatus = document.getElementById('tokenStatus');
         const prevText = tokenStatus ? tokenStatus.textContent : '';
-        if (tokenStatus) tokenStatus.textContent = 'Clearing cache...';
+        if (tokenStatus) tokenStatus.textContent = 'Resetting app...';
         try {
-            const resp = await fetch('/api/dataset/clear', { method: 'POST' });
+            const resp = await fetch('/api/app/reset', { method: 'POST' });
             if (!resp.ok) {
                 const errorData = await resp.json().catch(() => ({}));
                 if (tokenStatus) tokenStatus.textContent = prevText;
-                alert(`Failed to clear cache: ${errorData.error || resp.statusText}`);
+                alert(`Failed to reset app: ${errorData.error || resp.statusText}`);
                 return;
             }
-            if (tokenStatus) tokenStatus.textContent = 'Cache cleared — sync to refresh';
+            this.hideModal('resetConfirmModal');
+            this.userEmail = null;
+            document.body.classList.remove('is-christopher');
+            const emailSelect = document.getElementById('settingsEmail');
+            if (emailSelect) emailSelect.value = '';
+            const tokenInput = document.getElementById('settingsToken');
+            if (tokenInput) tokenInput.value = '';
+            if (tokenStatus) tokenStatus.textContent = 'Token: not set';
         } catch (err) {
             if (tokenStatus) tokenStatus.textContent = prevText;
-            alert(`Failed to clear cache: ${err.message}`);
+            alert(`Failed to reset app: ${err.message}`);
         }
     }
 
@@ -800,7 +811,11 @@ class AnnotationViewer {
         const resyncBtn = document.getElementById('resyncDataset');
         if (resyncBtn) resyncBtn.addEventListener('click', () => this.resyncDataset());
         const clearCacheBtn = document.getElementById('clearCache');
-        if (clearCacheBtn) clearCacheBtn.addEventListener('click', () => this.clearCache());
+        if (clearCacheBtn) clearCacheBtn.addEventListener('click', () => this.confirmAppReset());
+        const resetCancelBtn = document.getElementById('resetCancel');
+        if (resetCancelBtn) resetCancelBtn.addEventListener('click', () => this.hideModal('resetConfirmModal'));
+        const resetConfirmBtn = document.getElementById('resetConfirm');
+        if (resetConfirmBtn) resetConfirmBtn.addEventListener('click', () => this.performAppReset());
 
         document.querySelectorAll('.copy-btn').forEach(btn => {
             btn.addEventListener('click', () => this.copyToClipboard(btn));
