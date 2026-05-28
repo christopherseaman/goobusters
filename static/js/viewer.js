@@ -713,14 +713,7 @@ class AnnotationViewer {
                 alert(`Failed to reset app: ${errorData.error || resp.statusText}`);
                 return;
             }
-            this.hideModal('resetConfirmModal');
-            this.userEmail = null;
-            document.body.classList.remove('is-christopher');
-            const emailSelect = document.getElementById('settingsEmail');
-            if (emailSelect) emailSelect.value = '';
-            const tokenInput = document.getElementById('settingsToken');
-            if (tokenInput) tokenInput.value = '';
-            if (tokenStatus) tokenStatus.textContent = 'Token: not set';
+            window.location.reload();
         } catch (err) {
             if (tokenStatus) tokenStatus.textContent = prevText;
             alert(`Failed to reset app: ${err.message}`);
