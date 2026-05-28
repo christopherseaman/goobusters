@@ -817,10 +817,12 @@ class AnnotationViewer {
         // Block stray text selection outside of inputs. Backstops the
         // CSS user-select: none rule for Catalyst, where pointer-driven
         // selection sometimes bypasses CSS but still dispatches selectstart.
+        // Skip preventDefault for button targets: on iPad WKWebView,
+        // canceling selectstart on a button can also cancel the subsequent
+        // tap-as-click, leaving the button unresponsive.
         document.addEventListener('selectstart', (e) => {
-            if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable="true"]')) {
-                return;
-            }
+            if (!e.target || !e.target.closest) return;
+            if (e.target.closest('input, textarea, [contenteditable="true"], button')) return;
             e.preventDefault();
         });
 
@@ -993,7 +995,7 @@ class AnnotationViewer {
         document.getElementById('eraseMode').addEventListener('click', () => this.setDrawMode('erase'));
         document.getElementById('markEmpty').addEventListener('click', () => this.markEmpty());
         document.getElementById('saveChanges').addEventListener('click', () => this.saveChanges());
-        document.getElementById('resetMask').addEventListener('click', () => this.handleResetAndReload());
+        document.getElementById('resetMask').addEventListener('click', () => this.discardCurrentFrameEdit());
 
         // Brush size slider (inline only - modal slider removed)
         const brushSizeInline = document.getElementById('brushSizeInline');
@@ -2678,25 +2680,39 @@ class AnnotationViewer {
         this.showModal('conflictModal');
     }
 
+    async discardCurrentFrameEdit() {
+        if (!this.currentVideo) return;
+        const videoModifiedFrames = this.getModifiedFramesForCurrentVideo();
+        if (!videoModifiedFrames.has(this.currentFrame)) return;
+        videoModifiedFrames.delete(this.currentFrame);
+        this.maskImageData = null;
+        this.hasUnsavedChanges = false;
+        const frame = this.currentFrame;
+        this.currentFrame = -1;
+        await this.goToFrame(frame);
+        this.updateSaveButtonState();
+        this.updateSliderTypeBar();
+    }
+
     async handleResetAndReload() {
         this.hideModal('conflictModal');
-        
+
         if (!this.currentVideo) {
             console.error('Cannot reset: no current video');
             return;
         }
-        
+
         const { studyUid, seriesUid, method } = this.currentVideo;
         const videoKey = this.getVideoKey(method, studyUid, seriesUid);
-        
+
         // Clear unsaved edits - ensure Map is completely removed
         this.modifiedFrames.delete(videoKey);
         this.hasUnsavedChanges = false;
-        
+
         // Reload fresh from server (skip modified_frames)
         // This clears all caches, rebuilds videoData.mask_data from server, and updates UI
         await this.loadVideo(method, studyUid, seriesUid, true);
-        
+
         // Force UI updates after reload to ensure fresh state is displayed
         this.updateSaveButtonState();
         this.updateSliderTypeBar();
