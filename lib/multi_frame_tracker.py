@@ -277,26 +277,28 @@ class MultiFrameTracker:
                 }
 
         # Process segments BETWEEN consecutive annotations
-        # Include both fluid and empty annotations for processing
+        # Empty annotations bound segments as stop-markers but do not seed
+        # tracking — we don't propagate "no fluid" outward via optical flow.
         all_annotations = [
             a for a in annotations if a["type"] in ["fluid", "empty"]
         ]
+
+        def _seed_mask(annotation):
+            return annotation["mask"] if annotation["type"] == "fluid" else None
 
         for i in range(len(all_annotations)):
             current = all_annotations[i]
 
             # Process segment from start of video to first annotation
-            # Track backward from annotation frame to start
             if i == 0 and current["frame"] > 0:
-                if current["frame"] > 0:
-                    self._process_segment(
-                        0,
-                        current["frame"],
-                        None,
-                        current["mask"],
-                        all_masks,
-                        all_frames,
-                    )
+                self._process_segment(
+                    0,
+                    current["frame"],
+                    None,
+                    _seed_mask(current),
+                    all_masks,
+                    all_frames,
+                )
 
             # Process segment between consecutive annotations
             if i < len(all_annotations) - 1:
@@ -305,8 +307,8 @@ class MultiFrameTracker:
                     self._process_segment(
                         current["frame"],
                         next_ann["frame"],
-                        current["mask"],
-                        next_ann["mask"],
+                        _seed_mask(current),
+                        _seed_mask(next_ann),
                         all_masks,
                         all_frames,
                     )
@@ -316,15 +318,14 @@ class MultiFrameTracker:
                 i == len(all_annotations) - 1
                 and current["frame"] < total_frames - 1
             ):
-                if current["frame"] + 1 < total_frames:
-                    self._process_segment(
-                        current["frame"] + 1,
-                        total_frames - 1,
-                        current["mask"],
-                        None,
-                        all_masks,
-                        all_frames,
-                    )
+                self._process_segment(
+                    current["frame"] + 1,
+                    total_frames - 1,
+                    _seed_mask(current),
+                    None,
+                    all_masks,
+                    all_frames,
+                )
 
         # Save results (version_id will be set by caller if retracking)
         version_id = getattr(self, 'version_id', None)
