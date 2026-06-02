@@ -431,19 +431,12 @@ class SeriesManager:
                     has_recent_other_activity = True
                     break
 
-            # Skip series with recent activity from other users (unless current user was also recently active)
+            # Skip series with recent activity from other users, regardless
+            # of whether the current user has also been active. Collaborator
+            # activity always deprioritizes a series — the fallback below
+            # handles the case where no candidate is free of it.
             if has_recent_other_activity:
-                # Only skip if current user hasn't been active recently
-                current_user_time = None
-                if user_email and user_email in activity:
-                    current_user_time = parse_time(activity[user_email])
-
-                if (
-                    not current_user_time
-                    or (now - current_user_time) >= RECENT_VIEW_THRESHOLD
-                ):
-                    continue  # Skip this series - another user is actively working on it
-
+                continue
             filtered_candidates.append(item)
 
         # If all candidates were filtered out, fall back to all candidates (sorted by priority)
@@ -486,11 +479,6 @@ class SeriesManager:
             else:
                 # No activity -> medium priority
                 return 0.0
-
-        selected = sorted(filtered_candidates, key=sort_key)[0]
-        return self.record_view(
-            selected.study_uid, selected.series_uid, user_email
-        )
 
         selected = sorted(filtered_candidates, key=sort_key)[0]
         return self.record_view(
