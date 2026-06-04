@@ -371,19 +371,14 @@ def create_app(config: Optional[ClientConfig] = None) -> Flask:
             if not video_path.exists():
                 return None
 
-            # Get minimal info from dataset manager without full scan
-            images_dir = context.dataset._ensure_images_dir()
-            annotations_df = context.dataset._ensure_annotations()
+            # Get minimal info from dataset manager without full scan.
+            context.dataset._ensure_annotations()  # populates _studies_lookup
             studies_lookup = context.dataset._studies_lookup or {}
 
-            # Find this specific series in annotations
-            series_annotations = annotations_df[
-                (annotations_df["StudyInstanceUID"] == study_uid)
-                & (annotations_df["SeriesInstanceUID"] == series_uid)
-            ]
-            if series_annotations.empty:
-                return None
-
+            # A zero-annotation (orphan) series still resolves to a video on
+            # disk; don't reject it for lacking annotations. Labels come from
+            # config and study metadata from studies_lookup (empty for an
+            # orphan study), so minimal info can be built either way.
             study_info = studies_lookup.get(study_uid, {})
             labels = [
                 {"labelId": config.label_id, "labelName": "Fluid"},

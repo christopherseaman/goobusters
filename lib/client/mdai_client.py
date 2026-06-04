@@ -353,6 +353,36 @@ class MDaiDatasetManager:
                 )
             )
 
+        # Discover orphan videos: mp4s on disk with zero annotations. The
+        # groupby above is annotation-derived, so these would be invisible to
+        # the viewer. Surface them so they can be opened and annotated from
+        # scratch (the server serves them blank).
+        indexed = {(s.study_uid, s.series_uid) for s in series}
+        if images_dir.is_dir():
+            for study_dir in sorted(images_dir.iterdir()):
+                if not study_dir.is_dir():
+                    continue
+                study_uid = study_dir.name
+                study_info = studies_lookup.get(study_uid, {})
+                for video_file in sorted(study_dir.glob("*.mp4")):
+                    series_uid = video_file.stem
+                    if (study_uid, series_uid) in indexed:
+                        continue
+                    exam_number = study_info.get("number")
+                    series.append(
+                        SeriesInfo(
+                            study_uid=study_uid,
+                            series_uid=series_uid,
+                            exam_number=int(exam_number)
+                            if exam_number not in (None, "")
+                            else None,
+                            series_number=None,
+                            dataset_name=str(study_info.get("dataset", "Unknown")),
+                            video_path=video_file,
+                        )
+                    )
+                    indexed.add((study_uid, series_uid))
+
         series.sort(key=lambda item: (item.exam_number or 0, item.series_uid))
         return series
 
