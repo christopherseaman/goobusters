@@ -30,9 +30,9 @@
 
 ### Investigations
 
-- [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: exam 19; 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
-    - NOT FIXED (confirmed via review). Root cause is architectural: in-app playback is a frame-by-frame WebP archive decoded to canvas (no `<video>` element), advanced by a fixed `setInterval(1000/playbackSpeed ≈ 33ms)` (viewer.js:2748) that does NOT await the async WebP decode in `loadImage` (viewer.js:1469). Any frame whose decode exceeds the interval → uneven/dropped frames. tracked_video.mp4 is a native MP4, hence smooth. Play loop + loadImage unchanged since 8dd36c6 (2025-11-21), before this TODO was filed.
-    - Fix options: decode-gate the loop (recurse via setTimeout/rAF after the decode resolves, not setInterval); and/or pre-decode frames to ImageBitmap (createImageBitmap) so canvas draws are synchronous; and/or pace against a target-timestamp accumulator.
+- [x] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: exam 19; 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
+    - RESOLVED per direct observation — playback is smooth now. The report was exam-specific (not a universal pacing issue), so the cause was data-shaped: frame numbering / duplicate / dropped frames. The extractor now extracts every frame in order to match MD.ai numbering and breaks on non-advancing CAP_PROP_POS_FRAMES (multi_frame_tracker.py:749-765); reinforced by the pre-load in d84ec7e.
+    - Latent (NOT the reported bug, do not reopen unless it recurs): the play loop advances on a fixed setInterval (viewer.js:2748) without awaiting the async WebP decode (loadImage, viewer.js:1469). Fine for small frames that decode in a few ms; could show jitter only on large frames / slow devices. Future hardening if ever needed: decode-gate via setTimeout/rAF after the decode resolves, or pre-decode to ImageBitmap.
 
 ### Test Coverage
 
