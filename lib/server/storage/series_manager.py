@@ -243,6 +243,43 @@ class SeriesManager:
             )
             records.append(metadata)
 
+        # Discover orphan videos: mp4s on disk with zero annotations. The
+        # groupby above is annotation-derived, so a series with no annotation
+        # rows would be structurally invisible. Walk the images dir and append
+        # a record for any video not already indexed, so it can be opened,
+        # served blank, and offered for annotation from scratch.
+        indexed = {(m.study_uid, m.series_uid) for m in records}
+        images_root = Path(images_dir)
+        if images_root.is_dir():
+            for study_dir in sorted(images_root.iterdir()):
+                if not study_dir.is_dir():
+                    continue
+                study_uid = study_dir.name
+                study_info = studies_lookup.get(study_uid)
+                for video_file in sorted(study_dir.glob("*.mp4")):
+                    series_uid = video_file.stem
+                    if (study_uid, series_uid) in indexed:
+                        continue
+                    exam_number = None
+                    dataset_name = "Unknown"
+                    if study_info is not None:
+                        raw_exam = study_info.get("number")
+                        exam_number = (
+                            int(raw_exam) if raw_exam not in (None, "") else None
+                        )
+                        dataset_name = str(study_info.get("dataset", "Unknown"))
+                    records.append(
+                        SeriesMetadata(
+                            study_uid=study_uid,
+                            series_uid=series_uid,
+                            exam_number=exam_number,
+                            series_number=None,
+                            dataset_name=dataset_name,
+                            video_path=str(video_file),
+                        )
+                    )
+                    indexed.add((study_uid, series_uid))
+
         # Store in-memory index
         self._index = records
 

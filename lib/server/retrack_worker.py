@@ -282,6 +282,48 @@ def process_initial_job(
         traceback.print_exc()
 
 
+def process_blank_job(
+    job, config: ServerConfig, series_manager: SeriesManager
+) -> None:
+    """Synthesize blank artifacts for an orphan video (a series with a video on
+    disk but zero annotations). Unlike initial/retrack jobs there is no optical
+    flow: every frame is extracted and marked empty so the series is openable.
+    """
+    from lib.mask_archive import mask_series_dir
+    from lib.synthesize_blank_series import synthesize_blank_series
+
+    queue_file = config.server_state_path / "retrack_queue.json"
+    retrack_queue = RetrackQueue(queue_file)
+    try:
+        series = series_manager.get_series(job.study_uid, job.series_uid)
+        output_dir = mask_series_dir(
+            Path(config.mask_storage_path),
+            config.flow_method,
+            job.study_uid,
+            job.series_uid,
+        )
+        synthesize_blank_series(
+            job.study_uid,
+            job.series_uid,
+            series.video_path,
+            output_dir,
+            config,
+        )
+        retrack_queue.mark_completed(
+            job.study_uid, job.series_uid, job.new_version_id
+        )
+    except Exception as exc:
+        retrack_queue.mark_failed(
+            job.study_uid, job.series_uid, job.new_version_id, str(exc)
+        )
+        logger.error(
+            f"Blank synthesis failed for {job.study_uid}/{job.series_uid}: {exc}"
+        )
+        import traceback
+
+        traceback.print_exc()
+
+
 def process_retrack_job(
     job, config: ServerConfig, series_manager: SeriesManager
 ) -> None:
@@ -463,6 +505,8 @@ def worker_loop(config: ServerConfig, series_manager: SeriesManager) -> None:
                 try:
                     if job.job_type == "initial":
                         _process_job = lambda: process_initial_job(job, config, series_manager)
+                    elif job.job_type == "blank":
+                        _process_job = lambda: process_blank_job(job, config, series_manager)
                     else:
                         _process_job = lambda: process_retrack_job(job, config, series_manager)
 

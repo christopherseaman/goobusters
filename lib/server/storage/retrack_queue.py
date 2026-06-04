@@ -42,7 +42,7 @@ class RetrackJob:
     failed_at: Optional[str] = None
     error_message: Optional[str] = None
     status: str = "pending"  # pending | processing | completed | failed
-    job_type: str = "retrack"  # "initial" | "retrack"
+    job_type: str = "retrack"  # "initial" | "retrack" | "blank"
 
     def to_dict(self) -> dict:
         """Serialize to dict, converting Path to string."""
@@ -174,6 +174,31 @@ class RetrackQueue:
                 uploaded_masks_path=Path("/dev/null"),
                 queued_at=isoformat(timestamp),
                 job_type="initial",
+            )
+
+            jobs.append(job)
+            self._save_queue(jobs)
+            return job
+
+    def enqueue_blank(
+        self,
+        study_uid: str,
+        series_uid: str,
+    ) -> RetrackJob:
+        """Add a blank-series synthesis job (orphan video, zero annotations)."""
+        with self._lock():
+            jobs = self._load_queue()
+            timestamp = utc_now()
+
+            job = RetrackJob(
+                study_uid=study_uid,
+                series_uid=series_uid,
+                editor="server",
+                previous_version_id=None,
+                new_version_id="",
+                uploaded_masks_path=Path("/dev/null"),
+                queued_at=isoformat(timestamp),
+                job_type="blank",
             )
 
             jobs.append(job)

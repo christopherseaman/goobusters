@@ -39,6 +39,7 @@ from lib.mask_archive import (
     extract_mask_archive,
     iso_now,
     mask_series_dir,
+    MASK_METADATA_FILENAME,
     MaskArchiveError,
 )
 from lib.uploaded_masks import convert_uploaded_masks_to_annotations_df
@@ -361,16 +362,56 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                 initial_masks_path  # Default to initial for lazy tracking check
             )
 
+        # Pre-built archives serve directly. A blank (zero-annotation) series
+        # has an EMPTY masks/ directory but a synthesized masks.tar, so gate the
+        # lazy fallback on the archive too — otherwise a blank series wrongly
+        # falls through to TRACK_FAILED.
+        archive_on_disk = (mask_dir / "masks.tar").exists() or (
+            mask_dir / "masks.tar.gz"
+        ).exists()
+
         # Fallback lazy tracking: if masks don't exist, trigger tracking
         # NOTE: Per DISTRIBUTED_ARCHITECTURE.md, masks should be generated on startup.
         # This is a fallback for edge cases (e.g., new series added after startup).
-        if not masks_path.exists() or not list(masks_path.glob("*.webp")):
+        if (
+            not masks_path.exists() or not list(masks_path.glob("*.webp"))
+        ) and not archive_on_disk:
             # Check if series is trackable BEFORE triggering lazy tracking
             # Use shared logic to avoid retrying non-trackable series
             from lib.trackable_series import is_series_trackable
 
             if not is_series_trackable(study_uid, series_uid, config):
-                # Series not trackable - tracking status computed from filesystem
+                # Not trackable. If a video exists on disk this is an orphan
+                # series (zero annotations): synthesize a blank series so it can
+                # be opened and annotated from scratch. Startup normally covers
+                # this; this handles videos added after startup.
+                series_meta = series_manager.get_series(study_uid, series_uid)
+                if series_meta.video_path and Path(series_meta.video_path).exists():
+                    queue_file = config.server_state_path / "retrack_queue.json"
+                    retrack_queue = RetrackQueue(queue_file)
+                    # If a prior blank job already failed (e.g. corrupt video),
+                    # surface the failure instead of re-enqueueing on every poll
+                    # — otherwise a doomed video loops forever.
+                    last_job = retrack_queue.get_job_status(study_uid, series_uid)
+                    if last_job is not None and last_job.status == "failed":
+                        return (
+                            jsonify({
+                                "status": "failed",
+                                "error_code": "TRACK_FAILED",
+                                "error_message": "Blank-series synthesis failed (video may be corrupt or unreadable).",
+                            }),
+                            500,
+                        )
+                    if not retrack_queue.has_active_job(study_uid, series_uid):
+                        retrack_queue.enqueue_blank(study_uid, series_uid)
+                    return (
+                        jsonify({
+                            "status": "pending",
+                            "error_code": "TRACK_PENDING",
+                        }),
+                        202,
+                    )
+                # No video either - genuinely unservable.
                 return (
                     jsonify({
                         "status": "failed",
@@ -744,7 +785,35 @@ def create_api_blueprint(series_manager: SeriesManager, config) -> Blueprint:
                     )
                 )
             except ValueError as exc:
-                return jsonify({"error": str(exc)}), 400
+                # Decide no-op vs error from the PARSED metadata, not the error
+                # string. A blank series saved with zero marked frames is a
+                # graceful no-op; anything else (missing metadata.json, or
+                # annotation frames whose masks failed to round-trip) is a real
+                # error that must surface rather than silently lose work.
+                meta_path = extract_path / MASK_METADATA_FILENAME
+                has_annotation_frames = False
+                if meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text())
+                        has_annotation_frames = any(
+                            f.get("is_annotation")
+                            for f in meta.get("frames", [])
+                        )
+                    except (ValueError, OSError):
+                        return jsonify({"error": str(exc)}), 400
+                else:
+                    return jsonify({"error": str(exc)}), 400
+
+                if has_annotation_frames:
+                    return jsonify({"error": str(exc)}), 400
+                return (
+                    jsonify({
+                        "success": True,
+                        "retrack_queued": False,
+                        "message": "No annotations to save.",
+                    }),
+                    200,
+                )
 
             # Create permanent storage for uploaded masks (will be cleaned up after retrack)
             timestamp_str = iso_now().replace(":", "-").replace(".", "-")

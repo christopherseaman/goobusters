@@ -60,6 +60,52 @@ def download_mdai_dataset(config: ServerConfig) -> Path:
         raise RuntimeError(f"Failed to download MD.ai dataset: {exc}") from exc
 
 
+def find_orphan_series(
+    series_manager: SeriesManager,
+    trackable_set: set,
+    mask_root: Path,
+    flow_method: str,
+) -> list:
+    """
+    Series with a video on disk but zero annotations and no synthesized masks.
+
+    These cannot run the tracking pipeline (it needs >=1 annotation), so they
+    get a "blank" synthesis job instead. Already-synthesized orphans (masks.tar
+    present) are excluded so a restart never re-enqueues completed work.
+    """
+    orphans = []
+    for series in series_manager.list_series():
+        key = (series.study_uid, series.series_uid)
+        if key in trackable_set:
+            continue
+        output_dir = mask_series_dir(
+            mask_root, flow_method, series.study_uid, series.series_uid
+        )
+        if (output_dir / "masks.tar").exists() or (
+            output_dir / "masks.tar.gz"
+        ).exists():
+            continue
+        orphans.append(series)
+    return orphans
+
+
+def enqueue_blank_jobs(retrack_queue, orphans: list) -> int:
+    """
+    Enqueue a blank synthesis job per orphan, skipping any that already have an
+    active (pending/processing) job. A crash+restart resets a stuck job back to
+    pending without removing it, and find_orphan_series re-flags it (no masks.tar
+    yet), so without this guard the queue would hold a duplicate. Returns the
+    number actually enqueued.
+    """
+    enqueued = 0
+    for series in orphans:
+        if retrack_queue.has_active_job(series.study_uid, series.series_uid):
+            continue
+        retrack_queue.enqueue_blank(series.study_uid, series.series_uid)
+        enqueued += 1
+    return enqueued
+
+
 def initialize_server(
     config: ServerConfig,
     series_manager: SeriesManager,
@@ -139,26 +185,37 @@ def initialize_server(
         if not (output_dir / "masks.tar").exists() and not (output_dir / "masks.tar.gz").exists():
             untracked.append(series)
 
-    if not untracked:
+    # Orphan videos (on disk, zero annotations) get blank synthesis jobs so they
+    # are openable for annotation from scratch.
+    orphans = find_orphan_series(series_manager, trackable_set, mask_root, flow_method)
+
+    if not untracked and not orphans:
         logger.info("All series already have masks. Starting workers for retrack jobs.")
         from server.start import start_tracking_workers
         start_tracking_workers(config)
         logger.info("Server initialization complete.")
         return
 
-    logger.info(f"Found {len(untracked)} untracked series. Enqueueing initial tracking jobs...")
+    logger.info(
+        f"Found {len(untracked)} untracked and {len(orphans)} orphan series. "
+        f"Enqueueing tracking/synthesis jobs..."
+    )
 
     # Start workers before enqueueing so they can begin processing immediately
     from server.start import start_tracking_workers
     start_tracking_workers(config)
 
-    # Enqueue initial tracking jobs
+    # Enqueue initial tracking jobs and blank synthesis jobs
     queue_file = config.server_state_path / "retrack_queue.json"
     retrack_queue = RetrackQueue(queue_file)
     for series in untracked:
         retrack_queue.enqueue_initial(series.study_uid, series.series_uid)
+    enqueue_blank_jobs(retrack_queue, orphans)
 
-    logger.info(f"Enqueued {len(untracked)} initial tracking jobs. Waiting for completion...")
+    logger.info(
+        f"Enqueued {len(untracked)} initial + {len(orphans)} blank jobs. "
+        f"Waiting for completion..."
+    )
 
     # Block until all jobs complete (workers process in parallel)
     while True:
