@@ -22,13 +22,17 @@
 
 ### Data & Annotation Handling
 
-- [ ] Handle series with no fluid annotations gracefully (serve blank masks/metadata so client can open; no tracking needed)
+- [x] Handle series with no fluid annotations gracefully (serve blank masks/metadata so client can open; no tracking needed)
     - Empty frames (EMPTY_ID) already work; this is about series with zero annotations
     - Validate "No Fluid" frame annotation compatible with mdai json syntax
+    - Implemented on branch `feat/blank-zero-annotation-series`: orphan videos (mp4 on disk, zero annotations) are discovered into the index, auto-offered by select_next_series, synthesized into a blank masks.tar/frames.tar at startup (lazy fallback for videos added later), and served through the existing endpoints. "No Fluid" marks round-trip internally as empty_id/data=null. 10 hermetic tests; validated on the real 447-series dataset (335 orphans now openable).
+    - [ ] PENDING: manual review of WKWebView rendering — drawing/marking on an all-blank series (every frame has_mask=false) is not unit-testable; verify in the real app before trusting.
 
 ### Investigations
 
 - [ ] Jumpy video in annotation editor app but not in tracked_video.mp4? Example: exam 19; 1.2.826.0.1.3680043.8.498.12762211632497404572246503032980657292_1.2.826.0.1.3680043.8.498.90262783102403545676047413537747709850
+    - NOT FIXED (confirmed via review). Root cause is architectural: in-app playback is a frame-by-frame WebP archive decoded to canvas (no `<video>` element), advanced by a fixed `setInterval(1000/playbackSpeed ≈ 33ms)` (viewer.js:2748) that does NOT await the async WebP decode in `loadImage` (viewer.js:1469). Any frame whose decode exceeds the interval → uneven/dropped frames. tracked_video.mp4 is a native MP4, hence smooth. Play loop + loadImage unchanged since 8dd36c6 (2025-11-21), before this TODO was filed.
+    - Fix options: decode-gate the loop (recurse via setTimeout/rAF after the decode resolves, not setInterval); and/or pre-decode frames to ImageBitmap (createImageBitmap) so canvas draws are synchronous; and/or pace against a target-timestamp accumulator.
 
 ### Test Coverage
 
