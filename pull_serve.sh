@@ -1,1 +1,1 @@
-git pull && python -m lib.server.start -kd
+git pull && uv run python -m lib.server.start -kd
